@@ -1,5 +1,57 @@
 import tkinter as tk
 from tkinter import ttk
+import subprocess  # Для выполнения системных команд
+
+
+# Функция для проверки состояния службы
+def check_service_status(service_name):
+    command = f'powershell Get-Service -Name {service_name} | Select-Object -ExpandProperty Status'
+    result = subprocess.run(command, capture_output=True, text=True, shell=True)
+    return result.stdout.strip() == "Stopped"
+
+
+# Функции для каждой настройки
+def disable_ads():
+    command = 'powershell Set-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo" -Name Enabled -Value 0'
+    subprocess.run(command, shell=True)
+    print("Рекламный идентификатор и реклама отключены.")
+
+
+def disable_sync():
+    command = 'powershell Set-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\SyncSettings" -Name SyncSettings -Value 0'
+    subprocess.run(command, shell=True)
+    print("Синхронизация Windows отключена.")
+
+
+def disable_telemetry():
+    command = 'powershell Set-ItemProperty -Path "HKLM:\\Software\\Policies\\Microsoft\\Windows\\DataCollection" -Name AllowTelemetry -Value 0'
+    subprocess.run(command, shell=True)
+    print("Телеметрия Windows отключена.")
+
+
+def disable_nvidia_telemetry():
+    command = 'powershell Stop-Service -Name "NvTelemetryContainer" -Force'
+    subprocess.run(command, shell=True)
+    print("Телеметрия NVIDIA отключена.")
+
+
+def disable_event_log():
+    command = 'powershell Stop-Service -Name "EventLog" -Force'
+    subprocess.run(command, shell=True)
+    print("Сбор данных через планировщик отключен.")
+
+
+# Словарь для хранения опций и соответствующих функций
+options_functions = {
+    "Отключение рекламного идентификатора и рекламы": disable_ads,
+    "Отключение всех видов синхронизаций Windows": disable_sync,
+    "Отключение всех видов телеметрий Windows": disable_telemetry,
+    "Отключение телеметрии NVIDIA": disable_nvidia_telemetry,
+    "Отключение сбора данных через события планировщика": disable_event_log,
+}
+
+# Словарь для хранения состояний чекбоксов
+checkbox_states = {}
 
 
 # Функция для отображения соответствующих опций
@@ -11,25 +63,25 @@ def show_options(category):
     # Опции для каждой категории
     options = {
         "Конфиденциальность": [
-            "Отключение рекламного идентификатора и рекламы",
-            "Отключение всех видов синхронизаций Windows",
-            "Отключение всех видов телеметрий Windows"
+            {"name": "Отключение рекламного идентификатора и рекламы", "service": None},
+            {"name": "Отключение всех видов синхронизаций Windows", "service": None},
+            {"name": "Отключение всех видов телеметрий Windows", "service": "DiagTrack"}
         ],
         "Система": [
-            "Отключение телеметрии NVIDIA",
-            "Отключение сбора данных через события планировщика",
-            "Отключение сбора данных об установленных приложениях"
+            {"name": "Отключение телеметрии NVIDIA", "service": "NvTelemetryContainer"},
+            {"name": "Отключение сбора данных через события планировщика", "service": "EventLog"}
         ],
         "Интерфейс": [
-            "Нормальный цвет всплывающей подсказки",
-            "Уменьшение кнопок Закрыть, Свернуть, Развернуть",
-            "Удаление объемных объектов из проводника"
+            {"name": "Нормальный цвет всплывающей подсказки", "service": None},
+            {"name": "Уменьшение кнопок Закрыть, Свернуть, Развернуть", "service": None},
+            {"name": "Удаление объемных объектов из проводника", "service": None}
         ]
     }
 
     # Если не выбрана категория, отображаем текст описания приложения
     if not category:
-        description_label.config(text="Добро пожаловать в SimpleTool!\nВыберите категорию слева, чтобы начать настройку.")
+        description_label.config(
+            text="Добро пожаловать в SimpleTool!\nВыберите категорию слева, чтобы начать настройку.")
         description_label.pack(padx=10, pady=10)
         return
     else:
@@ -37,26 +89,69 @@ def show_options(category):
 
     # Отображаем соответствующие опции для выбранной категории
     for option in options.get(category, []):
-        if option not in checkbox_states:
-            checkbox_states[option] = tk.BooleanVar(value=False)
-        chk = ttk.Checkbutton(options_frame, text=option, variable=checkbox_states[option])
-        chk.pack(anchor='w')
+        option_name = option["name"]
+        service_name = option.get("service", None)
+
+        # Проверяем состояние службы, если она указана
+        if service_name:
+            if check_service_status(service_name):
+                option_text = f"{option_name}"
+                status_color = "green"
+                status_text = "Применено"
+            else:
+                option_text = f"{option_name}"
+                status_color = "red"
+                status_text = "Не применено"
+        else:
+            option_text = option_name
+            status_color = "grey"
+            status_text = "Не поддерживается"
+
+        frame = ttk.Frame(options_frame)
+        frame.pack(anchor='w', pady=2)
+
+        if option_name not in checkbox_states:
+            checkbox_states[option_name] = tk.BooleanVar(value=False)
+
+        chk = ttk.Checkbutton(frame, text=option_text, variable=checkbox_states[option_name])
+        chk.pack(side='left')
+
+        status_label = tk.Label(frame, text=status_text, fg=status_color)
+        status_label.pack(side='left', padx=10)
+
 
 # Функция для применения выбранных настроек
 def apply_settings():
-    applied_settings = [option for option, var in checkbox_states.items() if var.get()]
-    if applied_settings:
-        print(f"Примененные настройки: {', '.join(applied_settings)}")
-    else:
-        print("Нет примененных настроек.")
+    for option, var in checkbox_states.items():
+        if var.get() and option in options_functions:
+            options_functions[option]()  # Вызов соответствующей функции
+
+    # Сброс галочек
+    for var in checkbox_states.values():
+        var.set(False)
+
+    # Обновляем отображение опций после применения изменений
+    show_options(current_category)
+
 
 # Создаем главное окно
 root = tk.Tk()
 root.title("Win10 Tweaker Аналог")
-root.geometry("600x400")
+root.geometry("650x400")
 
-# Словарь для хранения состояний чекбоксов
-checkbox_states = {}
+
+# Центрируем окно
+def center_window(root, width, height):
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    x = (screen_width // 2) - (width // 2)
+    y = (screen_height // 2) - (height // 2)
+    root.geometry(f'{width}x{height}+{x}+{y}')
+
+
+center_window(root, 650, 400)
+
+current_category = None
 
 # Создаем фрейм для левой панели категорий
 categories_frame = ttk.Frame(root)
@@ -67,7 +162,8 @@ options_frame = ttk.Frame(root)
 options_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
 # Текстовое описание на главной странице
-description_label = ttk.Label(options_frame, text="Добро пожаловать в SimpleTool!\nВыберите категорию слева, чтобы начать настройку.")
+description_label = ttk.Label(options_frame,
+                              text="Добро пожаловать в SimpleTool!\nВыберите категорию слева, чтобы начать настройку.")
 description_label.pack(padx=10, pady=10)
 
 # Список категорий
