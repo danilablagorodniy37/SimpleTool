@@ -15,11 +15,43 @@ ADVANCED = EXPLORER + r"\Advanced"
 THIS_PC = HKCU_CLASSES + r"\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell"
 
 
+PATH_VAR = "SIMPLETOOL_PATH"
+
+
+def with_path(command):
+    """A menu item command that gets the clicked file.
+
+    Explorer pastes the path into the command as is, and a file name may contain ' ( ) $ and spaces, so the path must
+    never become part of PowerShell code. cmd.exe puts it into an environment variable (inside quotes nothing is
+    special to cmd, and a file name cannot contain quotes) and PowerShell reads $env:SIMPLETOOL_PATH as data.
+    """
+    return f'cmd.exe /d /c set "{PATH_VAR}=%1" & {command}'
+
+
+def ps_text(text):
+    """A PowerShell expression for text in which %1 stands for the clicked file.
+
+    Double quotes become [char]34: the -Command argument must contain none, or cmd.exe would see & outside quotes.
+    """
+    assert "'" not in text
+    parts = []
+    for i, piece in enumerate(text.split("%1")):
+        if i:
+            parts.append(f"$env:{PATH_VAR}")
+        for j, chunk in enumerate(piece.split('"')):
+            if j:
+                parts.append("[char]34")
+            if chunk:
+                parts.append(f"'{chunk}'")
+    return "(" + " + ".join(parts) + ")"
+
+
 def elevated(args, hidden=True):
-    """A menu item command that runs cmd.exe /c ... as administrator."""
+    """A menu item command that runs cmd.exe with args as administrator; %1 in args is the clicked file."""
     style = " -WindowStyle Hidden" if hidden else ""
-    return ('powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process cmd.exe -Verb RunAs'
-            f"{style} -ArgumentList '{args}'\"")
+    command = ('powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process cmd.exe -Verb RunAs'
+               f'{style} -ArgumentList {ps_text(args)}"')
+    return with_path(command) if "%1" in args else command
 
 
 def menu_item(path, label, command, icon=None, extended=False, shield=False, kind=REG_SZ):
@@ -197,17 +229,21 @@ EXPLORER_TWEAKS = [
 ADMINS = "*S-1-5-32-544"  # the Administrators group by SID, independent of the Windows language
 HASHES = ["MD5", "SHA1", "SHA256", "SHA384", "SHA512"]
 IMAGE_TYPES = [".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".tif", ".tiff"]
-FIREWALL_RULE = r'name=\"SimpleTool - %1\"'
+FIREWALL_RULE = 'name="SimpleTool - %1"'
 
 
 def hash_command(algorithm):
-    return ('powershell.exe -NoProfile -WindowStyle Hidden -Command '
-            f"\"(Get-FileHash -Algorithm {algorithm} -LiteralPath '%1').Hash.ToLower() | Set-Clipboard\"")
+    return with_path('powershell.exe -NoProfile -WindowStyle Hidden -Command '
+                     f'"(Get-FileHash -Algorithm {algorithm} -LiteralPath $env:{PATH_VAR}).Hash.ToLower() | Set-Clipboard"')
 
 
-COPY_IMAGE_COMMAND = ('powershell.exe -NoProfile -WindowStyle Hidden -STA -Command "Add-Type -AssemblyName PresentationCore; '
-                      "[System.Windows.Clipboard]::SetImage((New-Object System.Windows.Media.Imaging.BitmapImage ([Uri]'%1')))\"")
+COPY_IMAGE_COMMAND = with_path(
+    'powershell.exe -NoProfile -WindowStyle Hidden -STA -Command "Add-Type -AssemblyName PresentationCore; '
+    f'[System.Windows.Clipboard]::SetImage((New-Object System.Windows.Media.Imaging.BitmapImage ([Uri]$env:{PATH_VAR})))"')
 
+# No "Safe Mode with Command Prompt": it starts cmd.exe instead of Explorer on every boot, and the "Restart normally"
+# item in Explorer cannot be reached from there. "Restart normally" still removes the shell setting left by
+# SimpleTool 0.5 and earlier.
 SAFE_MODE = [
     ("1Normal", menu_label("restart_normal"), elevated(
         "/c bcdedit /deletevalue {current} safeboot & bcdedit /deletevalue {current} safebootalternateshell & shutdown /r /t 0")),
@@ -215,8 +251,6 @@ SAFE_MODE = [
         "/c bcdedit /set {current} safeboot minimal && shutdown /r /t 0")),
     ("3Network", menu_label("restart_network"), elevated(
         "/c bcdedit /set {current} safeboot network && shutdown /r /t 0")),
-    ("4Cmd", menu_label("restart_cmd"), elevated(
-        "/c bcdedit /set {current} safeboot minimal && bcdedit /set {current} safebootalternateshell yes && shutdown /r /t 0")),
 ]
 
 MMC = r"%SystemRoot%\System32\mmc.exe /s %SystemRoot%\System32\{}"
@@ -224,18 +258,18 @@ MMC = r"%SystemRoot%\System32\mmc.exe /s %SystemRoot%\System32\{}"
 CONTEXT = [
     Tweak("take_ownership", "context",
           menu_item(HKCU_CLASSES + r"\*\shell\SimpleTool.TakeOwnership", menu_label("take_ownership"),
-                    elevated(rf'/c takeown /f \"%1\" /a & icacls \"%1\" /grant {ADMINS}:F /c', hidden=False),
+                    elevated(f'/c takeown /f "%1" /a & icacls "%1" /grant {ADMINS}:F /c', hidden=False),
                     icon="imageres.dll,-78", extended=True, shield=True)
           + menu_item(HKCU_CLASSES + r"\Directory\shell\SimpleTool.TakeOwnership", menu_label("take_ownership"),
-                      elevated(rf'/c takeown /f \"%1\" /r /a & icacls \"%1\" /grant {ADMINS}:F /t /c /q', hidden=False),
+                      elevated(f'/c takeown /f "%1" /r /a & icacls "%1" /grant {ADMINS}:F /t /c /q', hidden=False),
                       icon="imageres.dll,-78", extended=True, shield=True)),
     Tweak("firewall", "context",
           menu_item(HKCU_CLASSES + r"\exefile\shell\SimpleTool.FirewallBlock", menu_label("firewall_block"),
-                    elevated(rf'/c netsh advfirewall firewall add rule {FIREWALL_RULE} dir=out action=block program=\"%1\" '
-                             rf'& netsh advfirewall firewall add rule {FIREWALL_RULE} dir=in action=block program=\"%1\"'),
+                    elevated(f'/c netsh advfirewall firewall add rule {FIREWALL_RULE} dir=out action=block program="%1" '
+                             f'& netsh advfirewall firewall add rule {FIREWALL_RULE} dir=in action=block program="%1"'),
                     icon="FirewallControlPanel.dll,0", extended=True, shield=True)
           + menu_item(HKCU_CLASSES + r"\exefile\shell\SimpleTool.FirewallAllow", menu_label("firewall_allow"),
-                      elevated(rf"/c netsh advfirewall firewall delete rule {FIREWALL_RULE}"),
+                      elevated(f"/c netsh advfirewall firewall delete rule {FIREWALL_RULE}"),
                       icon="FirewallControlPanel.dll,0", extended=True, shield=True)),
     Tweak("cmd_desktop", "context",
           menu_item(HKCU_CLASSES + r"\DesktopBackground\Shell\SimpleTool.Cmd", menu_label("cmd"),

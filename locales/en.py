@@ -24,6 +24,20 @@ TEXTS = {
         "errors_title": "Some changes failed",
         "errors_intro": "These changes could not be made:",
         "close": "Close",
+        "terms_link": "Terms of use",
+        "terms_accept": "I accept",
+        "terms_exit": "Exit",
+        "crash_title": "Something went wrong",
+        "crash_intro": "SimpleTool hit an unexpected error and keeps working. If something looks wrong, restart it. "
+                       "The details are saved in the error log:",
+        "start_failed": "SimpleTool could not start: {error}\n\nThe details are saved in {path}",
+        "other_account_title": "SimpleTool runs as another account",
+        "other_account_text": "SimpleTool was started as {account}, but Windows is signed in as {user}. Settings of "
+                              "the current user (File Explorer, the context menu, privacy settings of the account) "
+                              "will change for {account}, not for {user}, and backups are saved in that account's "
+                              "folder.\n\nTo change your own settings, sign in to an account with administrator "
+                              "rights and run SimpleTool there.",
+        "mem_denied_protected": "No access to processes: {count}. Windows protects them, so they cannot be limited.",
         "admin_title": "Administrator rights needed",
         "admin_text": "SimpleTool is running without administrator rights. Tweaks that change system-wide "
                       "settings, services and scheduled tasks are locked.\n\nRestart SimpleTool as "
@@ -95,7 +109,8 @@ TEXTS = {
                       "Revert and restore, and keeps the very first one as the original state. Restoring a snapshot "
                       "returns all of these settings to how they were at that moment.",
         "snap_rp_hint": "A Windows restore point goes further: Windows saves the whole registry and system files, and you "
-                        "can return to it from Settings → System → Recovery even if Windows does not start. It needs "
+                        "can return to it through System Restore (Control Panel → Recovery), or from the Windows recovery "
+                        "environment if Windows does not start. It needs "
                         "administrator rights and System Protection turned on; by default Windows allows one per day.",
         "snap_create": "Take snapshot",
         "snap_restore_point": "Create Windows restore point",
@@ -144,11 +159,11 @@ TEXTS = {
         "mem_show_all": "Show all ({n})",
         "mem_show_less": "Show fewer",
         "mem_pick": "Choose from running…",
-        "mem_now": "Now {size} in {count} processes",
+        "mem_now": "Now {size}, processes: {count}",
         "mem_idle": "Not running",
-        "mem_denied": "No access to {count} processes: run SimpleTool as administrator.",
+        "mem_denied": "No access to processes: {count}. Run SimpleTool as administrator.",
         "mem_largest": "largest process {size}",
-        "mem_procs": "{n} processes",
+        "mem_procs": "processes: {n}",
         "mem_added": "Added",
         "mem_limit": "Limit",
         "mem_soft": "Soft",
@@ -457,7 +472,6 @@ TEXTS = {
         "restart_normal": "Restart normally",
         "restart_safe": "Restart in Safe Mode",
         "restart_network": "Restart in Safe Mode with Networking",
-        "restart_cmd": "Restart in Safe Mode with Command Prompt",
         "shortcut_restart": "Restart",
         "shortcut_refresh": "Refresh icons",
     },
@@ -508,7 +522,7 @@ TEXTS = {
         "Spooler": ("Print Spooler",
                     "Manages printing and printer drivers. Without it you cannot print or use Print to PDF. If you "
                     "never print, turning it off also closes a frequently attacked service."),
-        "Fax": ("Fax", "Sends and receives faxes through a fax modem. Not needed on almost any PC."),
+        "Fax": ("Fax", "Sends and receives faxes through a fax modem. Almost no PC needs it."),
         "XblAuthManager": ("Xbox Live Auth Manager",
                            "Signs in to Xbox services for games and the Xbox app. Needed for Game Pass, achievements "
                            "and multiplayer in Microsoft Store games."),

@@ -5,13 +5,16 @@ import datetime
 import gc
 import json
 import os
+import platform
 import queue
 import subprocess
 import sys
 import threading
 import time
+import traceback
 import tkinter as tk
 import tkinter.font as tkfont
+from ctypes import wintypes
 from tkinter import ttk
 
 import engine
@@ -19,6 +22,7 @@ import i18n
 import limiter
 import programs
 import services
+import terms
 import theme
 import tray
 import tweaks
@@ -26,7 +30,7 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
                      Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.5"
+VERSION = "0.6"
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
 PAGES = ["overview"] + tweaks.CATEGORIES + ["memory", "snapshots"]
@@ -64,15 +68,32 @@ def service_color(state):
 def load_settings():
     try:
         with open(os.path.join(engine.data_dir(), "settings.json"), encoding="utf-8") as f:
-            return json.load(f)
+            settings = json.load(f)
+        return settings if isinstance(settings, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
 def save_settings(settings):
     try:
-        with open(os.path.join(engine.data_dir(), "settings.json"), "w", encoding="utf-8") as f:
-            json.dump(settings, f)
+        engine.write_json(os.path.join(engine.data_dir(), "settings.json"), settings)
+    except OSError:
+        pass
+
+
+def error_log_path():
+    return os.path.join(engine.data_dir(), "error.log")
+
+
+def log_error(text):
+    """Appends an error to error.log: a windowed exe has no console to print it to."""
+    try:
+        path = error_log_path()
+        if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:  # the log stays small
+            os.replace(path, path + ".old")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S}  SimpleTool {VERSION}  "
+                    f"Windows {platform.version()}\n{text.rstrip()}\n")
     except OSError:
         pass
 
@@ -81,11 +102,14 @@ def relaunch_as_admin():
     """Restarts the program as administrator. Returns the ShellExecute code (above 32 means success)."""
     if getattr(sys, "frozen", False):
         exe, args = sys.executable, sys.argv[1:]
+        # Not BASE_DIR: the new copy must not hold this copy's temporary folder, or it cannot be deleted on exit
+        folder = os.path.dirname(sys.executable)
     else:
         pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
         exe = pythonw if os.path.exists(pythonw) else sys.executable
         args = [os.path.abspath(sys.argv[0])] + sys.argv[1:]
-    return ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, subprocess.list2cmdline(args), BASE_DIR, 1)
+        folder = BASE_DIR
+    return ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, subprocess.list2cmdline(args), folder, 1)
 
 
 def collect_scan(report=lambda step: None):
@@ -104,6 +128,9 @@ class App:
         self.root = root
         self.instance = instance  # tray.SingleInstance: starting SimpleTool again shows this window
         self.admin = engine.is_admin()
+        self.other_account = engine.other_account()  # started with another account's password: (it, signed in)
+        self.error_shown = False  # an unexpected error is shown once per session, every one goes to error.log
+        root.report_callback_exception = self.report_error
         self.settings = load_settings()
         lang = self.settings.get("lang")
         self.lang = lang if lang in i18n.TEXTS else i18n.detect_language()
@@ -147,8 +174,10 @@ class App:
             instance.listen(lambda: self.post(self.show_window))
         root.bind("<Destroy>", self.on_destroy, add="+")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
-        if not self.admin:
-            root.after(600, self.show_admin_dialog)
+        if self.settings.get("terms") != terms.VERSION:
+            root.after(300, lambda: self.show_terms(first_run=True))
+        else:
+            root.after(600, self.startup_dialogs)
 
     # --- Appearance ---
 
@@ -293,6 +322,8 @@ class App:
         beta.pack(side="left", padx=(px(8), 0))
         tk.Label(bottom, text=self.t("beta_note"), font=self.fonts["small"], fg=C["side_dim"], bg=C["side"],
                  anchor="w", justify="left", wraplength=px(220)).pack(fill="x", pady=(px(6), 0))
+        self.link(bottom, self.t("terms_link"), self.show_terms, font="small", color=C["side_dim"]).pack(
+            anchor="w", pady=(px(4), 0))
 
     def build_main(self):
         px = self.px
@@ -349,7 +380,7 @@ class App:
         self.revert_button.pack(side="right", padx=(0, px(10)))
         self.spinner = Spinner(inner, px(18), self.scale)
         self.message_label = tk.Label(inner, font=self.fonts["body"], fg=C["muted"], bg=C["surface"], anchor="w",
-                                      justify="left", wraplength=px(440))
+                                      justify="left")
         self.message_label.pack(side="left", fill="x", expand=True)
 
     def drop_button(self, parent, icon, label, build_menu):
@@ -426,6 +457,8 @@ class App:
             except tk.TclError:
                 pass
         self.footer_inner.pack_configure(padx=(left, width - right))
+        # The footer message wraps instead of running under the buttons, which take about px(300)
+        self.message_label.configure(wraplength=max(self.px(160), self.content_width - self.px(300)))
         self.layout_header()
 
     def layout_header(self):
@@ -580,7 +613,7 @@ class App:
         for group in services.GROUPS:
             self.section_head(ICONS[group], self.text("groups", group))
             for svc_group, name, tweak_id in services.SERVICES:
-                if svc_group == group:
+                if svc_group == group and name in self.scan["services"]:  # a failed scan has no services
                     self.service_cards[name] = self.build_service_card(name, tweak_id)
 
     def section_head(self, icon, text):
@@ -740,7 +773,7 @@ class App:
                         anchor="w", justify="left")
         meta.grid(row=1, column=0, sticky="ew", padx=(px(12), 0), pady=(px(1), 0))
         pill = Pill(body, self.fonts["pill"], self.scale, self.animator)
-        pill.grid(row=0, column=1, sticky="ne", padx=px(12), pady=(px(8), 0))  # on the title line
+        pill.grid(row=2, column=1, sticky="e", padx=px(12), pady=(px(5), px(8)))  # on the "Details" line
         pill.set(self.t("service_" + info.state), service_color(info.state), animate=False)
         self.wrap(title_label, px(172))
         self.wrap(meta, px(172))
@@ -937,11 +970,13 @@ class App:
 
         def done(result):
             self.selected.clear()
-            if isinstance(result, Exception):
-                errors = [str(result)]
-            else:
-                errors, self.scan = result
             self.snapshots = engine.list_snapshots()
+            if isinstance(result, Exception):
+                self.start_scan()  # the restore stopped halfway: the system is read again
+                self.notify(self.t("errors_title"), C["warn"], ICONS["warning"])
+                self.show_errors([str(result)])
+                return
+            errors, self.scan = result
             self.message = ("snap_restored", {"date": date})
             self.refresh_view()
             if errors:
@@ -1205,7 +1240,9 @@ class App:
                 widgets["meter"].set(ratio, animate)
             widgets["hint"].configure(text=self.t("mem_hard_hint" if hard else "mem_soft_hint"))
             if stat and stat["denied"]:
-                widgets["denied"].configure(text=self.t("mem_denied", count=stat["denied"]))
+                # With administrator rights only processes protected by Windows stay out of reach
+                key = "mem_denied_protected" if self.admin else "mem_denied"
+                widgets["denied"].configure(text=self.t(key, count=stat["denied"]))
                 widgets["denied"].grid()
             else:
                 widgets["denied"].grid_remove()
@@ -1422,7 +1459,7 @@ class App:
                                justify="left")
         short_label.grid(row=1, column=1, sticky="ew", pady=(px(2), 0))
         pill = Pill(body, self.fonts["pill"], self.scale, self.animator)
-        pill.grid(row=0, column=2, sticky="ne", padx=px(12), pady=(px(8), 0))  # on the title line
+        pill.grid(row=2, column=2, sticky="e", padx=px(12), pady=(px(5), px(8)))  # on the "Details" line
         self.wrap(title, px(212))
         self.wrap(short_label, px(212))
         widgets = {"card": card, "check": check, "title": title, "pill": pill}
@@ -1521,7 +1558,8 @@ class App:
         tk.Label(inner, text=self.t("what_changes"), font=self.fonts["small_bold"], fg=C["dim"], bg=bg, anchor="w").pack(
             fill="x", padx=indent, pady=(px(14), px(6)))
 
-        rows = self.scan["checks"][tweak.id][1] if self.scan else [(op, None, None) for op in tweak.ops]
+        rows = (self.scan["checks"][tweak.id][1] if self.scan and tweak.id in self.scan["checks"]
+                else [(op, None, None) for op in tweak.ops])
         # Values inside owned keys (menu items) are not listed: the key itself is enough
         owned = [op.path + "\\" for op in tweak.ops if isinstance(op, engine.OwnedKey)]
         reasons = set()
@@ -1762,8 +1800,10 @@ class App:
             self.show_errors([str(result)])
         else:
             self.scan = result
-            # Without administrator rights some values cannot be read, and the original snapshot is kept forever
-            if not self.snapshots and self.admin:
+            # The original snapshot is kept forever, so it is taken only when everything can be read: with
+            # administrator rights and the scheduled task list. Snapshots taken before that do not replace it
+            has_initial = any(data.get("kind") == "initial" for _, data in self.snapshots)
+            if not has_initial and self.admin and result["ctx"].tasks is not None:
                 self.take_initial_snapshot()
         self.selected = {i for i in self.selected if self.selectable(self.tweak_by_id[i])}
         self.refresh_view()
@@ -1833,10 +1873,12 @@ class App:
             self.selected.clear()
             self.snapshots = engine.list_snapshots()
             if isinstance(result, Exception):
-                errors = [str(result)]
+                # The work stopped halfway: what was changed is unknown, so the system is read again
                 self.start_scan()
-            else:
-                errors, self.scan = result
+                self.notify(self.t("errors_title"), C["warn"], ICONS["warning"])
+                self.show_errors([str(result)])
+                return
+            errors, self.scan = result
             self.message = (done_key, {"n": len(chosen)})
             self.refresh_view()
             text = self.t(done_key, n=len(chosen))
@@ -1853,6 +1895,7 @@ class App:
             try:
                 result = work()
             except Exception as exc:  # an error in the background must not silently leave the window busy
+                log_error(traceback.format_exc())
                 result = exc
             self.jobs.put((done, result))
 
@@ -1863,19 +1906,38 @@ class App:
         self.jobs.put((lambda _: callback(), None))
 
     def poll(self):
-        while True:
+        try:
+            while True:
+                try:
+                    callback, payload = self.jobs.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    callback(payload)
+                except Exception:  # one failed callback must not stop the queue: the tray and the limiter use it too
+                    self.report_error(*sys.exc_info())
+            # Same thresholds as automatic garbage collection, but on the window thread
+            counts, thresholds = gc.get_count(), gc.get_threshold()
+            for generation in (2, 1, 0):
+                if thresholds[generation] and counts[generation] > thresholds[generation]:
+                    gc.collect(generation)
+                    break
+        finally:
             try:
-                callback, payload = self.jobs.get_nowait()
-            except queue.Empty:
-                break
-            callback(payload)
-        # Same thresholds as automatic garbage collection, but on the window thread
-        counts, thresholds = gc.get_count(), gc.get_threshold()
-        for generation in (2, 1, 0):
-            if thresholds[generation] and counts[generation] > thresholds[generation]:
-                gc.collect(generation)
-                break
-        self.poll_job = self.root.after(40, self.poll)
+                self.poll_job = self.root.after(40, self.poll)
+            except tk.TclError:
+                pass  # a callback closed the window
+
+    def report_error(self, exc_type, exc, tb):
+        """An unexpected error: it goes to error.log, and the first one in a session is also shown."""
+        log_error("".join(traceback.format_exception(exc_type, exc, tb)))
+        if self.error_shown:
+            return
+        self.error_shown = True
+        try:
+            self.show_errors([f"{exc_type.__name__}: {exc}", error_log_path()], "crash_title", "crash_intro")
+        except Exception:  # the window itself may be what is broken
+            pass
 
     def on_destroy(self, event):
         # The window is closed: cancel the queue polling, otherwise Tk calls it after the window is gone
@@ -1956,10 +2018,78 @@ class App:
                        primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
         self.present(win)
 
-    def show_errors(self, errors):
+    def startup_dialogs(self):
+        """After the terms are accepted: a warning about another account, or the offer of administrator rights."""
+        if self.other_account:
+            self.show_other_account_dialog()
+        elif not self.admin:
+            self.show_admin_dialog()
+
+    def show_other_account_dialog(self):
+        running, signed_in = self.other_account
+        win, content = self.dialog(self.t("other_account_title"), ICONS["warning"], C["warn"],
+                                   self.t("other_account_title"),
+                                   self.t("other_account_text", account=running, user=signed_in))
+        GradientButton(content, self.t("close"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       pad=(18, 8)).pack(side="right")
+        self.present(win)
+
+    def show_terms(self, first_run=False):
+        """The terms of use. On the first run, and when the terms change, SimpleTool works only after "I accept"."""
         px = self.px
-        win, content = self.dialog(self.t("errors_title"), ICONS["warning"], C["warn"], self.t("errors_title"),
-                                   self.t("errors_intro"))
+        text = terms.TERMS[self.lang]
+        win, content = self.dialog(text["title"], ICONS["info"], C["accent"], text["title"], text["intro"])
+        frame = tk.Frame(content, bg=C["bg"])
+        frame.pack(fill="both", expand=True)
+        box = tk.Text(frame, font=self.fonts["small"], fg=C["text"], bg=C["bg"], relief="flat", wrap="word", width=74,
+                      height=min(18, max(10, (self.root.winfo_screenheight() - px(360)) // px(17))), padx=px(14),
+                      pady=px(12), highlightthickness=0, cursor="arrow", spacing2=px(1))
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=box.yview, style="Brand.Vertical.TScrollbar")
+        box.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        box.pack(side="left", fill="both", expand=True)
+        box.tag_configure("muted", foreground=C["muted"])
+        box.tag_configure("heading", font=self.fonts["small_bold"], spacing1=px(10), spacing3=px(3))
+        box.insert("end", text["updated"], "muted")
+        for number, (heading, body) in enumerate(text["sections"], 1):
+            box.insert("end", f"\n{number}. {heading}\n", "heading")
+            box.insert("end", body)
+        box.configure(state="disabled")
+        bottom = tk.Frame(content, bg=C["surface"])
+        bottom.pack(fill="x", pady=(px(16), 0))
+        # The terms in another language: the window opens again, and the whole program switches language
+        for code, name in i18n.LANGUAGES:
+            if code != self.lang:
+                self.link(bottom, name, lambda c=code: self.reopen_terms(win, c, first_run), font="small").pack(
+                    side="left", padx=(0, px(12)))
+        if first_run:
+            GradientButton(bottom, self.t("terms_accept"), lambda: self.accept_terms(win), self.fonts["button"],
+                           self.scale, self.animator, pad=(18, 8)).pack(side="right")
+            GradientButton(bottom, self.t("terms_exit"), self.quit, self.fonts["button"], self.scale, self.animator,
+                           primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        else:
+            GradientButton(bottom, self.t("close"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                           pad=(18, 8)).pack(side="right")
+        self.present(win)
+        if first_run:  # closing the window without accepting means not using SimpleTool
+            win.protocol("WM_DELETE_WINDOW", self.quit)
+            win.bind("<Escape>", lambda e: self.quit())
+
+    def reopen_terms(self, win, lang, first_run):
+        win.destroy()
+        self.set_language(lang)
+        self.show_terms(first_run)
+
+    def accept_terms(self, win):
+        self.settings["terms"] = terms.VERSION
+        save_settings(self.settings)
+        win.destroy()
+        self.startup_dialogs()
+
+    def show_errors(self, errors, title_key="errors_title", intro_key="errors_intro"):
+        px = self.px
+        win, content = self.dialog(self.t(title_key), ICONS["warning"], C["warn"], self.t(title_key),
+                                   self.t(intro_key))
         text = tk.Text(content, font=self.fonts["small"], fg=C["text"], bg=C["bg"], relief="flat", wrap="word",
                        width=72, height=min(12, 2 * len(errors) + 1), padx=px(12), pady=px(10), highlightthickness=0)
         text.insert("1.0", "\n\n".join(errors))
@@ -1970,7 +2100,29 @@ class App:
         self.present(win)
 
 
+def work_area(root):
+    """(left, top, width, height) of the screen without the taskbar."""
+    rect = wintypes.RECT()
+    try:
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):  # SPI_GETWORKAREA
+            return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+    except (AttributeError, OSError):
+        pass
+    return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+
+def start_failed(exc):
+    """SimpleTool could not open its window: a plain Windows message, because Tk itself may be what failed."""
+    log_error(traceback.format_exc())
+    lang = i18n.detect_language()
+    text = i18n.TEXTS[lang]["ui"]["start_failed"].format(error=f"{type(exc).__name__}: {exc}", path=error_log_path())
+    ctypes.windll.user32.MessageBoxW(None, text, "SimpleTool", 0x10)  # MB_ICONERROR
+
+
 def main():
+    # Errors in background threads (the limiter, the tray) go to error.log: a windowed exe has no console
+    threading.excepthook = lambda args: log_error("".join(traceback.format_exception(
+        args.exc_type, args.exc_value, args.exc_traceback)))
     instance = tray.SingleInstance()
     if not instance.acquire():
         return  # SimpleTool is already running: its window shows itself
@@ -1982,17 +2134,23 @@ def main():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("blagotech.SimpleTool")
     except (AttributeError, OSError):
         pass
-    root = tk.Tk()
-    root.withdraw()
     try:
-        root.iconbitmap(default=ICON_PATH)
-    except tk.TclError:
-        pass
-    app = App(root, instance)
-    width = min(app.px(1080), root.winfo_screenwidth() - app.px(40))
-    height = min(app.px(740), root.winfo_screenheight() - app.px(80))
-    root.minsize(app.px(900), app.px(580))
-    root.geometry(f"{width}x{height}+{(root.winfo_screenwidth() - width) // 2}+{(root.winfo_screenheight() - height) // 3}")
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.iconbitmap(default=ICON_PATH)
+        except tk.TclError:
+            pass
+        app = App(root, instance)
+    except Exception as exc:
+        start_failed(exc)
+        return
+    # The window fits the screen without the taskbar; px(40) is the title bar and the frame
+    left, top, area_width, area_height = work_area(root)
+    width = min(app.px(1080), area_width - app.px(40))
+    height = min(app.px(740), area_height - app.px(48))
+    root.minsize(min(app.px(900), width), min(app.px(580), height))
+    root.geometry(f"{width}x{height}+{left + (area_width - width) // 2}+{top + max(0, (area_height - height - app.px(40)) // 3)}")
     theme.style_title_bar(root)
     theme.set_window_icon(root, ICON_PATH)
     root.deiconify()

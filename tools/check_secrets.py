@@ -8,7 +8,7 @@ Run from the repository root:
 What it looks for:
   * tokens and keys: GitHub, GitLab, AWS, Google, Slack, Stripe, OpenAI/Anthropic, Telegram, JWT,
     private keys, passwords and keys in assignments, logins in URLs, high-entropy strings;
-  * personal data: e-mail (except GitHub noreply), profile paths C:\\Users\\<name>, local drives D:-Z:,
+  * personal data: e-mail (except GitHub noreply and the public @blagotech.uk contact), profile paths C:\\Users\\<name>, local drives D:-Z:,
     account SIDs, computer names, and on Windows the user and computer name;
   * files that must not be published: .env, keys and certificates, databases, archives,
     IDE settings, docs/ (the Twikinarium knowledge base is third-party content), SimpleTool data from a PC;
@@ -63,7 +63,8 @@ FORBIDDEN = [
     (r"\.(log|dmp)$", "log or dump"),
 ]
 
-NOREPLY = ("users.noreply.github.com", "example.com", "example.org")
+# Addresses that are not personal data. @blagotech.uk is the public business contact shown in the terms of use
+NOREPLY = ("users.noreply.github.com", "example.com", "example.org", "@blagotech.uk")
 TOKEN = re.compile(r"[A-Za-z0-9+/_=-]{32,}")
 
 

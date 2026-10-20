@@ -22,6 +22,40 @@ def is_admin():
         return False
 
 
+def other_account():
+    """(the account SimpleTool runs as, the account signed in to Windows) when they differ, otherwise None.
+
+    A standard user who elevates with an administrator's password starts SimpleTool as that administrator:
+    HKCU, %LOCALAPPDATA% and the desktop then belong to the administrator, not to the person at the computer.
+    """
+    try:
+        size = ctypes.c_ulong(0)
+        secur32 = ctypes.windll.secur32
+        secur32.GetUserNameExW(2, None, ctypes.byref(size))  # NameSamCompatible: DOMAIN\name
+        name = ctypes.create_unicode_buffer(size.value + 1)
+        if not secur32.GetUserNameExW(2, name, ctypes.byref(size)):
+            return None
+        wtsapi32 = ctypes.windll.wtsapi32
+        wtsapi32.WTSQuerySessionInformationW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+                                                         ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_ulong)]
+        wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        buffer, length = ctypes.c_void_p(), ctypes.c_ulong()
+        # WTS_CURRENT_SESSION, WTSUserName: who is signed in to the session this process runs in
+        if not wtsapi32.WTSQuerySessionInformationW(None, 0xFFFFFFFF, 5, ctypes.byref(buffer), ctypes.byref(length)):
+            return None
+        try:
+            signed_in = ctypes.wstring_at(buffer.value)
+        finally:
+            wtsapi32.WTSFreeMemory(buffer)
+    except (AttributeError, OSError):
+        return None
+    running = name.value.rpartition("\\")[2]
+    # Only the names are compared: domain names are spelled differently by the two calls for some account types
+    if not signed_in or not running or signed_in.lower() == running.lower():
+        return None
+    return running, signed_in
+
+
 def data_dir():
     """Folder for settings and backups: %LOCALAPPDATA%\\SimpleTool."""
     path = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "SimpleTool")
@@ -369,8 +403,11 @@ class Task:
         return ctx.tasks.get(self.path.lower())
 
     def snapshot(self, ctx):
-        # True = the task was enabled
-        return ctx.tasks is None or not ctx.tasks.get(self.path.lower(), False)
+        # True = the task was enabled. Without the task list the state is unknown: guessing "enabled" would make
+        # revert and the original snapshot enable tasks that were disabled before
+        if ctx.tasks is None:
+            raise OSError("the state of scheduled tasks could not be read")
+        return not ctx.tasks.get(self.path.lower(), False)
 
     def apply(self, lang):
         run(["schtasks.exe", "/change", "/tn", self.path, "/disable"])
@@ -408,7 +445,9 @@ class Shortcut:
         return [path for path in self._paths() if os.path.exists(path)]
 
     def apply(self, lang):
-        create_shortcut(os.path.join(desktop_dir(), self.names[lang] + ".lnk"), self.target, self.args, self.icon)
+        path = os.path.join(desktop_dir(), self.names[lang] + ".lnk")
+        if not os.path.exists(path):  # a shortcut of the user's own with the same name is not overwritten
+            create_shortcut(path, self.target, self.args, self.icon)
         return []
 
     def restore(self, existed):
@@ -496,42 +535,66 @@ def backup_path():
     return os.path.join(data_dir(), "backup.json")
 
 
+def write_json(path, data):
+    """Writes the file whole or not at all: a crash or a power cut leaves either the old or the new version."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def load_backup():
     try:
         with open(backup_path(), encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, ValueError):
+            backup = json.load(f)
+        if isinstance(backup, dict):
+            return backup
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError):
+        pass
+    # A damaged backup is kept aside rather than overwritten by the next save: the originals in it may be recoverable
+    try:
+        os.replace(backup_path(), f"{backup_path()}.damaged-{datetime.datetime.now():%Y%m%d-%H%M%S}")
+    except OSError:
+        pass
+    return {}
 
 
 def save_backup(backup):
-    tmp = backup_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(backup, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, backup_path())
+    write_json(backup_path(), backup)
 
 
 def apply(tweak, lang, ctx):
-    """Applies a tweak. Before the first apply, remembers the original state. Returns a list of errors."""
+    """Applies a tweak. Before an operation is changed for the first time, remembers its original state.
+
+    Returns a list of errors.
+    """
     errors = []
     backup = load_backup()
-    ops = tweak.available_ops(ctx)
-    entry = backup.get(tweak.id)
-    if entry is None:
-        entry = {"ops": {}, "created": []}
-        for op in ops:
+    entry = backup.setdefault(tweak.id, {"ops": {}, "created": []})
+    ops = []
+    for op in tweak.available_ops(ctx):
+        if op.id not in entry["ops"]:
             try:
                 entry["ops"][op.id] = op.snapshot(ctx)
             except OSError as exc:
+                # An operation whose original state was not saved is not applied: it could not be reverted
                 errors.append(f"{op}: {exc}")
-        # An operation whose original state was not saved is not applied: it could not be reverted
-        ops = [op for op in ops if op.id in entry["ops"]]
+                continue
+        ops.append(op)
+    if not entry["ops"]:
+        del backup[tweak.id]
+        return errors
+    # The originals are on disk before anything changes: a failed write or a crash later cannot lose them
+    save_backup(backup)
     for op in ops:
         try:
             entry["created"] += op.apply(lang)
         except (OSError, RuntimeError) as exc:
             errors.append(f"{op}: {exc}")
-    backup[tweak.id] = entry
     save_backup(backup)
     return errors
 
@@ -543,10 +606,11 @@ def revert(tweak, ctx):
     entry = backup.pop(tweak.id, None)
     for op in reversed(tweak.available_ops(ctx)):
         try:
-            if entry is not None and op.id in entry["ops"]:
-                op.restore(entry["ops"][op.id])
-            else:
+            if entry is None:
                 op.reset()
+            elif op.id in entry["ops"]:
+                op.restore(entry["ops"][op.id])
+            # An operation missing from the backup was never changed by SimpleTool: it is left alone
         except (OSError, RuntimeError) as exc:
             errors.append(f"{op}: {exc}")
     if entry is not None:
@@ -607,10 +671,7 @@ def take_snapshot(tweaks, ctx, kind, statuses, app_version):
     while os.path.exists(path):
         n += 1
         path = f"{base}_{n}.json"
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+    write_json(path, data)
     prune_snapshots()
     return path
 
@@ -623,10 +684,12 @@ def list_snapshots():
             path = os.path.join(snapshots_dir(), name)
             try:
                 with open(path, encoding="utf-8") as f:
-                    items.append((path, json.load(f)))
+                    data = json.load(f)
             except (OSError, ValueError):
                 continue
-    items.sort(key=lambda item: item[1].get("created", ""), reverse=True)
+            if isinstance(data, dict) and isinstance(data.get("tweaks"), dict):  # a damaged file is skipped
+                items.append((path, data))
+    items.sort(key=lambda item: str(item[1].get("created") or ""), reverse=True)
     return items
 
 
