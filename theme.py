@@ -32,7 +32,7 @@ THEMES = list(PALETTES)
 
 # Цвет каждого раздела: значок в меню, свечение в шапке
 CATEGORY_COLORS = {"overview": "#5FB4FF", "privacy": "#34D8A8", "system": "#7C9CFF",
-                   "explorer": "#86D9BD", "context": "#F0B783", "snapshots": "#4AC6D4"}
+                   "explorer": "#86D9BD", "context": "#F0B783", "snapshots": "#4AC6D4", "memory": "#A48BFF"}
 
 # Текущая палитра; use() подменяет её содержимое, и все модули видят новые цвета
 C = dict(PALETTES["navy"])

@@ -127,6 +127,56 @@ TEXTS = {
         "rp_done": "Windows restore point created.",
         "rp_failed": "Windows did not create a restore point.",
         "snap_failed": "Could not save the snapshot.",
+        "mem_on": "Memory limiter is on",
+        "mem_off": "Memory limiter is off",
+        "mem_on_text": "Programs are checked every {seconds} s. When you close the window, SimpleTool keeps working "
+                       "in the tray.",
+        "mem_off_text": "Turn it on to keep the programs below within their limits.",
+        "mem_interval": "Check every",
+        "mem_seconds": "{n} s",
+        "mem_freed": "Freed so far",
+        "mem_apps": "Programs",
+        "mem_add": "Add a program",
+        "mem_pick": "Choose from running…",
+        "mem_now": "Now {size} in {count} processes",
+        "mem_idle": "Not running",
+        "mem_denied": "No access to {count} processes: run SimpleTool as administrator.",
+        "mem_largest": "largest process {size}",
+        "mem_procs": "{n} processes",
+        "mem_added": "Added",
+        "mem_limit": "Limit",
+        "mem_soft": "Soft",
+        "mem_hard": "Hard",
+        "mem_soft_hint": "When the program as a whole uses more than the limit, SimpleTool moves its unused memory "
+                         "out of RAM.",
+        "mem_hard_hint": "Windows keeps each process of the program below the limit in RAM. Stronger, but the program "
+                         "can slow down.",
+        "mem_remove": "Remove",
+        "mem_empty": "No programs yet. Add one below.",
+        "mem_how_title": "How it works",
+        "mem_how": "SimpleTool does not take memory away from a program. It moves pages the program is not using right "
+                   "now out of RAM (to the standby list or the page file). The program keeps working, and Windows "
+                   "brings the pages back when they are needed again, which can cause a short pause, for example when "
+                   "you switch back to an old browser tab.\n\nSoft limit: the limit is for the whole program, all of "
+                   "its processes together. When it is exceeded, SimpleTool trims the largest processes first until "
+                   "the program is under the limit, and does nothing while the program stays within it.\n\nHard limit: "
+                   "Windows caps the RAM of every process of the program. It holds the limit firmly, but a program that "
+                   "really needs more memory can become noticeably slower. The caps are removed when you turn the "
+                   "limiter off or exit SimpleTool.\n\nSystem processes (Explorer, svchost and others) cannot be "
+                   "added: limiting them could freeze Windows.",
+        "mem_pick_title": "Running programs",
+        "mem_pick_text": "Choose a program to limit. System processes are not shown.",
+        "mem_pick_empty": "No other programs are running.",
+        "mem_size_mb": "{n} MB",
+        "mem_size_gb": "{n} GB",
+        "tray_open": "Open SimpleTool",
+        "tray_limiter": "Memory limiter",
+        "tray_exit": "Exit",
+        "tray_tip_on": "SimpleTool: memory limiter is on",
+        "tray_tip_off": "SimpleTool: memory limiter is off",
+        "tray_hidden_title": "SimpleTool is in the tray",
+        "tray_hidden_text": "The memory limiter keeps working. Open or exit SimpleTool from this icon.",
+        "busy_wait": "Wait until the current operation finishes, then exit.",
     },
     "themes": {"navy": "Navy", "midnight": "Midnight", "light": "Light"},
     "categories": {
@@ -137,6 +187,7 @@ TEXTS = {
         "context": ("Context menu", "Useful right-click items. On Windows 11 they are under “Show more options”."),
         "snapshots": ("System snapshots", "How things were before: SimpleTool saves the state before every change, "
                                           "and you can go back to any snapshot."),
+        "memory": ("Memory limiter", "Keeps Chrome, Discord and other programs from taking too much RAM."),
     },
     "tweaks": {
         "ads": (
