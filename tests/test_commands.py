@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
+import engine
 import tweaks
 from engine import Value
 
@@ -33,7 +34,9 @@ def dry_run(command):
     assert "Start-Process" not in safe and "Set-Clipboard" not in safe and "SetImage" not in safe
     # PowerShell пишет в канал в кодировке OEM; для проверки кириллицы в путях переключаем вывод на UTF-8
     safe = safe.replace('-Command "', '-Command "[Console]::OutputEncoding = [Text.Encoding]::UTF8; ', 1)
-    result = subprocess.run(safe, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
+    # Проводник запускает команды меню без PSModulePath — так же и здесь (см. engine.clean_env)
+    result = subprocess.run(safe, capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+                            env=engine.clean_env())
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
