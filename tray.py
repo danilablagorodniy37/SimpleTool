@@ -17,6 +17,7 @@ NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
 NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 0x1, 0x2, 0x4, 0x10
 MF_STRING, MF_CHECKED, MF_SEPARATOR = 0x0, 0x8, 0x800
 TPM_RIGHTBUTTON, TPM_RETURNCMD = 0x2, 0x100
+MSGFLT_ALLOW = 1
 
 
 class WNDCLASSW(ctypes.Structure):
@@ -60,6 +61,8 @@ _user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
 _user32.DestroyWindow.argtypes = [wintypes.HWND]
 _user32.DestroyIcon.argtypes = [wintypes.HICON]
 _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+_user32.ChangeWindowMessageFilterEx.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.DWORD, wintypes.LPVOID]
+_user32.AllowSetForegroundWindow.argtypes = [wintypes.DWORD]
 _shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
 _kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
@@ -130,6 +133,10 @@ class TrayIcon:
         self._icon = _user32.LoadImageW(None, self.icon_path, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
         # A regular hidden window, not message-only: only it receives TaskbarCreated after Explorer restarts
         self.hwnd = _user32.CreateWindowExW(0, self._class, "SimpleTool tray", 0, 0, 0, 0, 0, None, None, instance, None)
+        # Explorer runs without administrator rights, and Windows drops its messages to an elevated window
+        # unless the window allows them: TaskbarCreated and the icon's clicks
+        for allowed in (self._taskbar_created, WM_TRAY):
+            _user32.ChangeWindowMessageFilterEx(self.hwnd, allowed, MSGFLT_ALLOW, None)  # a failure changes nothing
         self._add()
         self._ready.set()
         message = wintypes.MSG()
@@ -178,35 +185,80 @@ class TrayIcon:
         return _user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
 
-_kernel32.CreateEventW.restype = wintypes.HANDLE
-_kernel32.CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+class SECURITY_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", wintypes.LPVOID),
+                ("bInheritHandle", wintypes.BOOL)]
+
+
+_advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+_advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.LPVOID), wintypes.LPVOID]
+_kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+_kernel32.OpenEventW.restype = wintypes.HANDLE
+_kernel32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+_kernel32.CreateEventExW.restype = wintypes.HANDLE
+_kernel32.CreateEventExW.argtypes = [ctypes.POINTER(SECURITY_ATTRIBUTES), wintypes.LPCWSTR, wintypes.DWORD,
+                                     wintypes.DWORD]
 _kernel32.SetEvent.argtypes = [wintypes.HANDLE]
 _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 _kernel32.WaitForSingleObject.restype = wintypes.DWORD
 _kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-ERROR_ALREADY_EXISTS = 183
+ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS = 5, 183
+EVENT_MODIFY_STATE, SYNCHRONIZE = 0x0002, 0x00100000
+ASFW_ANY = 0xFFFFFFFF
+# Who may open the event. The default security lets in only the creator's account (for an elevated copy:
+# Administrators, which a launch without administrator rights lacks) and its logon session. Here everyone may
+# signal it (EVENT_MODIFY_STATE), all a second launch needs; waiting stays with the copy that created it (its own
+# handle gets the rights it asked for), so no other program can wait on the event and swallow a signal.
+# The explicit medium integrity label lets medium processes in and keeps low ones (sandboxes) out.
+EVENT_SECURITY = "D:(A;;0x2;;;WD)S:(ML;;NW;;;ME)"
 
 
 class SingleInstance:
     """One copy of SimpleTool per session: otherwise two memory limiters would get in each other's way.
     A second launch wakes the first copy (it shows its window, even from the tray) and exits."""
 
-    def __init__(self, name="Local\blagotech.SimpleTool.show"):
+    def __init__(self, name=r"Local\blagotech.SimpleTool.show"):
         self.name = name
         self.handle = None
 
     def acquire(self):
         """True: this is the first copy. False: SimpleTool is already running and was asked to show its window."""
-        handle = _kernel32.CreateEventW(None, False, False, self.name)
-        exists = ctypes.get_last_error() == ERROR_ALREADY_EXISTS
-        if handle and not exists:
+        handle = _kernel32.OpenEventW(EVENT_MODIFY_STATE, False, self.name)
+        if handle:
+            self._signal(handle)
+            return False
+        if ctypes.get_last_error() == ERROR_ACCESS_DENIED:
+            return False  # a copy is running but cannot be signalled: still do not start a second one
+        handle, error = self._create()
+        if handle and error != ERROR_ALREADY_EXISTS:
             self.handle = handle
             return True
-        if handle:
-            _kernel32.SetEvent(handle)
-            _kernel32.CloseHandle(handle)
+        if handle:  # another launch created it a moment ago
+            self._signal(handle)
             return False
-        return True  # no access to the event (a copy with different rights created it): run as usual
+        return error != ERROR_ACCESS_DENIED  # with any other error run as usual, just without this protection
+
+    def _create(self):
+        """Creates the event with EVENT_SECURITY: (handle, error code)."""
+        descriptor = wintypes.LPVOID()
+        convert = _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        if not convert(EVENT_SECURITY, 1, ctypes.byref(descriptor), None):  # SDDL_REVISION_1
+            descriptor = None  # the default security: the event still works for copies with the same rights
+        attributes = SECURITY_ATTRIBUTES(ctypes.sizeof(SECURITY_ATTRIBUTES), descriptor, False)
+        try:
+            handle = _kernel32.CreateEventExW(ctypes.byref(attributes), self.name, 0, EVENT_MODIFY_STATE | SYNCHRONIZE)
+            return handle, ctypes.get_last_error()
+        finally:
+            if descriptor:
+                _kernel32.LocalFree(descriptor)
+
+    @staticmethod
+    def _signal(handle):
+        # This launch may bring a window to the front; it passes that right on, so the first copy can show itself
+        _user32.AllowSetForegroundWindow(ASFW_ANY)
+        _kernel32.SetEvent(handle)
+        _kernel32.CloseHandle(handle)
 
     def listen(self, on_signal):
         """on_signal() is called from a background thread when SimpleTool is started again."""

@@ -14,11 +14,28 @@ import limiter
 from limiter import MB, Limiter, WindowsApi
 
 
+def temp_data_dir(test):
+    """engine.data_dir() is a temporary folder for the test: the user's own files are never touched."""
+    path = tempfile.mkdtemp(prefix="simpletool-limiter-")
+    patch = mock.patch.object(engine, "data_dir", lambda: path)
+    patch.start()
+    test.addCleanup(shutil.rmtree, path, True)
+    test.addCleanup(patch.stop)
+    return path
+
+
+def saved_caps():
+    with open(limiter.caps_path(), encoding="utf-8") as f:
+        return json.load(f)["caps"]
+
+
 class FakeApi:
-    """Processes in memory: {pid: [name, bytes]}; denied lists the ones without access."""
+    """Processes in memory: {pid: [name, bytes]}; denied lists the ones without access; created is when each
+    process started (a process ID that went to another process gets a new time)."""
 
     def __init__(self, procs):
         self.procs = {pid: [name, size * MB] for pid, (name, size) in procs.items()}
+        self.created = {pid: 1000 + pid for pid in procs}
         self.denied = set()
         self.caps = {}
         self.calls = []
@@ -36,12 +53,16 @@ class FakeApi:
         self.procs[pid][1] //= 10
         return True
 
-    def set_hard_limit(self, pid, limit):
+    def set_hard_limit(self, pid, limit, name=None):
+        if pid not in self.procs or name is not None and self.procs[pid][0] != name:
+            return None
         self.calls.append(("cap", pid, limit))
         self.caps[pid] = limit
-        return True
+        return self.created[pid]
 
-    def clear_hard_limit(self, pid):
+    def clear_hard_limit(self, pid, created=None):
+        if created is not None and self.created.get(pid) != created:
+            return False
         self.calls.append(("uncap", pid))
         self.caps.pop(pid, None)
         return True
@@ -54,6 +75,7 @@ def config(*rules, enabled=True):
 
 class LimiterLogic(unittest.TestCase):
     def setUp(self):
+        temp_data_dir(self)
         self.api = FakeApi({100: ("chrome", 900), 101: ("chrome", 600), 102: ("chrome", 300),
                             200: ("discord", 400), 300: ("explorer", 2000), 400: ("notepad", 50)})
 
@@ -146,6 +168,61 @@ class LimiterLogic(unittest.TestCase):
         lim.stop()
         self.assertNotIn(("uncap", 100), self.api.calls, "another program must not be touched")
 
+    def test_cap_only_if_the_process_is_still_that_program(self):
+        lim = self.make(config(("chrome", 500, "hard", True)))
+        processes = self.api.processes
+
+        def reused():  # the list is read, then chrome 100 exits and its process ID goes to notepad
+            result = processes()
+            self.api.procs[100][0] = "notepad"
+            return result
+
+        self.api.processes = reused
+        lim.cycle()
+        self.assertNotIn(100, self.api.caps, "notepad must not get chrome's cap")
+        self.assertEqual(set(lim.capped), {101, 102})
+
+    def test_release_checks_it_is_the_same_process(self):
+        lim = self.make(config(("chrome", 500, "hard", True)))
+        lim.cycle()
+        self.api.created[100] += 1  # chrome 100 exited, and its process ID went to another chrome process
+        lim.stop()
+        self.assertNotIn(("uncap", 100), self.api.calls, "a process SimpleTool did not cap is not touched")
+        self.assertIn(("uncap", 101), self.api.calls)
+
+    def test_capped_processes_are_saved_and_a_crash_is_cleaned_up_at_start(self):
+        lim = self.make(config(("chrome", 500, "hard", True), ("discord", 300, "soft", True)))
+        lim.cycle()
+        self.assertEqual(saved_caps(), [{"pid": pid, "created": 1000 + pid} for pid in (100, 101, 102)])
+        # SimpleTool is killed here: stop() never runs. Meanwhile chrome 101 exits and its ID goes to another process
+        self.api.created[101] = 5
+        self.api.calls.clear()
+        fresh = self.make(config())
+        fresh.start()
+        fresh.stop()
+        self.assertEqual(sorted(self.api.calls), [("uncap", 100), ("uncap", 102)])
+        self.assertEqual(saved_caps(), [], "the list is emptied once the caps are removed")
+
+    def test_caps_list_follows_changes_and_is_empty_after_exit(self):
+        lim = self.make(config(("chrome", 500, "hard", True), ("discord", 300, "hard", True)))
+        lim.cycle()
+        self.assertEqual([cap["pid"] for cap in saved_caps()], [100, 101, 102, 200])
+        lim.update(lambda c: c["rules"].pop(0), save=False)
+        lim.cycle()
+        self.assertEqual([cap["pid"] for cap in saved_caps()], [200])
+        lim.stop()
+        self.assertEqual(saved_caps(), [])
+        self.assertFalse(os.path.exists(limiter.caps_path() + ".tmp"))
+
+    def test_damaged_caps_list_is_ignored(self):
+        for text in ("{broken", "[]", "null", '{"caps": 5}', '{"caps": [5, {"pid": "100", "created": 1100}, '
+                     '{"pid": true, "created": 1}, {"pid": 4294967396, "created": 1100}, {"pid": 100}]}'):
+            with open(limiter.caps_path(), "w", encoding="utf-8") as f:
+                f.write(text)
+            self.make(config()).clear_stale_caps()
+            self.assertEqual(self.api.calls, [], text)
+            self.assertEqual(saved_caps(), [])
+
     def test_background_thread_runs_and_stops(self):
         lim = self.make(config(("chrome", 1000, "soft", True)))
         lim.start()
@@ -188,6 +265,50 @@ class LimiterConfig(unittest.TestCase):
         with open(limiter.config_path(), "w") as f:
             f.write("{broken")
         self.assertFalse(limiter.load_config()["enabled"])
+
+    def write(self, text):
+        with open(limiter.config_path(), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_valid_json_of_the_wrong_shape_gives_safe_defaults(self):
+        for text in ("[]", "null", "5", '"text"', '{"rules": 5}', '{"rules": null}', '{"rules": {"name": "chrome"}}',
+                     '{"enabled": "yes", "interval": 5.0, "rules": "chrome"}', '{"enabled": 1, "interval": true}',
+                     "[" * 100000 + "]" * 100000):
+            self.write(text)
+            self.assertEqual(limiter.load_config(), limiter.default_config(), text[:60])
+
+    def test_broken_rules_are_dropped_and_broken_fields_get_defaults(self):
+        broken_limits = ["1e400", "-1e400", "Infinity", "-Infinity", "NaN", "true", "null", '"500"', "[500]"]
+        rules = [f'{{"name": "app{i}", "limit_mb": {value}}}' for i, value in enumerate(broken_limits)]
+        rules += ['5', '"chrome"', "[]", '{"name": 5, "limit_mb": 500}', '{"name": ["chrome"], "limit_mb": 500}',
+                  '{"name": "discord", "limit_mb": 700.9, "mode": 5, "enabled": null, "title": 7}',
+                  '{"name": "huge", "limit_mb": 1' + "0" * 400 + "}", '{"name": "big", "limit_mb": 1e300}']
+        self.write('{"enabled": true, "interval": 10, "rules": [' + ", ".join(rules) + "]}")
+        cfg = limiter.load_config()
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["interval"], 10)
+        self.assertEqual(cfg["rules"], [{"name": "discord", "limit_mb": 700, "mode": "soft", "enabled": True},
+                                        {"name": "huge", "limit_mb": limiter.MAX_LIMIT_MB, "mode": "soft",
+                                         "enabled": True},
+                                        {"name": "big", "limit_mb": limiter.MAX_LIMIT_MB, "mode": "soft",
+                                         "enabled": True}])
+
+    def test_clamp_limit_rejects_what_is_not_a_number(self):
+        self.assertEqual(limiter.clamp_limit(5), limiter.MIN_LIMIT_MB)
+        self.assertEqual(limiter.clamp_limit(10 ** 400), limiter.MAX_LIMIT_MB)
+        self.assertEqual(limiter.clamp_limit(512.7), 512)
+        for value in (float("inf"), float("-inf"), float("nan"), True, None, "500"):
+            with self.assertRaises(ValueError):
+                limiter.clamp_limit(value)
+
+    def test_save_is_flushed_to_disk_before_it_replaces_the_file(self):
+        synced = []
+        real_fsync, real_replace = os.fsync, os.replace
+        with mock.patch.object(os, "fsync", lambda fd: synced.append(fd) or real_fsync(fd)), \
+                mock.patch.object(os, "replace", lambda a, b: self.assertTrue(synced) or real_replace(a, b)):
+            limiter.save_config(limiter.default_config())
+        self.assertEqual(limiter.load_config(), limiter.default_config())
+        self.assertFalse(os.path.exists(limiter.config_path() + ".tmp"))
 
     def test_names_and_protection(self):
         self.assertEqual(limiter.normalize(r"C:\Program Files\Google\Chrome.EXE"), "chrome")
@@ -236,9 +357,29 @@ class RealWindowsApi(unittest.TestCase):
             self.api.k.CloseHandle(handle)
         self.assertIsNone(self.child.poll(), "the process must keep running")
 
+    def capped(self, pid):
+        handle = self.api._open(pid, WindowsApi.QUERY)
+        try:
+            return bool(self.api._quota(handle)[2] & WindowsApi.MAX_ENABLE)
+        finally:
+            self.api.k.CloseHandle(handle)
+
+    def test_cap_checks_name_and_uncap_checks_creation_time(self):
+        pid = self.child.pid
+        self.assertIsNone(self.api.set_hard_limit(pid, 64 * MB, "notepad"), "the process is not notepad")
+        self.assertFalse(self.capped(pid))
+        created = self.api.set_hard_limit(pid, 64 * MB, "Python.exe")
+        self.assertIsInstance(created, int)
+        self.assertTrue(self.capped(pid))
+        self.assertFalse(self.api.clear_hard_limit(pid, created + 1), "another process with the same ID")
+        self.assertTrue(self.capped(pid))
+        self.assertTrue(self.api.clear_hard_limit(pid, created))
+        self.assertFalse(self.capped(pid))
+
     def test_missing_process_is_handled(self):
         self.assertIsNone(self.api.working_set(0xFFFFFFF0))
         self.assertFalse(self.api.trim(0xFFFFFFF0))
+        self.assertIsNone(self.api.set_hard_limit(0xFFFFFFF0, 64 * MB, "python"))
         self.assertFalse(self.api.clear_hard_limit(0xFFFFFFF0))
 
 
@@ -254,6 +395,7 @@ class RealLimiterEndToEnd(unittest.TestCase):
              "for line in sys.stdin:\n    touch()\n    print('touched', flush=True)\n")
 
     def setUp(self):
+        temp_data_dir(self)
         self.dir = tempfile.mkdtemp(prefix="simpletool-memtest-")
         base = sys.base_prefix  # not the venv python: that one starts the real python.exe as a child process
         shutil.copy(os.path.join(base, "python.exe"), os.path.join(self.dir, self.NAME + ".exe"))
@@ -300,6 +442,20 @@ class RealLimiterEndToEnd(unittest.TestCase):
         self.assertEqual(lim.capped, {})
         self.touch()
         self.assertGreater(api.working_set(pid), 250 * MB)
+        self.assertIsNone(self.child.poll(), "the process must keep running")
+
+    def test_cap_left_by_a_crash_is_removed_at_the_next_start(self):
+        pid = self.child.pid
+        lim = Limiter(api=WindowsApi(), config=config((self.NAME, 100, "hard", True)))
+        lim.cycle()
+        self.assertIn(pid, lim.capped)
+        self.assertEqual([cap["pid"] for cap in saved_caps()], [pid])
+        # SimpleTool is killed here: stop() never runs, only the list on disk is left
+        fresh = Limiter(api=WindowsApi(), config=config())
+        fresh.clear_stale_caps()
+        self.assertEqual(saved_caps(), [])
+        self.touch()
+        self.assertGreater(fresh.api.working_set(pid), 250 * MB, "the cap is gone")
         self.assertIsNone(self.child.poll(), "the process must keep running")
 
 
