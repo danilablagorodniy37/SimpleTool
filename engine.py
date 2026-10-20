@@ -29,10 +29,19 @@ def data_dir():
     return path
 
 
+def clean_env():
+    """Окружение для дочерних программ без PSModulePath. Если SimpleTool запущен из PowerShell 7, его пути
+    к модулям попадают в Windows PowerShell 5.1, и тот теряет встроенные командлеты (Get-FileHash,
+    Checkpoint-Computer). Без переменной Windows PowerShell сам восстанавливает свои пути."""
+    env = dict(os.environ)
+    env.pop("PSModulePath", None)
+    return env
+
+
 def run(args):
     """Запускает консольную программу без окна. При ошибке бросает RuntimeError с её выводом."""
     result = subprocess.run(args, capture_output=True, encoding="oem", errors="replace",
-                            creationflags=CREATE_NO_WINDOW)
+                            creationflags=CREATE_NO_WINDOW, env=clean_env())
     if result.returncode != 0:
         output = (result.stderr or result.stdout).strip()
         raise RuntimeError(output or f"{args[0]}: exit code {result.returncode}")
@@ -168,7 +177,7 @@ def load_tasks():
     try:
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", TASKS_SCRIPT],
                                 capture_output=True, encoding="utf-8", errors="replace",
-                                creationflags=CREATE_NO_WINDOW, timeout=60)
+                                creationflags=CREATE_NO_WINDOW, timeout=60, env=clean_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:

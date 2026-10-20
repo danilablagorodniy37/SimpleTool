@@ -1,6 +1,8 @@
 """Движок в отдельных ситуациях: статусы, сбои посреди применения, границы удаления, снимки, разбор вывода."""
+import hashlib
 import os
 import subprocess
+import tempfile
 import unittest
 import winreg
 from unittest import mock
@@ -151,6 +153,24 @@ class EngineTests(unittest.TestCase):
         value.apply("en")
         value.reset()
         self.assertIsNone(engine.read_value(ROOT, "Policy"))
+
+
+PS7_MODULES = os.path.expandvars(r"%ProgramFiles%\PowerShell\7\Modules")
+
+
+class PowerShellEnvironment(unittest.TestCase):
+    @unittest.skipUnless(os.path.isdir(PS7_MODULES), "PowerShell 7 is not installed")
+    def test_builtin_cmdlets_work_when_started_from_powershell_7(self):
+        """Запуск SimpleTool из PowerShell 7 оставляет его PSModulePath — Windows PowerShell не должен ломаться."""
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b"simpletool")
+        poisoned = PS7_MODULES + os.pathsep + os.environ.get("PSModulePath", "")
+        try:
+            with mock.patch.dict(os.environ, {"PSModulePath": poisoned}):
+                out = engine.powershell(f"(Get-FileHash -Algorithm SHA256 -LiteralPath '{f.name}').Hash")
+        finally:
+            os.remove(f.name)
+        self.assertEqual(out.strip().lower(), hashlib.sha256(b"simpletool").hexdigest())
 
 
 class ParsingTests(unittest.TestCase):
