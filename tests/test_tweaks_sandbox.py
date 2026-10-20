@@ -3,6 +3,8 @@
 After a revert or a snapshot restore the registry, tasks and shortcuts must match the original byte for byte,
 and values the user set themselves must stay untouched.
 """
+import os
+import types
 import unittest
 import winreg
 
@@ -110,6 +112,64 @@ class EveryTweak(unittest.TestCase):
         self.assertLessEqual(programs, {"sc.exe", "schtasks.exe"})
         stopped = {cmd[2] for cmd in self.sandbox.commands if cmd[0] == "sc.exe"}
         self.assertLessEqual(stopped, {"DiagTrack", "dmwappushservice", "NvTelemetryContainer"})
+
+
+class BackupSafety(unittest.TestCase):
+    """The originals survive a crash in the middle of an apply, an unreadable task list and a damaged backup file."""
+
+    def setUp(self):
+        self.sandbox = Sandbox().start()
+        seed(self.sandbox, user_values=True)
+        self.tweaks = {t.id: t for t in tweaks.TWEAKS}
+
+    def tearDown(self):
+        self.sandbox.stop()
+
+    def test_originals_are_saved_before_the_first_change(self):
+        tweak = self.tweaks["telemetry"]  # a registry value first, then services and tasks
+        ctx = self.sandbox.ctx
+        before = self.sandbox.state()
+        real_run = engine.run
+
+        def crash(args):
+            raise KeyboardInterrupt  # the process dies in the middle of the apply
+
+        engine.run = crash
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                engine.apply(tweak, "en", ctx)
+        finally:
+            engine.run = real_run
+        self.assertNotEqual(self.sandbox.state(), before, "the first registry change was made")
+        self.assertIn(tweak.id, engine.load_backup())
+        self.assertEqual(engine.revert(tweak, ctx), [])
+        self.assertEqual(self.sandbox.state(), before)
+
+    def test_unknown_task_state_is_not_guessed(self):
+        ctx = types.SimpleNamespace(tasks=None)  # Get-ScheduledTask failed or timed out
+        errors = engine.apply(self.tweaks["data_tasks"], "en", ctx)
+        self.assertEqual(len(errors), len(tweaks.DATA_COLLECTION_TASKS))
+        self.assertNotIn("data_tasks", engine.load_backup())
+        self.assertFalse([cmd for cmd in self.sandbox.commands if cmd[0] == "schtasks.exe"])
+        engine.take_snapshot([self.tweaks["data_tasks"]], ctx, "manual", {}, "test")
+        self.assertEqual(engine.list_snapshots()[0][1]["tweaks"]["data_tasks"]["ops"], {})
+
+    def test_damaged_backup_is_kept_aside(self):
+        with open(engine.backup_path(), "w", encoding="utf-8") as f:
+            f.write('{"telemetry": {"ops": ')
+        self.assertEqual(engine.load_backup(), {})
+        kept = [name for name in os.listdir(self.sandbox.tmp) if name.startswith("backup.json.damaged-")]
+        self.assertEqual(len(kept), 1)
+
+    def test_user_shortcut_with_the_same_name_is_kept(self):
+        tweak = self.tweaks["desktop_shortcuts"]
+        path = os.path.join(self.sandbox.tmp, tweak.ops[0].names["en"] + ".lnk")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("mine")
+        engine.apply(tweak, "en", self.sandbox.ctx)
+        engine.revert(tweak, self.sandbox.ctx)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "mine")
 
 
 class SandboxTripwire(unittest.TestCase):

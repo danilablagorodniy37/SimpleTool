@@ -6,6 +6,12 @@ for programs such as Chrome and Discord. Tick the tweaks you want, press **Apply
 
 > **Beta.** This is a test version and it is not stable yet. Use it at your own risk.
 
+**Download:** [blagotech.uk/simpletool](https://blagotech.uk/simpletool/) or the
+[latest release](https://github.com/danilablagorodniy37/SimpleTool/releases/latest) on GitHub.
+
+On the first run SimpleTool shows its [terms of use](TERMS.md) and works only after you accept them.
+They are shown again if they change; the sidebar has a link to read them at any time.
+
 The interface is in English, Russian and Ukrainian, with three colour themes (Navy, Midnight and
 Light). SimpleTool picks the language of Windows; switch language and theme in the top right corner.
 
@@ -64,6 +70,14 @@ python main.py
 Run it as administrator. Without administrator rights SimpleTool says so at startup and locks the
 tweaks that change system-wide settings, services and scheduled tasks; per-user tweaks still work.
 
+Run it from an account that has administrator rights. If a standard user starts SimpleTool with
+another account's administrator password, Windows runs it as that other account: per-user settings
+(File Explorer, the context menu) and SimpleTool's own data then belong to that account, and
+SimpleTool warns about it at startup.
+
+If something goes wrong, SimpleTool writes the details to `%LOCALAPPDATA%\SimpleTool\error.log`.
+Attach that file when you report a problem.
+
 ## Portable version
 
 Build a single `SimpleTool.exe` that runs without Python installed:
@@ -72,8 +86,9 @@ Build a single `SimpleTool.exe` that runs without Python installed:
 python build.py
 ```
 
-The file appears in `dist\SimpleTool.exe`. Copy it to a USB stick and run it on any Windows 10 or 11
-PC. Snapshots, backups and settings stay on each PC in `%LOCALAPPDATA%\SimpleTool`, because a
+The file appears in `dist\SimpleTool.exe`, next to `dist\THIRD-PARTY-NOTICES.txt` with the licences of
+Python, Tcl/Tk and PyInstaller that the exe contains; publish both. The build needs Python 3.12 and
+uses a pinned PyInstaller. Copy the exe to a USB stick and run it on any 64-bit Windows 10 or 11 PC. Snapshots, backups and settings stay on each PC in `%LOCALAPPDATA%\SimpleTool`, because a
 snapshot describes that particular PC and must not travel to another one.
 
 The exe is not code-signed, so the first time Windows SmartScreen may say "Windows protected your
@@ -85,8 +100,10 @@ mistake.
 - SimpleTool changes the registry, services and scheduled tasks. Create a Windows restore point
   first: the **System snapshots** page has a button for it.
 - **Snapshots.** SimpleTool saves the state of every setting it can change before each Apply,
-  Revert and restore, and keeps the very first snapshot as the original state. Restore any snapshot
-  from the **System snapshots** page. Snapshots are JSON files in `%LOCALAPPDATA%\SimpleTool\snapshots`.
+  Revert and restore. The first time it runs as administrator it also saves the original state,
+  which is kept forever, as are the snapshots you make yourself; of the automatic ones the latest 20
+  are kept. Restore any snapshot from the **System snapshots** page. Snapshots are JSON files in
+  `%LOCALAPPDATA%\SimpleTool\snapshots`.
 - Before a tweak is applied for the first time, its original values are also saved to
   `%LOCALAPPDATA%\SimpleTool\backup.json`. **Revert** restores them; without a backup it sets the
   Windows defaults.
@@ -124,7 +141,9 @@ trimmed or capped. GitHub Actions runs the tests on Windows for every push.
 ## License and trademarks
 
 The source code is released under the [MIT License](LICENSE). It is provided as is, without
-warranty of any kind: you use SimpleTool at your own risk.
+warranty of any kind: you use SimpleTool at your own risk. The [terms of use](TERMS.md) that the
+program shows on the first run say the same in plain words; they are generated from `terms.py` by
+`python tools/terms_md.py`.
 
 The MIT License does not cover the blagotech brand. The blagotech name, the b!t mark and the
 images in [`assets/`](assets/) are trademarks and artwork of blagotech, all rights reserved.

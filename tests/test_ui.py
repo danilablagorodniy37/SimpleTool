@@ -14,6 +14,7 @@ import engine
 import i18n
 import limiter
 import main
+import terms
 import theme
 import tweaks
 
@@ -25,7 +26,9 @@ def forbidden(*args, **kwargs):
 class UiSmoke(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="simpletool-ui-test-")
-        self.settings = {"lang": "en", "theme": "navy", "tray_hint_shown": True}  # no pop-up notifications
+        # No pop-up notifications, the terms are already accepted
+        self.settings = {"lang": "en", "theme": "navy", "tray_hint_shown": True, "terms": terms.VERSION}
+        self.other_account = None
         self.patches = [
             mock.patch.object(engine, "data_dir", lambda: self.tmp),
             mock.patch.object(engine, "apply", forbidden),
@@ -38,6 +41,7 @@ class UiSmoke(unittest.TestCase):
             mock.patch.object(limiter.WindowsApi, "clear_hard_limit", forbidden),
             mock.patch.object(main, "load_settings", lambda: dict(self.settings)),
             mock.patch.object(main, "save_settings", lambda s: self.settings.update(s)),
+            mock.patch.object(engine, "other_account", lambda: self.other_account),
         ]
         for patch in self.patches:
             patch.start()
@@ -59,9 +63,11 @@ class UiSmoke(unittest.TestCase):
         errors = []
         with mock.patch.object(engine, "is_admin", lambda: admin):
             root = tk.Tk()
-            root.report_callback_exception = lambda kind, value, tb: errors.append(f"{kind.__name__}: {value}")
             root.geometry("1080x740+40+40")
             app = main.App(root)
+        # Errors are collected instead of being shown in a window and written to error.log
+        app.report_error = lambda kind, value, tb: errors.append(f"{kind.__name__}: {value}")
+        root.report_callback_exception = app.report_error
         deadline = time.time() + 30
         while app.busy and time.time() < deadline:
             self.pump(root, 0.1)
@@ -120,6 +126,41 @@ class UiSmoke(unittest.TestCase):
             self.assertFalse(app.selectable(admin_tweak))
             self.assertEqual(engine.list_snapshots(), [], "no original-state snapshot without administrator rights")
             self.check_every_page(root, app)
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_terms_on_first_run(self):
+        del self.settings["terms"]
+        root, app, errors = self.open_app(admin=False)
+        try:
+            self.assertEqual(len(self.dialogs(root)), 1, "only the terms: the administrator dialog waits for them")
+            self.assertEqual(self.dialogs(root)[0].title(), terms.TERMS["en"]["title"])
+            app.reopen_terms(self.dialogs(root)[0], "uk", True)  # the terms in another language
+            self.pump(root, 0.2)
+            self.assertEqual([d.title() for d in self.dialogs(root)], [terms.TERMS["uk"]["title"]])
+            app.accept_terms(self.dialogs(root)[0])
+            self.pump(root, 0.2)
+            self.assertEqual(self.settings["terms"], terms.VERSION)
+            self.assertEqual([d.title() for d in self.dialogs(root)], [i18n.TEXTS["uk"]["ui"]["admin_title"]])
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_declining_the_terms_exits(self):
+        del self.settings["terms"]
+        root, app, errors = self.open_app(admin=True)
+        dialog = self.dialogs(root)[0]
+        root.tk.call(dialog.protocol("WM_DELETE_WINDOW"))  # the close button of the terms window
+        self.assertNotIn("terms", self.settings)
+        with self.assertRaises(tk.TclError):
+            root.winfo_exists()
+
+    def test_another_account_is_reported(self):
+        self.other_account = ("Admin", "Child")
+        root, app, errors = self.open_app(admin=True)
+        try:
+            self.assertEqual([d.title() for d in self.dialogs(root)], [i18n.TEXTS["en"]["ui"]["other_account_title"]])
             self.assertEqual(errors, [])
         finally:
             root.destroy()
