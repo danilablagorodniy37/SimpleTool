@@ -1,48 +1,57 @@
-"""SimpleTool — твики Windows: конфиденциальность, система, Проводник, контекстное меню."""
+"""SimpleTool — твики Windows: обзор системы, конфиденциальность, система, Проводник, контекстное меню."""
+import collections
 import ctypes
+import datetime
 import json
 import os
 import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
 import engine
 import i18n
+import services
+import theme
 import tweaks
+from theme import C, CATEGORY_COLORS, lerp, mix
+from widgets import (Animator, Card, CheckBox, GradientButton, Pill, ScanRings, Spinner, Toast, descendants,
+                     ease_in_out, fade_in)
 
-VERSION = "0.3"
+VERSION = "0.4"
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-
-# Палитра из фирменного стиля blagotech
-NAVY = "#0A1B33"    # основной тёмно-синий: фон
-CARD = "#12294A"    # средний синий: карточки и панели
-PLATE = "#16345C"   # плашка на тёмном: активные элементы
-BORDER = "#223B60"
-TEXT = "#E8EEFC"
-MUTED = "#B8C3E6"
-DIM = "#7F8DB0"
-ACCENT = "#5FB4FF"  # акцент на тёмном фоне
-BLUE = "#2F8CF5"    # акцентный синий: кнопки
-TEAL = "#34D8A8"    # бирюзовый: «применено»
-AMBER = "#F0B783"   # предупреждения
-
-STATUS_COLORS = {"applied": TEAL, "partial": AMBER, "not_applied": MUTED,
-                 "unavailable": DIM, "admin": AMBER, "checking": DIM}
+ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
+PAGES = ["overview"] + tweaks.CATEGORIES + ["snapshots"]
+SELECTABLE = ("applied", "partial", "not_applied", "unknown")
+REVERTIBLE = ("applied", "partial", "unknown")
+SCAN_STEPS = ["services", "tasks", "registry"]
+MIN_SCAN_SECONDS = 1.0  # экран сканирования не мелькает, даже если всё прочиталось мгновенно
+# Колонка содержимого: шапка, список и подвал выровнены по одним границам; на широком окне колонка по центру
+CONTENT_MAX = 1000
+GUTTER = 32
+MISSING_SUMMARY = 3  # с этого количества отсутствующие на ПК элементы сворачиваются в одну строку
+GLOW_WIDTH = 900
+LANGUAGE_CODES = {"en": "EN", "ru": "RU", "uk": "UA"}
 
 # Значки из шрифта Segoe Fluent Icons / Segoe MDL2 Assets
-ICONS = {"privacy": "\uE72E", "system": "\uE770", "explorer": "\uEC50", "context": "\uE8FD",
-         "globe": "\uE774", "shield": "\uEA18", "chevron": "\uE70D", "warning": "\uE7BA"}
+ICONS = {"overview": "", "privacy": "", "system": "", "explorer": "", "context": "",
+         "telemetry": "", "location": "", "performance": "", "gaming": "", "security": "",
+         "globe": "", "palette": "", "shield": "", "down": "", "up": "",
+         "warning": "", "check": "", "circle": "", "unknown": "", "dash": "",
+         "info": "", "refresh": "", "dots": "", "snapshots": "", "folder": ""}
 
 
-def mix(color, background, alpha):
-    """Цвет color с непрозрачностью alpha поверх background."""
-    a = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
-    b = [int(background[i:i + 2], 16) for i in (1, 3, 5)]
-    return "#" + "".join(f"{round(x * alpha + y * (1 - alpha)):02X}" for x, y in zip(a, b))
+def status_color(state):
+    return {"applied": C["ok"], "partial": C["warn"], "not_applied": C["muted"], "unknown": C["warn"],
+            "unavailable": C["dim"], "admin": C["warn"], "checking": C["dim"]}[state]
+
+
+def service_color(state):
+    return {"on": C["accent"], "off": C["muted"], "missing": C["dim"], "unknown": C["warn"]}[state]
 
 
 def load_settings():
@@ -72,67 +81,15 @@ def relaunch_as_admin():
     return ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, subprocess.list2cmdline(args), BASE_DIR, 1)
 
 
-def style_title_bar(window):
-    """Тёмный заголовок окна в цвет фона (Windows 10 1809+, цвет — Windows 11)."""
-    try:
-        window.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
-        caption = int(NAVY[5:7] + NAVY[3:5] + NAVY[1:3], 16)  # COLORREF: 0x00BBGGRR
-        for attribute, value in ((20, 1), (35, caption)):  # DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_CAPTION_COLOR
-            data = ctypes.c_int(value)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(data), ctypes.sizeof(data))
-    except (AttributeError, OSError):
-        pass
-
-
-def rounded_rect(canvas, x1, y1, x2, y2, r, **kw):
-    points = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
-              x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
-    return canvas.create_polygon(points, smooth=True, **kw)
-
-
-class FlatButton(tk.Label):
-    """Плоская кнопка в цветах blagotech."""
-
-    def __init__(self, parent, text, command, font, padding, primary=True):
-        self.colors = (BLUE, "#FFFFFF", "#4A9EF7") if primary else (PLATE, TEXT, "#1E4573")
-        super().__init__(parent, text=text, font=font, bg=self.colors[0], fg=self.colors[1],
-                         padx=padding[0], pady=padding[1], cursor="hand2")
-        self.command, self.enabled = command, True
-        self.bind("<Enter>", lambda e: self.enabled and self.config(bg=self.colors[2]))
-        self.bind("<Leave>", lambda e: self.enabled and self.config(bg=self.colors[0]))
-        self.bind("<Button-1>", lambda e: self.enabled and self.command())
-
-    def set_enabled(self, enabled):
-        self.enabled = enabled
-        self.config(bg=self.colors[0] if enabled else mix(self.colors[0], CARD, 0.35),
-                    fg=self.colors[1] if enabled else DIM, cursor="hand2" if enabled else "arrow")
-
-
-class CheckBox(tk.Canvas):
-    def __init__(self, parent, size):
-        super().__init__(parent, width=size, height=size, bg=CARD, highlightthickness=0)
-        self.size, self.checked, self.enabled = size, False, True
-        self.draw()
-
-    def set(self, checked, enabled):
-        if (checked, enabled) != (self.checked, self.enabled):
-            self.checked, self.enabled = checked, enabled
-            self.draw()
-
-    def draw(self):
-        self.delete("all")
-        s = self.size
-        if not self.enabled:
-            fill, outline = CARD, BORDER
-        elif self.checked:
-            fill = outline = BLUE
-        else:
-            fill, outline = NAVY, "#4A6491"
-        rounded_rect(self, 1, 1, s - 1, s - 1, s * 0.28, fill=fill, outline=outline, width=1.5)
-        if self.checked and self.enabled:
-            self.create_line(s * 0.27, s * 0.52, s * 0.43, s * 0.68, s * 0.74, s * 0.34, fill="white",
-                             width=max(2, s / 9), capstyle="round", joinstyle="round")
+def collect_scan(report=lambda step: None):
+    """Читает состояние системы. report(шаг) вызывается после каждого шага для экрана сканирования."""
+    result = {"services": services.scan()}
+    report("services")
+    result["ctx"] = engine.Context()
+    report("tasks")
+    result["checks"] = {t.id: engine.check(t, result["ctx"]) for t in tweaks.TWEAKS}
+    report("registry")
+    return result
 
 
 class App:
@@ -142,30 +99,31 @@ class App:
         self.settings = load_settings()
         lang = self.settings.get("lang")
         self.lang = lang if lang in i18n.TEXTS else i18n.detect_language()
+        theme.use(self.settings.get("theme", "navy"))
         self.scale = root.winfo_fpixels("1i") / 96
+        self.animator = Animator(root)
         self.tweak_by_id = {t.id: t for t in tweaks.TWEAKS}
-        self.category = tweaks.CATEGORIES[0]
+        self.page = "overview"
         self.selected = set()
-        self.statuses = {}  # id твика -> applied / partial / not_applied / unavailable
-        self.ctx = None
-        self.busy = True    # до окончания первой проверки
+        self.expanded = set()
+        self.scan = None          # результат последнего сканирования (collect_scan)
+        self.scan_done = set()
+        self.scan_started = 0.0
+        self.busy = True
         self.message = ("checking", {})
         self.hovered = None
-        self.cards = {}
-        self.desc_wrap = self.px(520)
+        self.cards, self.service_cards, self.page_cards, self.wraps = {}, {}, [], []
+        self.action_buttons = []  # (кнопка, нужны ли права администратора) — блокируются, пока окно занято
+        self.snapshots = engine.list_snapshots()
+        self.content_width = self.px(700)
         self.jobs = queue.Queue()
         self.setup_fonts()
-        self.setup_styles()
-        name = "logo-80.png" if self.scale >= 1.75 else "logo-40.png"
-        try:
-            self.logo = tk.PhotoImage(file=os.path.join(BASE_DIR, "assets", name))
-        except tk.TclError:
-            self.logo = None
         self.build()
-        self.run_job(self.check_all, self.on_checked)
+        self.start_scan()
         self.poll()
+        root.bind("<Destroy>", self.on_destroy, add="+")
         if not self.admin:
-            root.after(400, self.show_admin_dialog)
+            root.after(600, self.show_admin_dialog)
 
     # --- Оформление ---
 
@@ -176,11 +134,14 @@ class App:
         families = set(tkfont.families(self.root))
         icons = "Segoe Fluent Icons" if "Segoe Fluent Icons" in families else "Segoe MDL2 Assets"
         semibold = "Segoe UI Semibold" if "Segoe UI Semibold" in families else "Segoe UI"
+        mono = "Cascadia Mono" if "Cascadia Mono" in families else "Consolas"
         self.fonts = {
-            "brand": (semibold, 14), "title": (semibold, 19), "h2": (semibold, 11), "dialog": (semibold, 13),
-            "nav": ("Segoe UI", 10), "nav_active": (semibold, 10), "body": ("Segoe UI", 10),
-            "small": ("Segoe UI", 9), "small_bold": (semibold, 9), "pill": (semibold, 8), "button": (semibold, 10),
+            "brand": (semibold, 14), "title": (semibold, 20), "h2": (semibold, 11), "dialog": (semibold, 13),
+            "number": (semibold, 22), "nav": ("Segoe UI", 10), "nav_active": (semibold, 10),
+            "body": ("Segoe UI", 10), "small": ("Segoe UI", 9), "small_bold": (semibold, 9), "pill": (semibold, 8),
+            "button": (semibold, 10), "mono": (mono, 9),
             "icon": (icons, 13), "icon_small": (icons, 10), "icon_tiny": (icons, 7), "icon_big": (icons, 20),
+            "icon_scan": (icons, 26),
         }
 
     def setup_styles(self):
@@ -188,15 +149,15 @@ class App:
         style.theme_use("clam")
         style.layout("Brand.Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
             ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-        style.configure("Brand.Vertical.TScrollbar", troughcolor=NAVY, background=PLATE, bordercolor=NAVY,
-                        lightcolor=PLATE, darkcolor=PLATE, arrowsize=self.px(8), gripcount=0, relief="flat")
-        style.map("Brand.Vertical.TScrollbar", background=[("pressed", BLUE), ("active", "#24508A")])
+        style.configure("Brand.Vertical.TScrollbar", troughcolor=C["bg"], background=C["raised"], bordercolor=C["bg"],
+                        lightcolor=C["raised"], darkcolor=C["raised"], arrowsize=self.px(8), gripcount=0, relief="flat")
+        style.map("Brand.Vertical.TScrollbar", background=[("pressed", C["primary"]), ("active", C["border_hover"])])
 
     def t(self, key, **kw):
         return i18n.TEXTS[self.lang]["ui"][key].format(**kw)
 
-    def tweak_text(self, tweak):
-        return i18n.TEXTS[self.lang]["tweaks"][tweak.id]
+    def text(self, section, key):
+        return i18n.TEXTS[self.lang][section][key]
 
     def pointer_inside(self, widget):
         target = self.root.winfo_containing(*self.root.winfo_pointerxy())
@@ -206,264 +167,971 @@ class App:
             target = target.master
         return False
 
-    # --- Построение окна ---
+    def wrap(self, label, offset):
+        """Перенос строк надписи по ширине колонки содержимого минус offset."""
+        self.wraps.append((label, offset))
+        label.configure(wraplength=max(self.px(200), self.content_width - offset))
+
+    def notify(self, text, color, icon):
+        """Уведомление у правого края колонки содержимого."""
+        right = self.column()[1]
+        self.toaster.show(text, color, icon, margin=self.root.winfo_width() - (self.main.winfo_x() + right))
+
+    def link(self, parent, text, command, font="small_bold", color=None):
+        color = color or C["accent"]
+        label = tk.Label(parent, text=text, font=self.fonts[font], fg=color, bg=parent.cget("bg"), cursor="hand2")
+        label.bind("<Button-1>", lambda e: command())
+        label.bind("<Enter>", lambda e: self.animator.color(("link", id(label)), lambda c: label.configure(fg=c),
+                                                            label.cget("fg"), C["text"], 0.15))
+        label.bind("<Leave>", lambda e: self.animator.color(("link", id(label)), lambda c: label.configure(fg=c),
+                                                            label.cget("fg"), color, 0.2))
+        return label
+
+    # --- Каркас окна ---
 
     def build(self):
         for widget in self.root.winfo_children():
             widget.destroy()
         self.root.title("SimpleTool")
-        self.root.configure(bg=NAVY)
-        self.root.columnconfigure(2, weight=1)
+        self.root.configure(bg=C["bg"])
+        self.setup_styles()
+        self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.build_sidebar()
-        tk.Frame(self.root, bg=BORDER, width=1).grid(row=0, column=1, sticky="ns")
         self.build_main()
-        self.show_category(self.category)
+        self.toaster = Toast(self.root, self.animator, self.scale, self.fonts)
+        self.show_page(self.page, animate=False)
 
     def build_sidebar(self):
         px = self.px
-        side = tk.Frame(self.root, bg=NAVY, width=px(264))
+        side = tk.Frame(self.root, bg=C["side"], width=px(264))
         side.grid(row=0, column=0, sticky="ns")
         side.pack_propagate(False)
+        tk.Frame(side, bg=C["side_border"], width=1).pack(side="right", fill="y")
 
-        # Логотип и название
-        brand = tk.Frame(side, bg=NAVY)
+        brand = tk.Frame(side, bg=C["side"])
         brand.pack(fill="x", padx=px(20), pady=(px(22), px(26)))
-        if self.logo:
-            tk.Label(brand, image=self.logo, bg=NAVY).pack(side="left")
-        names = tk.Frame(brand, bg=NAVY)
-        names.pack(side="left", padx=(px(12), 0))
-        tk.Label(names, text="SimpleTool", font=self.fonts["brand"], fg=TEXT, bg=NAVY, bd=0).pack(anchor="w")
-        maker = tk.Frame(names, bg=NAVY)
+        names = tk.Frame(brand, bg=C["side"])
+        names.pack(side="left")
+        tk.Label(names, text="SimpleTool", font=self.fonts["brand"], fg=C["side_text"], bg=C["side"], bd=0).pack(anchor="w")
+        maker = tk.Frame(names, bg=C["side"])
         maker.pack(anchor="w")
-        for text, font, color in ((self.t("by") + " ", "small", DIM), ("blago", "small_bold", TEXT),
-                                  ("tech", "small_bold", ACCENT)):
-            tk.Label(maker, text=text, font=self.fonts[font], fg=color, bg=NAVY, bd=0, padx=0).pack(side="left")
+        for text, font, color in ((self.t("by") + " ", "small", C["side_dim"]), ("blago", "small_bold", C["side_text"]),
+                                  ("tech", "small_bold", "#5FB4FF")):
+            tk.Label(maker, text=text, font=self.fonts[font], fg=color, bg=C["side"], bd=0, padx=0).pack(side="left")
 
-        # Категории
+        nav = tk.Frame(side, bg=C["side"])
+        nav.pack(fill="x", padx=px(12))
         self.nav = {}
-        for cat in tweaks.CATEGORIES:
-            item = tk.Frame(side, bg=NAVY, cursor="hand2")
-            item.pack(fill="x", padx=px(12), pady=px(2))
-            bar = tk.Frame(item, bg=NAVY, width=px(3))
-            bar.pack(side="left", fill="y")
-            icon = tk.Label(item, text=ICONS[cat], font=self.fonts["icon"], bg=NAVY, width=2)
-            icon.pack(side="left", padx=(px(8), px(6)), pady=px(9))
+        for page in PAGES:
+            item = tk.Frame(nav, bg=C["side"], cursor="hand2")
+            item.pack(fill="x", pady=px(2))
+            icon = tk.Label(item, text=ICONS[page], font=self.fonts["icon"], bg=C["side"], width=2)
+            icon.pack(side="left", padx=(px(12), px(6)), pady=px(9))
             # Счётчик пакуется раньше названия, чтобы длинное название не наезжало на него
-            count = tk.Label(item, text="", font=self.fonts["small"], fg=DIM, bg=NAVY)
-            count.pack(side="right", padx=(px(6), px(10)))
-            name = tk.Label(item, text=i18n.TEXTS[self.lang]["categories"][cat][0], bg=NAVY, anchor="w")
+            count = tk.Label(item, text="", font=self.fonts["small"], fg=C["side_dim"], bg=C["side"])
+            count.pack(side="right", padx=(px(6), px(12)))
+            name = tk.Label(item, text=self.text("categories", page)[0], bg=C["side"], anchor="w")
             name.pack(side="left", fill="x", expand=True)
-            for widget in (item, bar, icon, name, count):
-                widget.bind("<Button-1>", lambda e, c=cat: self.show_category(c))
-                widget.bind("<Enter>", lambda e, c=cat: self.paint_nav(hover=c))
-                widget.bind("<Leave>", lambda e, w=item: None if self.pointer_inside(w) else self.paint_nav())
-            self.nav[cat] = (item, bar, icon, name, count)
+            parts = (item, icon, count, name)
+            # Пока окно не показано, высота пункта неизвестна: индикатор ставится, когда пункт получит размер
+            item.bind("<Configure>", lambda e, p=page: self.move_indicator(False) if p == self.page else None, add="+")
+            for widget in parts:
+                widget.bind("<Button-1>", lambda e, p=page: self.show_page(p))
+                widget.bind("<Enter>", lambda e, p=page: self.hover_nav(p, True))
+                widget.bind("<Leave>", lambda e, p=page, w=item: None if self.pointer_inside(w) else self.hover_nav(p, False))
+            self.nav[page] = {"item": item, "icon": icon, "count": count, "name": name, "parts": parts}
+        self.indicator = tk.Frame(nav, bg=CATEGORY_COLORS[self.page], width=px(3))
 
-        # Права и версия
-        bottom = tk.Frame(side, bg=NAVY)
-        bottom.pack(side="bottom", fill="x", padx=px(20), pady=(0, px(18)))
-        color = TEAL if self.admin else AMBER
-        badge_bg = mix(color, NAVY, 0.14)
-        badge = tk.Frame(bottom, bg=badge_bg)
-        badge.pack(anchor="w")
-        parts = [tk.Label(badge, text=ICONS["shield"], font=self.fonts["icon_small"], fg=color, bg=badge_bg),
-                 tk.Label(badge, text=self.t("admin_yes" if self.admin else "admin_no"),
-                          font=self.fonts["small_bold"], fg=color, bg=badge_bg)]
-        parts[0].pack(side="left", padx=(px(10), px(6)), pady=px(6))
-        parts[1].pack(side="left", padx=(0, px(12)))
+        bottom = tk.Frame(side, bg=C["side"])
+        bottom.pack(side="bottom", fill="x", padx=px(20), pady=(0, px(20)))  # левый край — как у логотипа
+        color = C["ok"] if self.admin else C["warn"]
+        if C["name"] == "light":  # боковая панель тёмная во всех темах
+            color = "#34D8A8" if self.admin else "#F0B783"
+        chip = Card(bottom, self.scale, fill=mix(color, C["side"], 0.14), border=mix(color, C["side"], 0.4), radius=10, pad=3)
+        chip.pack(anchor="w")
+        parts = [tk.Label(chip.body, text=ICONS["shield"], font=self.fonts["icon_small"], fg=color, bg=chip.fill),
+                 tk.Label(chip.body, text=self.t("admin_yes" if self.admin else "admin_no"), font=self.fonts["small_bold"],
+                          fg=color, bg=chip.fill)]
+        parts[0].pack(side="left", padx=(px(8), px(6)), pady=px(4))
+        parts[1].pack(side="left", padx=(0, px(10)))
         if not self.admin:
-            for widget in [badge] + parts:
-                widget.config(cursor="hand2")
+            for widget in [chip, chip.body] + parts:
+                widget.configure(cursor="hand2")
                 widget.bind("<Button-1>", lambda e: self.show_admin_dialog())
-        tk.Label(bottom, text="v" + VERSION, font=self.fonts["small"], fg=DIM, bg=NAVY).pack(anchor="w", pady=(px(10), 0))
+        # Версия с пометкой о тестовом статусе
+        version = tk.Frame(bottom, bg=C["side"])
+        version.pack(anchor="w", pady=(px(12), 0))
+        tk.Label(version, text="v" + VERSION, font=self.fonts["small"], fg=C["side_dim"], bg=C["side"]).pack(side="left")
+        beta = Pill(version, self.fonts["pill"], self.scale, self.animator)
+        beta.set(self.t("beta"), "#F0B783", animate=False)
+        beta.pack(side="left", padx=(px(8), 0))
+        tk.Label(bottom, text=self.t("beta_note"), font=self.fonts["small"], fg=C["side_dim"], bg=C["side"],
+                 anchor="w", justify="left", wraplength=px(220)).pack(fill="x", pady=(px(6), 0))
 
     def build_main(self):
         px = self.px
-        main = tk.Frame(self.root, bg=NAVY)
-        main.grid(row=0, column=2, sticky="nsew")
+        main = tk.Frame(self.root, bg=C["bg"])
+        main.grid(row=0, column=1, sticky="nsew")
         main.columnconfigure(0, weight=1)
         main.rowconfigure(1, weight=1)
+        self.main = main
 
-        # Шапка: название категории, описание, язык, выбор
-        header = tk.Frame(main, bg=NAVY)
-        header.grid(row=0, column=0, sticky="ew", padx=(px(32), px(24)), pady=(px(22), px(14)))
-        header.columnconfigure(0, weight=1)
-        self.title_label = tk.Label(header, font=self.fonts["title"], fg=TEXT, bg=NAVY, anchor="w")
-        self.title_label.grid(row=0, column=0, sticky="w")
-        self.desc_label = tk.Label(header, font=self.fonts["body"], fg=MUTED, bg=NAVY, anchor="w", justify="left")
-        self.desc_label.grid(row=1, column=0, sticky="w", pady=(px(4), 0))
-        self.build_language_menu(header).grid(row=0, column=1, sticky="ne")
-        links = tk.Frame(header, bg=NAVY)
-        links.grid(row=1, column=1, sticky="se")
-        for key, action in (("select_all", self.select_all), ("clear", self.clear_selection)):
-            link = tk.Label(links, text=self.t(key), font=self.fonts["small_bold"], fg=ACCENT, bg=NAVY, cursor="hand2")
-            link.pack(side="left", padx=(px(16), 0))
-            link.bind("<Button-1>", lambda e, a=action: a())
-            link.bind("<Enter>", lambda e, w=link: w.config(fg=TEXT))
-            link.bind("<Leave>", lambda e, w=link: w.config(fg=ACCENT))
+        # Шапка: свечение цвета раздела, заголовок, акцентная полоса, описание, язык и тема
+        self.header = tk.Canvas(main, bg=C["bg"], height=px(120), highlightthickness=0, bd=0)
+        self.header.grid(row=0, column=0, sticky="ew")
+        self.h_glow = self.header.create_image(0, 0, anchor="nw")
+        self.h_title = self.header.create_text(px(GUTTER), px(22), anchor="nw", font=self.fonts["title"], fill=C["text"])
+        self.h_bar = self.header.create_image(px(GUTTER), px(66), anchor="nw",
+                                              image=theme.gradient_line(px(44), px(3), C["grad_a"], C["grad_b"]))
+        self.h_desc = self.header.create_text(px(GUTTER), px(80), anchor="nw", font=self.fonts["body"], fill=C["muted"])
+        controls = tk.Frame(self.header, bg=C["bg"])
+        # Компактные кнопки: тема — только значок, язык — код; полные названия есть в самих меню
+        self.drop_button(controls, ICONS["palette"], None, self.theme_menu).pack(side="left", padx=(0, px(8)))
+        self.drop_button(controls, ICONS["globe"], LANGUAGE_CODES[self.lang], self.language_menu).pack(side="left")
+        self.h_controls = self.header.create_window(0, 0, window=controls, anchor="e")
+        self.controls = controls
+        self.links = tk.Frame(self.header, bg=C["bg"])
+        self.h_links = self.header.create_window(0, 0, window=self.links, anchor="se")
+        main.bind("<Configure>", self.layout)
 
-        # Список твиков с прокруткой
-        holder = tk.Frame(main, bg=NAVY)
+        # Список с прокруткой
+        holder = tk.Frame(main, bg=C["bg"])
         holder.grid(row=1, column=0, sticky="nsew")
-        self.canvas = tk.Canvas(holder, bg=NAVY, highlightthickness=0, bd=0, yscrollincrement=px(24))
-        scrollbar = ttk.Scrollbar(holder, orient="vertical", command=self.canvas.yview,
-                                  style="Brand.Vertical.TScrollbar")
+        self.canvas = tk.Canvas(holder, bg=C["bg"], highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(holder, orient="vertical", command=self.canvas.yview, style="Brand.Vertical.TScrollbar")
         self.canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y", padx=(0, px(6)), pady=px(2))
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.list_frame = tk.Frame(self.canvas, bg=NAVY)
+        self.list_frame = tk.Frame(self.canvas, bg=C["bg"])
         self.list_window = self.canvas.create_window(0, 0, window=self.list_frame, anchor="nw")
-        self.list_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", self.on_canvas_resize)
+        self.list_frame.bind("<Configure>", lambda e: self.update_scrollregion())
+        self.canvas.bind("<Configure>", self.layout)
         self.root.bind_all("<MouseWheel>", self.on_wheel)
 
-        # Подвал: сообщение и кнопки
-        footer = tk.Frame(main, bg=CARD)
+        # Подвал: индикатор работы, сообщение, кнопки
+        footer = tk.Frame(main, bg=C["surface"])
         footer.grid(row=2, column=0, sticky="ew")
-        tk.Frame(footer, bg=BORDER, height=1).pack(fill="x")
-        inner = tk.Frame(footer, bg=CARD)
-        inner.pack(fill="x", padx=(px(32), px(24)), pady=px(14))
-        padding = (px(20), px(8))
-        self.apply_button = FlatButton(inner, self.t("apply"), self.apply_selected, self.fonts["button"], padding)
+        tk.Frame(footer, bg=C["border"], height=1).pack(fill="x")
+        inner = tk.Frame(footer, bg=C["surface"])
+        inner.pack(fill="x", padx=px(GUTTER), pady=px(14))
+        self.footer_inner = inner
+        self.apply_button = GradientButton(inner, self.t("apply"), self.apply_selected, self.fonts["button"], self.scale,
+                                           self.animator)
         self.apply_button.pack(side="right")
-        self.revert_button = FlatButton(inner, self.t("revert"), self.revert_selected, self.fonts["button"], padding,
-                                        primary=False)
+        self.revert_button = GradientButton(inner, self.t("revert"), self.revert_selected, self.fonts["button"], self.scale,
+                                            self.animator, primary=False)
         self.revert_button.pack(side="right", padx=(0, px(10)))
-        self.message_label = tk.Label(inner, font=self.fonts["body"], fg=MUTED, bg=CARD, anchor="w", justify="left",
-                                      wraplength=px(440))
+        self.spinner = Spinner(inner, px(18), self.scale)
+        self.message_label = tk.Label(inner, font=self.fonts["body"], fg=C["muted"], bg=C["surface"], anchor="w",
+                                      justify="left", wraplength=px(440))
         self.message_label.pack(side="left", fill="x", expand=True)
 
-    def build_language_menu(self, parent):
-        """Отдельное меню выбора языка в шапке."""
+    def drop_button(self, parent, icon, label, build_menu):
+        """Кнопка с выпадающим меню (тема, язык)."""
         px = self.px
-        button = tk.Frame(parent, bg=CARD, cursor="hand2", highlightthickness=1, highlightbackground=BORDER)
-        parts = [tk.Label(button, text=ICONS["globe"], font=self.fonts["icon_small"], fg=ACCENT, bg=CARD),
-                 tk.Label(button, text=dict(i18n.LANGUAGES)[self.lang], font=self.fonts["small_bold"], fg=TEXT, bg=CARD),
-                 tk.Label(button, text=ICONS["chevron"], font=self.fonts["icon_tiny"], fg=MUTED, bg=CARD)]
-        parts[0].pack(side="left", padx=(px(12), px(8)), pady=px(7))
-        parts[1].pack(side="left")
-        parts[2].pack(side="left", padx=(px(10), px(12)))
-
-        menu = tk.Menu(self.root, tearoff=False, bg=CARD, fg=TEXT, activebackground=BLUE, activeforeground="#FFFFFF",
-                       disabledforeground=DIM, selectcolor=ACCENT, font=self.fonts["body"], bd=0)
-        menu.add_command(label=self.t("language"), state="disabled")
-        menu.add_separator()
-        self.lang_var = tk.StringVar(value=self.lang)
-        for code, name in i18n.LANGUAGES:
-            menu.add_radiobutton(label=name, value=code, variable=self.lang_var,
-                                 command=lambda c=code: self.set_language(c))
+        card = Card(parent, self.scale, fill=C["surface"], border=C["border"], radius=10, pad=3)
+        parts = [tk.Label(card.body, text=icon, font=self.fonts["icon_small"], fg=C["accent"], bg=card.fill)]
+        parts[0].pack(side="left", padx=(px(10), px(6)), pady=px(5))
+        if label:
+            parts.append(tk.Label(card.body, text=label, font=self.fonts["small_bold"], fg=C["text"], bg=card.fill))
+            parts[-1].pack(side="left", padx=(0, px(2)))
+        parts.append(tk.Label(card.body, text=ICONS["down"], font=self.fonts["icon_tiny"], fg=C["muted"], bg=card.fill))
+        parts[-1].pack(side="left", padx=(px(4), px(10)))
 
         def popup(event):
-            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height() + px(4))
+            menu = build_menu()
+            menu.tk_popup(card.winfo_rootx(), card.winfo_rooty() + card.winfo_height() + px(4))
 
-        for widget in [button] + parts:
+        def border(color):
+            self.animator.color(("drop", id(card)), card.set_border, card.border, color, 0.18)
+
+        for widget in [card, card.body] + parts:
+            widget.configure(cursor="hand2")
             widget.bind("<Button-1>", popup)
-            widget.bind("<Enter>", lambda e: button.config(highlightbackground=ACCENT))
-            widget.bind("<Leave>", lambda e: None if self.pointer_inside(button) else button.config(highlightbackground=BORDER))
-        return button
+            widget.bind("<Enter>", lambda e: border(C["accent"]))
+            widget.bind("<Leave>", lambda e: None if self.pointer_inside(card) else border(C["border"]))
+        return card
 
-    def show_category(self, cat):
-        self.category = cat
-        name, desc = i18n.TEXTS[self.lang]["categories"][cat]
-        self.title_label.config(text=name)
-        self.desc_label.config(text=desc)
+    def popup_menu(self, title, items, current, command):
+        menu = tk.Menu(self.root, tearoff=False, bg=C["surface"], fg=C["text"], activebackground=C["primary"],
+                       activeforeground="#FFFFFF", disabledforeground=C["dim"], selectcolor=C["accent"],
+                       font=self.fonts["body"], bd=0)
+        menu.add_command(label=title, state="disabled")
+        menu.add_separator()
+        variable = tk.StringVar(menu, value=current)
+        for value, label in items:
+            menu.add_radiobutton(label=label, value=value, variable=variable, command=lambda v=value: command(v))
+        menu.variable = variable  # ссылка, чтобы переменную не собрал сборщик мусора
+        return menu
+
+    def language_menu(self):
+        return self.popup_menu(self.t("language"), i18n.LANGUAGES, self.lang, self.set_language)
+
+    def theme_menu(self):
+        items = [(name, self.text("themes", name)) for name in theme.THEMES]
+        return self.popup_menu(self.t("theme"), items, C["name"], self.set_theme)
+
+    def column(self):
+        """Левая и правая граница колонки содержимого в координатах основной области."""
+        width = self.main.winfo_width()
+        gutter = self.px(GUTTER)
+        content = max(self.px(320), min(width - 2 * gutter, self.px(CONTENT_MAX)))
+        left = max(gutter, (width - content) // 2)
+        return left, left + content
+
+    def update_scrollregion(self):
+        # Область прокрутки — от нуля, а не по рамке содержимого: иначе Tk сдвинет вид и съест отступ колонки
+        self.canvas.configure(scrollregion=(0, 0, self.canvas.winfo_width(), self.list_frame.winfo_height()))
+
+    def layout(self, event=None):
+        """Выравнивает шапку, список и подвал по колонке содержимого."""
+        width = self.main.winfo_width()
+        if width <= 1:
+            return
+        left, right = self.column()
+        self.content_width = right - left
+        self.canvas.coords(self.list_window, left, 0)
+        self.canvas.itemconfigure(self.list_window, width=self.content_width)
+        self.update_scrollregion()
+        for label, offset in self.wraps:
+            try:
+                label.configure(wraplength=max(self.px(200), self.content_width - offset))
+            except tk.TclError:
+                pass
+        self.footer_inner.pack_configure(padx=(left, width - right))
+        self.layout_header()
+
+    def layout_header(self):
+        px = self.px
+        if self.header.winfo_width() <= 1:
+            return
+        left, right = self.column()
+        self.header.coords(self.h_glow, left + px(140) - px(GLOW_WIDTH) // 2, 0)  # центр свечения — над заголовком
+        self.header.coords(self.h_title, left, px(22))
+        title = self.header.bbox(self.h_title)
+        self.header.coords(self.h_bar, left + 1, title[3] + px(6))
+        self.header.coords(self.h_desc, left, title[3] + px(20))
+        # Кнопки темы и языка — по центру строки заголовка
+        self.header.coords(self.h_controls, right, (title[1] + title[3]) / 2)
+        # Описание стоит ниже кнопок, поэтому делит строку только со ссылками справа
+        links = self.links.winfo_reqwidth()
+        self.header.itemconfigure(self.h_desc, width=max(px(240), right - left - links - px(24)))
+        bottom = self.header.bbox(self.h_desc)[3]
+        self.header.coords(self.h_links, right, bottom + px(1))
+        height = bottom + px(18)
+        if int(float(self.header.cget("height"))) != height:
+            self.header.configure(height=height)
+
+    # --- Навигация ---
+
+    def hover_nav(self, page, inside):
+        self.hovered_nav = page if inside else None
+        if page != self.page:
+            parts = self.nav[page]["parts"]
+            target = C["side_hover"] if inside else C["side"]
+            self.animator.color(("nav", page), lambda c: [w.configure(bg=c) for w in parts],
+                                parts[0].cget("bg"), target, 0.16)
+
+    def paint_nav(self):
+        for page, widgets in self.nav.items():
+            active = page == self.page
+            self.animator.cancel(("nav", page))
+            for widget in widgets["parts"]:
+                widget.configure(bg=C["side_active"] if active else C["side"])
+            widgets["icon"].configure(fg=CATEGORY_COLORS[page] if active else C["side_muted"])
+            widgets["name"].configure(fg=C["side_text"] if active else C["side_muted"],
+                                      font=self.fonts["nav_active" if active else "nav"])
+        self.update_nav_counts()
+
+    def update_nav_counts(self):
+        if not self.scan:
+            for widgets in self.nav.values():
+                widgets["count"].configure(text="")
+            return
+        for page, widgets in self.nav.items():
+            if page == "overview":
+                problems = sum(self.unknown_reasons().values())
+                widgets["count"].configure(text="!" if problems else "", fg=C["warn"] if C["name"] != "light" else "#F0B783")
+                continue
+            if page == "snapshots":
+                widgets["count"].configure(text=str(len(self.snapshots)) if self.snapshots else "", fg=C["side_dim"])
+                continue
+            # Счётчик показывает реальное состояние системы, даже если без прав твик нельзя изменить
+            statuses = self.status_map()
+            items = [t for t in tweaks.TWEAKS if t.category == page]
+            applied = sum(statuses.get(t.id) == "applied" for t in items)
+            widgets["count"].configure(text=f"{applied}/{len(items)}", fg=C["side_dim"])
+
+    def move_indicator(self, animate=True):
+        px = self.px
+        item = self.nav[self.page]["item"]
+        if animate:
+            self.root.update_idletasks()
+        y, height = item.winfo_y() + px(8), max(item.winfo_height() - px(16), px(12))
+        color = CATEGORY_COLORS[self.page]
+        info = self.indicator.place_info()
+        self.indicator.lift()
+        if animate and info:
+            start_y, start_h, start_color = float(info["y"]), float(info["height"]), self.indicator.cget("bg")
+
+            def step(t):
+                self.indicator.place_configure(y=start_y + (y - start_y) * t, height=start_h + (height - start_h) * t)
+                self.indicator.configure(bg=lerp(start_color, color, t))
+
+            self.animator.animate("indicator", 0.32, step)
+        else:
+            self.indicator.configure(bg=color)
+            self.indicator.place(x=0, y=y, width=px(3), height=height)
+
+    def show_page(self, page, animate=True):
+        self.page = page
+        name, desc = self.text("categories", page)
+        self.header.itemconfigure(self.h_title, text=name)
+        self.header.itemconfigure(self.h_desc, text=desc)
+        strength = 0.18 if C["name"] == "light" else 0.26
+        self.header.itemconfigure(self.h_glow, image=theme.glow(self.px(GLOW_WIDTH), self.px(190), CATEGORY_COLORS[page],
+                                                                C["bg"], strength))
+        for widget in self.links.winfo_children():
+            widget.destroy()
+        if page == "overview":
+            self.link(self.links, self.t("rescan"), self.rescan).pack(side="left")
+        elif page == "snapshots":
+            self.link(self.links, self.t("snap_folder"), lambda: os.startfile(engine.snapshots_dir())).pack(side="left")
+        else:
+            for key, action in (("select_all", self.select_all), ("clear", self.clear_selection)):
+                self.link(self.links, self.t(key), action).pack(side="left", padx=(self.px(16), 0))
+        if animate:
+            for item, color in ((self.h_title, C["text"]), (self.h_desc, C["muted"])):
+                self.animator.color(("header", item), lambda c, i=item: self.header.itemconfigure(i, fill=c),
+                                    C["bg"], color, 0.35)
+
         for widget in self.list_frame.winfo_children():
             widget.destroy()
-        self.cards = {t.id: self.build_card(t) for t in tweaks.TWEAKS if t.category == cat}
-        tk.Frame(self.list_frame, bg=NAVY, height=self.px(8)).pack()
+        self.cards, self.service_cards, self.page_cards, self.wraps = {}, {}, [], []
+        self.action_buttons = []
+        if page == "overview":
+            self.build_overview()
+        elif page == "snapshots":
+            self.build_snapshots_page()
+        else:
+            self.build_tweak_page(page)
+        tk.Frame(self.list_frame, bg=C["bg"], height=self.px(12)).pack()
         self.canvas.yview_moveto(0)
-        self.update_view()
+        self.paint_nav()
+        self.root.after_idle(self.layout)
+        self.root.after_idle(lambda: self.move_indicator(animate))
+        self.update_footer()
+        if animate:
+            self.reveal()
 
-    def build_card(self, tweak):
+    def reveal(self):
+        """Карточки страницы проявляются по очереди."""
+        for i, card in enumerate(self.page_cards):
+            delay = min(i, 14) * 0.035
+            fade_in(self.animator, ("fade", id(card)), descendants(card), delay=delay)
+            self.animator.color(("cardborder", id(card)), card.set_border, C["bg"], card.border, 0.4, delay=delay)
+
+    # --- Обзор системы ---
+
+    def build_overview(self):
+        if self.scan is None:
+            self.build_scan_panel()
+            return
+        self.build_summary()
+        self.build_callout()
+        for group in services.GROUPS:
+            head = tk.Frame(self.list_frame, bg=C["bg"])
+            head.pack(fill="x", padx=(self.px(18), 0), pady=(self.px(18), self.px(8)))
+            tk.Label(head, text=ICONS[group], font=self.fonts["icon_small"], fg=C["accent"], bg=C["bg"]).pack(side="left")
+            tk.Label(head, text=self.text("groups", group), font=self.fonts["small_bold"], fg=C["muted"],
+                     bg=C["bg"]).pack(side="left", padx=(self.px(8), 0))
+            for svc_group, name, tweak_id in services.SERVICES:
+                if svc_group == group:
+                    self.service_cards[name] = self.build_service_card(name, tweak_id)
+
+    def build_scan_panel(self):
         px = self.px
-        name, desc = self.tweak_text(tweak)
-        card = tk.Frame(self.list_frame, bg=CARD, highlightthickness=1, highlightbackground=BORDER)
-        card.pack(fill="x", padx=(px(32), px(14)), pady=(0, px(10)))
-        card.columnconfigure(1, weight=1)
-        check = CheckBox(card, px(20))
-        check.grid(row=0, column=0, rowspan=2, sticky="n", padx=(px(18), px(14)), pady=(px(16), 0))
-        title = tk.Label(card, text=name, font=self.fonts["h2"], bg=CARD, anchor="w", justify="left",
-                         wraplength=self.desc_wrap)
-        title.grid(row=0, column=1, sticky="ew", pady=(px(13), 0))
-        body = tk.Label(card, text=desc, font=self.fonts["small"], fg=MUTED, bg=CARD, anchor="w", justify="left",
-                        wraplength=self.desc_wrap)
-        body.grid(row=1, column=1, sticky="ew", pady=(px(3), px(14)))
-        pill = tk.Label(card, font=self.fonts["pill"], padx=px(10), pady=px(3))
-        pill.grid(row=0, column=2, rowspan=2, sticky="e", padx=(px(12), px(18)))
-        for widget in (card, check, title, body, pill):
-            widget.bind("<Button-1>", lambda e, t=tweak: self.toggle(t))
+        card = Card(self.list_frame, self.scale, radius=16, pad=8)
+        card.pack(fill="x")
+        body = card.body
+        rings = ScanRings(body, px(150), self.scale, ICONS["overview"], self.fonts["icon_scan"])
+        rings.pack(pady=(px(18), px(6)))
+        rings.start()
+        tk.Label(body, text=self.t("scan_title"), font=self.fonts["dialog"], fg=C["text"], bg=card.fill).pack()
+        tk.Label(body, text=self.t("scan_text"), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
+                 wraplength=px(440), justify="center").pack(pady=(px(4), px(14)))
+        steps = tk.Frame(body, bg=card.fill)
+        steps.pack(pady=(0, px(22)))
+        self.scan_rows = {}
+        for step in SCAN_STEPS:
+            row = tk.Frame(steps, bg=card.fill)
+            row.pack(anchor="w", pady=px(3))
+            done = step in self.scan_done
+            glyph = tk.Label(row, text=ICONS["check"] if done else ICONS["dots"], font=self.fonts["icon_small"],
+                             fg=C["ok"] if done else C["dim"], bg=card.fill, width=2)
+            glyph.pack(side="left")
+            label = tk.Label(row, text=self.t("scan_" + step), font=self.fonts["body"],
+                             fg=C["text"] if done else C["muted"], bg=card.fill)
+            label.pack(side="left", padx=(px(6), 0))
+            self.scan_rows[step] = (glyph, label)
+        self.page_cards = [card]
+
+    def build_summary(self):
+        px = self.px
+        infos = list(self.scan["services"].values())
+        counts = collections.Counter(info.state for info in infos)
+        unknown = sum(self.unknown_reasons().values())  # то же число, что в блоке с советами ниже
+        applied = sum(status == "applied" for status in self.status_map().values())
+        tiles = [("summary_on", counts["on"], None, C["accent"], ICONS["check"]),
+                 ("summary_off", counts["off"], None, C["muted"], ICONS["circle"]),
+                 ("summary_missing", counts["missing"], None, C["dim"], ICONS["dash"]),
+                 ("summary_unknown", unknown, None, C["warn"] if unknown else C["dim"], ICONS["unknown"]),
+                 ("summary_tweaks", applied, len(tweaks.TWEAKS), C["ok"], ICONS["overview"])]
+        row = tk.Frame(self.list_frame, bg=C["bg"])
+        row.pack(fill="x", pady=(0, px(4)))
+        for i, (key, value, total, color, icon) in enumerate(tiles):
+            # Плитки в чётных столбцах одинаковой ширины, промежутки — отдельные узкие столбцы между ними:
+            # отступ внутри столбца сделал бы все плитки, кроме первой, уже
+            row.columnconfigure(2 * i, weight=1, uniform="tile")
+            if i:
+                row.columnconfigure(2 * i - 1, minsize=px(8))
+            card = Card(row, self.scale, radius=14, pad=6)
+            card.grid(row=0, column=2 * i, sticky="nsew")
+            body = card.body
+            top = tk.Frame(body, bg=card.fill)
+            top.pack(fill="x", padx=px(12), pady=(px(8), 0))
+            number = tk.Label(top, text="0", font=self.fonts["number"], fg=color, bg=card.fill)
+            number.pack(side="left")
+            glyph = tk.Label(top, text=icon, font=self.fonts["icon_small"], fg=mix(color, card.fill, 0.7), bg=card.fill)
+            glyph.pack(side="right", anchor="n", pady=(px(6), 0))
+            # bd и padx — 0: тогда ширина переноса совпадает с шириной области текста и строка не обрезается
+            caption = tk.Label(body, text=self.t(key), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
+                               anchor="w", justify="left", wraplength=px(110), bd=0, padx=0)
+            caption.pack(fill="x", padx=px(12), pady=(0, px(10)))
+
+            def fit_tile(event, caption=caption, glyph=glyph, number=number):
+                caption.configure(wraplength=max(px(60), event.width - px(24)))
+                # На узкой плитке значок прячется, чтобы не наезжать на число
+                if event.width < px(118):
+                    glyph.pack_forget()
+                elif not glyph.winfo_ismapped():
+                    glyph.pack(side="right", anchor="n", pady=(px(6), 0), before=number)
+
+            body.bind("<Configure>", fit_tile)
+
+            def count_up(t, label=number, value=value, total=total):
+                shown = round(value * t)
+                label.configure(text=f"{shown}/{total}" if total else str(shown))
+
+            self.animator.animate(("count", key), 0.9, count_up, delay=0.15 + i * 0.07)
+            self.page_cards.append(card)
+
+    def unknown_reasons(self):
+        """Причины, по которым что-то не удалось проверить, и сколько раз каждая встретилась."""
+        reasons = collections.Counter()
+        if not self.scan:
+            return reasons
+        for info in self.scan["services"].values():
+            if info.state == "unknown" and info.reason:
+                reasons[info.reason] += 1
+        for status, rows in self.scan["checks"].values():
+            for reason in {reason for _, _, reason in rows if reason and reason != "missing"}:
+                reasons[reason] += 1
+        return reasons
+
+    def build_callout(self):
+        px = self.px
+        reasons = self.unknown_reasons()
+        if not reasons:
+            return
+        card = Card(self.list_frame, self.scale, border=mix(C["warn"], C["surface"], 0.6), radius=14, pad=6)
+        card.pack(fill="x", pady=(px(10), 0))
+        body = card.body
+        head = tk.Frame(body, bg=card.fill)
+        head.pack(fill="x", padx=px(12), pady=(px(10), 0))
+        tk.Label(head, text=ICONS["warning"], font=self.fonts["icon"], fg=C["warn"], bg=card.fill).pack(side="left")
+        tk.Label(head, text=self.t("unknown_title"), font=self.fonts["h2"], fg=C["text"], bg=card.fill).pack(
+            side="left", padx=(px(10), 0))
+        intro = tk.Label(body, text=self.t("unknown_intro"), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
+                         anchor="w", justify="left")
+        intro.pack(fill="x", padx=(px(40), px(12)), pady=(px(2), px(6)))
+        self.wrap(intro, px(72))
+        for reason, count in reasons.most_common():
+            problem, tip = self.text("reasons", reason)
+            line = tk.Label(body, text=f"{problem}  ×{count}", font=self.fonts["small_bold"], fg=C["text"], bg=card.fill,
+                            anchor="w", justify="left")
+            line.pack(fill="x", padx=(px(40), px(12)), pady=(px(4), 0))
+            hint = tk.Label(body, text=tip, font=self.fonts["small"], fg=C["muted"], bg=card.fill, anchor="w",
+                            justify="left")
+            hint.pack(fill="x", padx=(px(40), px(12)))
+            self.wrap(line, px(72))
+            self.wrap(hint, px(72))
+        buttons = tk.Frame(body, bg=card.fill)
+        buttons.pack(fill="x", padx=(px(40), px(12)), pady=(px(12), px(12)))
+        if "access_denied" in reasons and not self.admin:
+            GradientButton(buttons, self.t("admin_restart"), self.restart_as_admin, self.fonts["button"], self.scale,
+                           self.animator, pad=(16, 6)).pack(side="left", padx=(0, px(8)))
+        GradientButton(buttons, self.t("rescan"), self.rescan, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(16, 6)).pack(side="left")
+        self.page_cards.append(card)
+
+    def service_meta(self, info):
+        if info.state == "missing":
+            return self.t("service_name", name=info.name)
+        start = ("start_2d" if info.start == 2 and info.delayed else
+                 f"start_{info.start}" if info.start in (0, 1, 2, 3, 4) else "start_unknown")
+        running = f"run_{info.running}" if info.running in range(1, 8) else "run_unknown"
+        return f"{self.t('startup', start=self.t(start))}  ·  {self.t('now', state=self.t(running))}"
+
+    def build_service_card(self, name, tweak_id):
+        px = self.px
+        info = self.scan["services"][name]
+        title, details = self.text("services", name)
+        card = Card(self.list_frame, self.scale)
+        card.pack(fill="x", pady=(0, px(10)))
+        body = card.body
+        body.columnconfigure(0, weight=1)
+        title_label = tk.Label(body, text=title, font=self.fonts["h2"], bg=card.fill, anchor="w", justify="left",
+                               fg=C["text"] if info.state != "missing" else C["dim"])
+        title_label.grid(row=0, column=0, sticky="ew", padx=(px(12), 0), pady=(px(7), 0))
+        meta = tk.Label(body, text=self.service_meta(info), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
+                        anchor="w", justify="left")
+        meta.grid(row=1, column=0, sticky="ew", padx=(px(12), 0), pady=(px(1), 0))
+        pill = Pill(body, self.fonts["pill"], self.scale, self.animator)
+        pill.grid(row=0, column=1, sticky="ne", padx=px(12), pady=(px(8), 0))  # на линии заголовка
+        pill.set(self.t("service_" + info.state), service_color(info.state), animate=False)
+        self.wrap(title_label, px(172))
+        self.wrap(meta, px(172))
+        widgets = {"card": card}
+        self.details_toggle(body, widgets, ("s", name), lambda holder: self.build_service_details(holder, info, details,
+                                                                                                   tweak_id), indent=12)
+        self.page_cards.append(card)
+        return widgets
+
+    def build_service_details(self, holder, info, details, tweak_id):
+        px = self.px
+        bg = holder.cget("bg")
+        inner = tk.Frame(holder, bg=bg)
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill="x", padx=(px(12), px(12)), pady=(0, px(10)))
+        text = tk.Label(inner, text=details, font=self.fonts["body"], fg=C["text"], bg=bg, anchor="w", justify="left")
+        text.pack(fill="x", padx=(px(12), px(16)))
+        self.wrap(text, px(62))
+        tk.Label(inner, text=self.t("service_name", name=info.name), font=self.fonts["mono"], fg=C["dim"], bg=bg,
+                 anchor="w").pack(fill="x", padx=(px(12), px(16)), pady=(px(8), 0))
+        if info.reason:
+            problem, tip = self.text("reasons", info.reason)
+            hint = tk.Label(inner, text=f"{problem} {tip}", font=self.fonts["small"], fg=C["warn"], bg=bg, anchor="w",
+                            justify="left")
+            hint.pack(fill="x", padx=(px(12), px(16)), pady=(px(6), 0))
+            self.wrap(hint, px(62))
+        if tweak_id:
+            name = self.text("tweaks", tweak_id)[0]
+            self.link(inner, self.t("managed_by", name=name), lambda: self.open_tweak(tweak_id)).pack(
+                anchor="w", padx=(px(12), px(16)), pady=(px(8), 0))
+        tk.Frame(inner, bg=bg, height=px(10)).pack()
+        return inner
+
+    def open_tweak(self, tweak_id):
+        """Переходит к твику и раскрывает его подробности."""
+        self.expanded.add(("t", tweak_id))
+        self.show_page(self.tweak_by_id[tweak_id].category)
+
+        def scroll():
+            card = self.cards.get(tweak_id, {}).get("card")
+            total = self.list_frame.winfo_height()
+            if card and total > 0:
+                self.canvas.yview_moveto(max(0.0, (card.winfo_y() - self.px(8)) / total))
+                self.animator.color(("flash", tweak_id), card.set_border, C["accent"], C["border"], 1.2, delay=0.3)
+
+        self.root.after(80, scroll)
+
+    # --- Снимки системы ---
+
+    def format_date(self, iso):
+        try:
+            moment = datetime.datetime.fromisoformat(iso)
+        except (TypeError, ValueError):
+            return iso or "?"
+        return f"{moment.day} {moment:%b %Y, %H:%M}" if self.lang == "en" else f"{moment:%d.%m.%Y, %H:%M}"
+
+    def build_snapshots_page(self):
+        px = self.px
+        card = Card(self.list_frame, self.scale, radius=14, pad=6)
+        card.pack(fill="x", pady=(0, px(12)))
+        body = card.body
+        intro = tk.Label(body, text=self.t("snap_intro"), font=self.fonts["body"], fg=C["text"], bg=card.fill,
+                         anchor="w", justify="left")
+        intro.pack(fill="x", padx=px(12), pady=(px(12), 0))
+        self.wrap(intro, px(62))
+        buttons = tk.Frame(body, bg=card.fill)
+        buttons.pack(fill="x", padx=px(12), pady=(px(14), 0))
+        take = GradientButton(buttons, self.t("snap_create"), self.take_manual_snapshot, self.fonts["button"],
+                              self.scale, self.animator, pad=(16, 7))
+        take.pack(side="left")
+        point = GradientButton(buttons, self.t("snap_restore_point"), self.create_restore_point, self.fonts["button"],
+                               self.scale, self.animator, primary=False, pad=(16, 7))
+        point.pack(side="left", padx=(px(10), 0))
+        self.action_buttons += [(take, False), (point, True)]
+        hint = tk.Label(body, text=self.t("snap_rp_hint"), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
+                        anchor="w", justify="left")
+        hint.pack(fill="x", padx=px(12), pady=(px(12), px(12) if self.admin else 0))
+        self.wrap(hint, px(62))
+        if not self.admin:
+            note = tk.Label(body, text=self.t("snap_admin"), font=self.fonts["small_bold"], fg=C["warn"], bg=card.fill,
+                            anchor="w", justify="left")
+            note.pack(fill="x", padx=px(12), pady=(px(8), px(12)))
+            self.wrap(note, px(62))
+        self.page_cards.append(card)
+        if not self.snapshots:
+            empty = tk.Label(self.list_frame, text=self.t("snap_empty" if self.admin else "snap_empty_limited"),
+                             font=self.fonts["body"], fg=C["muted"], bg=C["bg"], anchor="w", justify="left")
+            empty.pack(fill="x", padx=px(18), pady=px(8))
+            self.wrap(empty, px(36))
+        for path, data in self.snapshots:
+            self.build_snapshot_card(path, data)
+
+    def build_snapshot_card(self, path, data):
+        px = self.px
+        kind = data.get("kind", "manual")
+        entries = data.get("tweaks", {})
+        applied = sum(entry.get("status") == "applied" for entry in entries.values())
+        saved = sum(len(entry.get("ops", {})) for entry in entries.values())
+        initial = kind == "initial"
+        color = C["accent"] if initial else CATEGORY_COLORS["snapshots"]
+        card = Card(self.list_frame, self.scale, border=mix(C["accent"], C["surface"], 0.55) if initial else None)
+        card.pack(fill="x", pady=(0, px(10)))
+        body = card.body
+        body.columnconfigure(1, weight=1)
+        badge = Card(body, self.scale, fill=mix(color, card.fill, 0.14), border=mix(color, card.fill, 0.35), radius=12, pad=3)
+        badge.grid(row=0, column=0, rowspan=2, sticky="nw", padx=px(12), pady=px(10))
+        tk.Label(badge.body, text=ICONS["snapshots"], font=self.fonts["icon"], fg=color, bg=badge.fill).pack(
+            padx=px(7), pady=px(5))
+        head = tk.Frame(body, bg=card.fill)
+        head.grid(row=0, column=1, sticky="ew", pady=(px(10), 0))
+        tk.Label(head, text=self.format_date(data.get("created")), font=self.fonts["h2"], fg=C["text"],
+                 bg=card.fill).pack(side="left")
+        pill = Pill(head, self.fonts["pill"], self.scale, self.animator)
+        pill.set(self.t("kind_" + kind) if "kind_" + kind in i18n.TEXTS[self.lang]["ui"] else kind, color, animate=False)
+        pill.pack(side="left", padx=(px(10), 0))
+        summary = self.t("snap_summary", applied=applied, total=len(entries), ops=saved)
+        info = tk.Label(body, text=(self.t("snap_initial_note") + "\n" + summary) if initial else summary,
+                        font=self.fonts["small"], fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+        info.grid(row=1, column=1, sticky="ew", pady=(px(3), px(10)))
+        self.wrap(info, px(312))
+        actions = tk.Frame(body, bg=card.fill)
+        actions.grid(row=0, column=2, rowspan=2, sticky="e", padx=px(12))
+        restore = GradientButton(actions, self.t("snap_restore"), lambda: self.confirm_restore(data), self.fonts["button"],
+                                 self.scale, self.animator, primary=False, pad=(14, 6))
+        restore.pack(side="left")
+        self.action_buttons.append((restore, True))
+        if not initial:
+            self.link(actions, self.t("snap_delete"), lambda: self.delete_snapshot(path), font="small",
+                      color=C["dim"]).pack(side="left", padx=(px(12), 0))
+        self.page_cards.append(card)
+
+    def status_map(self):
+        return {i: check[0] for i, check in self.scan["checks"].items()} if self.scan else {}
+
+    def take_manual_snapshot(self):
+        ctx, statuses = self.scan and self.scan.get("ctx"), self.status_map()
+
+        def done(result):
+            self.message = None
+            if isinstance(result, Exception):
+                self.notify(self.t("snap_failed"), C["warn"], ICONS["warning"])
+                self.show_errors([str(result)])
+            else:
+                self.notify(self.t("snap_saved"), C["ok"], ICONS["check"])
+            self.snapshots = engine.list_snapshots()
+            self.refresh_view()
+
+        self.run_action("snap_saving", lambda: engine.take_snapshot(tweaks.TWEAKS, ctx or engine.Context(), "manual",
+                                                                    statuses, VERSION), done)
+
+    def create_restore_point(self):
+        def done(result):
+            self.message = None
+            ok, detail = (False, str(result)) if isinstance(result, Exception) else result
+            if ok:
+                self.notify(self.t("rp_done"), C["ok"], ICONS["check"])
+            else:
+                self.notify(self.t("rp_failed"), C["warn"], ICONS["warning"])
+                self.show_errors([self.t("rp_failed") + (f"\n{detail}" if detail else "")])
+            self.update_footer()
+
+        self.run_action("rp_working", engine.create_restore_point, done)
+
+    def confirm_restore(self, data):
+        date = self.format_date(data.get("created"))
+        win, content = self.dialog(self.t("snap_confirm_title"), ICONS["snapshots"], CATEGORY_COLORS["snapshots"],
+                                   self.t("snap_confirm_title"), self.t("snap_confirm_text", date=date))
+
+        def go():
+            win.destroy()
+            self.restore_snapshot(data, date)
+
+        GradientButton(content, self.t("snap_confirm_ok"), go, self.fonts["button"], self.scale, self.animator,
+                       pad=(18, 8)).pack(side="right")
+        GradientButton(content, self.t("cancel"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, self.px(10)))
+        self.present(win)
+
+    def restore_snapshot(self, data, date):
+        statuses, failed = self.status_map(), self.t("snap_failed")
+
+        def work():
+            ctx = engine.Context()
+            errors = []
+            try:
+                engine.take_snapshot(tweaks.TWEAKS, ctx, "before_restore", statuses, VERSION)
+            except OSError as exc:
+                errors.append(f"{failed} {exc}")
+            errors += engine.restore_snapshot(tweaks.TWEAKS, data, ctx)
+            engine.notify_shell()
+            scan = collect_scan()
+            # Резервные копии откаченных твиков больше не описывают их исходное состояние
+            engine.forget_backups({i for i, (status, _) in scan["checks"].items() if status in REVERTIBLE})
+            return errors, scan
+
+        def done(result):
+            self.selected.clear()
+            if isinstance(result, Exception):
+                errors = [str(result)]
+            else:
+                errors, self.scan = result
+            self.snapshots = engine.list_snapshots()
+            self.message = ("snap_restored", {"date": date})
+            self.refresh_view()
+            if errors:
+                self.notify(self.t("errors_title"), C["warn"], ICONS["warning"])
+                self.show_errors(errors)
+            else:
+                self.notify(self.t("snap_restored", date=date), C["ok"], ICONS["check"])
+
+        self.run_action("snap_working", work, done)
+
+    def delete_snapshot(self, path):
+        if self.busy:
+            return
+        try:
+            os.remove(path)
+        except OSError as exc:
+            self.show_errors([str(exc)])
+        self.snapshots = engine.list_snapshots()
+        self.refresh_view()
+
+    # --- Страницы твиков ---
+
+    def build_tweak_page(self, page):
+        for tweak in tweaks.TWEAKS:
+            if tweak.category == page:
+                self.cards[tweak.id] = self.build_tweak_card(tweak)
+
+    def build_tweak_card(self, tweak):
+        px = self.px
+        name, short, _ = self.text("tweaks", tweak.id)
+        card = Card(self.list_frame, self.scale)
+        card.pack(fill="x", pady=(0, px(10)))
+        body = card.body
+        body.columnconfigure(1, weight=1)
+        check = CheckBox(body, px(20), self.animator)
+        check.grid(row=0, column=0, rowspan=2, sticky="n", padx=(px(12), px(14)), pady=(px(10), 0))
+        title = tk.Label(body, text=name, font=self.fonts["h2"], fg=C["text"], bg=card.fill, anchor="w", justify="left")
+        title.grid(row=0, column=1, sticky="ew", pady=(px(7), 0))
+        short_label = tk.Label(body, text=short, font=self.fonts["small"], fg=C["muted"], bg=card.fill, anchor="w",
+                               justify="left")
+        short_label.grid(row=1, column=1, sticky="ew", pady=(px(2), 0))
+        pill = Pill(body, self.fonts["pill"], self.scale, self.animator)
+        pill.grid(row=0, column=2, sticky="ne", padx=px(12), pady=(px(8), 0))  # на линии заголовка
+        self.wrap(title, px(212))
+        self.wrap(short_label, px(212))
+        widgets = {"card": card, "check": check, "title": title, "pill": pill}
+        for widget in (card, body, check, title, short_label, pill):
+            widget.bind("<Button-1>", lambda e, t=tweak: self.toggle_select(t))
             widget.bind("<Enter>", lambda e, t=tweak: self.hover_card(t, True))
             widget.bind("<Leave>", lambda e, t=tweak, c=card: None if self.pointer_inside(c) else self.hover_card(t, False))
-        return {"card": card, "check": check, "title": title, "body": body, "pill": pill}
+        self.details_toggle(body, widgets, ("t", tweak.id), lambda holder: self.build_tweak_details(holder, tweak),
+                            column=1, indent=0)
+        self.page_cards.append(card)
+        self.cards[tweak.id] = widgets
+        self.paint_card(tweak, animate=False)
+        return widgets
 
-    # --- Состояние ---
+    def details_toggle(self, body, widgets, key, builder, column=0, indent=12):
+        """Ссылка «Подробнее» и раскрывающийся с анимацией блок под ней."""
+        px = self.px
+        bg = body.cget("bg")
+        row = tk.Frame(body, bg=bg, cursor="hand2")
+        row.grid(row=2, column=column, sticky="w", padx=(px(indent), 0), pady=(px(5), px(8)))
+        label = tk.Label(row, text=self.t("details_show"), font=self.fonts["small_bold"], fg=C["accent"], bg=bg,
+                         cursor="hand2")
+        label.pack(side="left")
+        chevron = tk.Label(row, text=ICONS["down"], font=self.fonts["icon_tiny"], fg=C["accent"], bg=bg, cursor="hand2")
+        chevron.pack(side="left", padx=(px(6), 0), pady=(px(2), 0))
+        holder = tk.Frame(body, bg=bg, height=1)
+        holder.grid(row=3, column=0, columnspan=3, sticky="ew")
+        holder.grid_remove()
+        widgets.update(holder=holder, inner=None, toggle=label, chevron=chevron, builder=builder)
+        for widget in (row, label, chevron):
+            widget.bind("<Button-1>", lambda e: self.toggle_details(key, widgets))
+        if key in self.expanded:
+            self.expand(key, widgets, animate=False)
+
+    def expand(self, key, widgets, animate=True):
+        holder = widgets["holder"]
+        if widgets["inner"] is None:
+            widgets["inner"] = widgets["builder"](holder)
+            widgets["inner"].pack(fill="x", anchor="n")
+        widgets["toggle"].configure(text=self.t("details_hide"))
+        widgets["chevron"].configure(text=ICONS["up"])
+        holder.grid()
+        if not animate:
+            holder.pack_propagate(True)
+            return
+        holder.pack_propagate(False)
+        holder.configure(height=1)
+        self.root.update_idletasks()
+        target = widgets["inner"].winfo_reqheight()
+        self.animator.animate(("details", key), 0.34, lambda t: holder.configure(height=max(1, round(target * t))),
+                              done=lambda: holder.pack_propagate(True), ease=ease_in_out)
+        fade_in(self.animator, ("detailsfade", key), descendants(widgets["inner"]), delay=0.08, duration=0.35)
+
+    def toggle_details(self, key, widgets):
+        holder = widgets["holder"]
+        if key not in self.expanded:
+            self.expanded.add(key)
+            self.expand(key, widgets)
+            return
+        self.expanded.discard(key)
+        widgets["toggle"].configure(text=self.t("details_show"))
+        widgets["chevron"].configure(text=ICONS["down"])
+        start = holder.winfo_height()
+        holder.pack_propagate(False)
+        self.animator.animate(("details", key), 0.26, lambda t: holder.configure(height=max(1, round(start * (1 - t)))),
+                              done=holder.grid_remove, ease=ease_in_out)
+
+    def describe(self, op):
+        if isinstance(op, engine.Value):
+            data = op.data
+            if callable(data):
+                data = "‹" + self.t("op_label") + "›"
+            elif isinstance(data, str):
+                data = f'"{data}"'
+            return self.t("op_value", path=op.path, name=op.name or self.t("op_default_name"), data=data)
+        if isinstance(op, engine.OwnedKey):
+            return self.t("op_key", path=op.path)
+        if isinstance(op, engine.Service):
+            return self.t("op_service", name=op.name)
+        if isinstance(op, engine.Task):
+            return self.t("op_task", path=op.path)
+        if isinstance(op, engine.Shortcut):
+            return self.t("op_shortcut", name=op.names[self.lang])
+        return str(op)
+
+    def build_tweak_details(self, holder, tweak):
+        px = self.px
+        bg = holder.cget("bg")
+        inner = tk.Frame(holder, bg=bg)
+        indent = (px(46), px(16))
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill="x", padx=(px(46), px(12)), pady=(0, px(12)))
+        text = tk.Label(inner, text=self.text("tweaks", tweak.id)[2], font=self.fonts["body"], fg=C["text"], bg=bg,
+                        anchor="w", justify="left")
+        text.pack(fill="x", padx=indent)
+        self.wrap(text, px(82))
+        tk.Label(inner, text=self.t("what_changes"), font=self.fonts["small_bold"], fg=C["dim"], bg=bg, anchor="w").pack(
+            fill="x", padx=indent, pady=(px(14), px(6)))
+
+        rows = self.scan["checks"][tweak.id][1] if self.scan else [(op, None, None) for op in tweak.ops]
+        # Значения внутри собственных ключей (пунктов меню) не перечисляем: достаточно самого ключа
+        owned = [op.path + "\\" for op in tweak.ops if isinstance(op, engine.OwnedKey)]
+        reasons = set()
+        missing = sum(reason == "missing" for _, _, reason in rows)
+        summarize = missing >= MISSING_SUMMARY  # длинный список «нет на этом ПК» сворачивается в одну строку
+        for op, state, reason in rows:
+            if isinstance(op, engine.Value) and any((op.path + "\\").startswith(prefix) for prefix in owned):
+                continue
+            if isinstance(op, engine.OwnedKey) and any(op.path.startswith(p) and op.path + "\\" != p for p in owned):
+                continue  # пункт вложенного подменю — достаточно показать само подменю
+            if reason == "missing" and summarize:
+                continue
+            if reason == "missing":
+                glyph, color, suffix = ICONS["dash"], C["dim"], self.t("op_missing")
+            elif reason:
+                glyph, color, suffix = ICONS["unknown"], C["warn"], self.t("op_unknown")
+                reasons.add(reason)
+            elif state:
+                glyph, color, suffix = ICONS["check"], C["ok"], ""
+            else:
+                glyph, color, suffix = ICONS["circle"], C["dim"], ""
+            line = tk.Frame(inner, bg=bg)
+            line.pack(fill="x", padx=indent, pady=px(2))
+            tk.Label(line, text=glyph, font=self.fonts["icon_small"], fg=color, bg=bg, width=2).pack(side="left", anchor="n")
+            label = tk.Label(line, text=self.describe(op) + (f"  — {suffix}" if suffix else ""), font=self.fonts["mono"],
+                             fg=C["text"] if state else C["muted"], bg=bg, anchor="w", justify="left")
+            label.pack(side="left", fill="x", expand=True, padx=(px(4), 0))
+            self.wrap(label, px(122))
+        if summarize:
+            line = tk.Frame(inner, bg=bg)
+            line.pack(fill="x", padx=indent, pady=px(2))
+            tk.Label(line, text=ICONS["dash"], font=self.fonts["icon_small"], fg=C["dim"], bg=bg, width=2).pack(side="left")
+            tk.Label(line, text=self.t("op_missing_many", n=missing), font=self.fonts["small"], fg=C["muted"],
+                     bg=bg, anchor="w").pack(side="left", padx=(px(4), 0))
+
+        note = tk.Frame(inner, bg=bg)
+        note.pack(fill="x", padx=indent, pady=(px(12), 0))
+        saved = tweak.id in engine.load_backup()
+        tk.Label(note, text=ICONS["info"], font=self.fonts["icon_small"], fg=C["accent"], bg=bg, width=2).pack(
+            side="left", anchor="n")
+        backup = tk.Label(note, text=self.t("backup_saved" if saved else "backup_none"), font=self.fonts["small"],
+                          fg=C["muted"], bg=bg, anchor="w", justify="left")
+        backup.pack(side="left", fill="x", expand=True, padx=(px(4), 0))
+        self.wrap(backup, px(122))
+        for reason in sorted(reasons):
+            problem, tip = self.text("reasons", reason)
+            hint = tk.Label(inner, text=f"{problem} {tip}", font=self.fonts["small"], fg=C["warn"], bg=bg, anchor="w",
+                            justify="left")
+            hint.pack(fill="x", padx=indent, pady=(px(8), 0))
+            self.wrap(hint, px(82))
+        tk.Frame(inner, bg=bg, height=px(12)).pack()
+        return inner
+
+    # --- Состояние твиков ---
 
     def card_state(self, tweak):
-        status = self.statuses.get(tweak.id)
-        if status is None:
+        if not self.scan or tweak.id not in self.scan["checks"]:
             return "checking"
+        status = self.scan["checks"][tweak.id][0]
         if status != "unavailable" and tweak.admin and not self.admin:
             return "admin"
         return status
 
     def selectable(self, tweak):
-        return not self.busy and self.card_state(tweak) in ("applied", "partial", "not_applied")
+        return not self.busy and self.card_state(tweak) in SELECTABLE
 
-    def update_view(self):
-        for tweak_id in self.cards:
-            self.paint_card(self.tweak_by_id[tweak_id])
-        self.paint_nav()
-        self.update_footer()
-
-    def paint_card(self, tweak):
+    def paint_card(self, tweak, animate=True):
         widgets = self.cards[tweak.id]
         state = self.card_state(tweak)
         enabled = self.selectable(tweak)
         selected = tweak.id in self.selected
-        color = STATUS_COLORS[state]
-        widgets["pill"].config(text=self.t("status_" + state), fg=color, bg=mix(color, CARD, 0.16))
-        widgets["check"].set(selected, enabled or state in ("applied", "partial", "not_applied"))
-        border = BLUE if selected else ("#3A5A86" if self.hovered == tweak.id and enabled else BORDER)
-        widgets["card"].config(highlightbackground=border, highlightcolor=border)
-        widgets["title"].config(fg=TEXT if state not in ("unavailable", "admin") else DIM)
-        for widget in widgets.values():
-            widget.config(cursor="hand2" if enabled else "arrow")
-
-    def paint_nav(self, hover=None):
-        for cat, (item, bar, icon, name, count) in self.nav.items():
-            active = cat == self.category
-            bg = PLATE if active else (CARD if cat == hover else NAVY)
-            for widget in (item, icon, name, count):
-                widget.config(bg=bg)
-            bar.config(bg=ACCENT if active else bg)
-            icon.config(fg=ACCENT if active else MUTED)
-            name.config(fg=TEXT if active else MUTED, font=self.fonts["nav_active" if active else "nav"])
-            items = [t for t in tweaks.TWEAKS if t.category == cat]
-            applied = sum(self.statuses.get(t.id) == "applied" for t in items)
-            count.config(text=f"{applied}/{len(items)}" if self.statuses else "")
-
-    def update_footer(self):
-        if self.message:
-            key, kw = self.message
-            text = self.t(key, **kw)
-        elif self.selected:
-            text = self.t("selected", n=len(self.selected))
+        widgets["pill"].set(self.t("status_" + state), status_color(state), animate)
+        widgets["check"].set(selected, state in SELECTABLE, animate)
+        border = C["primary"] if selected else (C["border_hover"] if self.hovered == tweak.id and enabled else C["border"])
+        card = widgets["card"]
+        if animate:
+            self.animator.color(("border", tweak.id), card.set_border, card.border, border, 0.2)
         else:
-            text = self.t("hint_select")
-        self.message_label.config(text=text)
-        enabled = not self.busy and bool(self.selected)
-        self.apply_button.set_enabled(enabled)
-        self.revert_button.set_enabled(enabled)
-
-    # --- Действия пользователя ---
+            card.set_border(border)
+        widgets["title"].configure(fg=C["dim"] if state in ("unavailable", "admin") else C["text"])
+        for key in ("card", "check", "title", "pill"):
+            widgets[key].configure(cursor="hand2" if enabled else "arrow")
 
     def hover_card(self, tweak, inside):
         self.hovered = tweak.id if inside else None
         if tweak.id in self.cards:
             self.paint_card(tweak)
 
-    def toggle(self, tweak):
+    def toggle_select(self, tweak):
         if not self.selectable(tweak):
             return
         self.selected ^= {tweak.id}
@@ -476,103 +1144,223 @@ class App:
             return
         self.selected |= {i for i in self.cards if self.selectable(self.tweak_by_id[i])}
         self.message = None
-        self.update_view()
+        for tweak_id in self.cards:
+            self.paint_card(self.tweak_by_id[tweak_id])
+        self.update_footer()
 
     def clear_selection(self):
         self.selected -= set(self.cards)
         self.message = None
-        self.update_view()
+        for tweak_id in self.cards:
+            self.paint_card(self.tweak_by_id[tweak_id])
+        self.update_footer()
+
+    def update_footer(self):
+        if self.message:
+            key, kw = self.message
+            text = self.t(key, **kw)
+        elif self.selected:
+            text = self.t("selected", n=len(self.selected))
+        else:
+            text = self.t("hint_select")
+        self.message_label.configure(text=text)
+        if self.busy:
+            if not self.spinner.winfo_ismapped():
+                self.spinner.pack(side="left", padx=(0, self.px(10)), before=self.message_label)
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+            self.spinner.pack_forget()
+        enabled = not self.busy and bool(self.selected)
+        self.apply_button.set_enabled(enabled)
+        self.revert_button.set_enabled(enabled)
+        for button, needs_admin in self.action_buttons:
+            try:
+                button.set_enabled(not self.busy and (self.admin or not needs_admin))
+            except tk.TclError:
+                pass
+
+    def refresh_view(self):
+        """Обновляет страницу после нового сканирования, не перестраивая её без нужды."""
+        if self.page in ("overview", "snapshots"):
+            self.show_page(self.page)
+            return
+        for tweak_id, widgets in self.cards.items():
+            self.paint_card(self.tweak_by_id[tweak_id])
+            if widgets["inner"] is not None:  # подробности зависят от результатов сканирования
+                widgets["inner"].destroy()
+                widgets["inner"] = None
+                if ("t", tweak_id) in self.expanded:
+                    self.expand(("t", tweak_id), widgets, animate=False)
+        self.update_nav_counts()
+        self.update_footer()
+
+    # --- Настройки окна ---
 
     def set_language(self, lang):
-        if lang == self.lang:
-            return
-        self.lang = lang
-        self.settings["lang"] = lang
-        save_settings(self.settings)
-        self.build()
+        if lang != self.lang:
+            self.lang = lang
+            self.settings["lang"] = lang
+            save_settings(self.settings)
+            self.build()
 
-    def on_canvas_resize(self, event):
-        px = self.px
-        self.canvas.itemconfigure(self.list_window, width=event.width)
-        self.desc_wrap = max(px(220), event.width - px(270))
-        for widgets in self.cards.values():
-            widgets["title"].config(wraplength=self.desc_wrap)
-            widgets["body"].config(wraplength=self.desc_wrap)
-        self.desc_label.config(wraplength=max(px(220), event.width - px(240)))
+    def set_theme(self, name):
+        if name != C["name"]:
+            theme.use(name)
+            theme.clear_cache()
+            self.settings["theme"] = name
+            save_settings(self.settings)
+            theme.style_title_bar(self.root)
+            self.build()
 
     def on_wheel(self, event):
+        """Плавная прокрутка колесом мыши."""
         try:
             if event.widget.winfo_toplevel() is not self.root:
                 return
         except (AttributeError, KeyError, tk.TclError):
             return
-        if self.list_frame.winfo_height() > self.canvas.winfo_height():
-            self.canvas.yview_scroll(int(-event.delta / 120) * 2, "units")
-
-    def apply_selected(self):
-        chosen = [t for t in tweaks.TWEAKS if t.id in self.selected and self.statuses.get(t.id) != "applied"]
-        if not chosen:
-            self.message = ("nothing_to_apply", {})
-            self.update_footer()
+        total, view = self.list_frame.winfo_height(), self.canvas.winfo_height()
+        if total <= view:
             return
-        lang, ctx = self.lang, self.ctx
-        self.start_work(chosen, lambda t: engine.apply(t, lang, ctx), "working_apply", "done_apply")
+        top = self.canvas.yview()[0]
+        base = getattr(self, "scroll_target", top) if "scroll" in self.animator.tweens else top
+        target = min(max(base - event.delta / 120 * self.px(110) / total, 0.0), 1.0 - view / total)
+        self.scroll_target = target
+        self.animator.animate("scroll", 0.24, lambda t: self.canvas.yview_moveto(top + (target - top) * t))
 
-    def revert_selected(self):
-        chosen = [t for t in tweaks.TWEAKS if t.id in self.selected and self.statuses.get(t.id) in ("applied", "partial")]
-        if not chosen:
-            self.message = ("nothing_to_revert", {})
-            self.update_footer()
-            return
-        ctx = self.ctx
-        self.start_work(chosen, lambda t: engine.revert(t, ctx), "working_revert", "done_revert")
+    # --- Сканирование, применение, откат ---
 
-    def start_work(self, chosen, action, working_key, done_key):
-        """Применяет или откатывает твики в фоне, затем заново проверяет их состояние."""
+    def start_scan(self):
+        self.scan = None
+        self.scan_done = set()
+        self.scan_started = time.perf_counter()
         self.busy = True
-        self.message = (working_key, {})
-        self.update_view()
-        names = {t.id: self.tweak_text(t)[0] for t in chosen}
+        self.message = ("checking", {})
+        if self.page == "overview":
+            self.show_page("overview", animate=False)
+        else:
+            self.refresh_view()
+        self.update_footer()
+        self.run_job(lambda: collect_scan(lambda step: self.jobs.put((self.on_scan_step, step))), self.on_scan_done)
 
-        def work():
-            errors = []
-            for tweak in chosen:
-                errors += [f"{names[tweak.id]}: {error}" for error in action(tweak)]
-            engine.notify_shell()
-            return errors, self.check_all()
+    def rescan(self):
+        if not self.busy:
+            self.start_scan()
 
-        def done(result):
-            self.busy = False
-            self.selected.clear()
-            if isinstance(result, Exception):
-                errors = [str(result)]
-                self.run_job(self.check_all, self.on_checked)
-            else:
-                errors, (self.ctx, self.statuses) = result
-            self.message = (done_key, {"n": len(chosen)})
-            self.update_view()
-            if errors:
-                self.show_errors(errors)
+    def on_scan_step(self, step):
+        self.scan_done.add(step)
+        rows = getattr(self, "scan_rows", {})
+        if step in rows:
+            glyph, label = rows[step]
+            try:
+                glyph.configure(text=ICONS["check"])
+                self.animator.color(("step", step), lambda c: glyph.configure(fg=c), C["dim"], C["ok"], 0.3)
+                self.animator.color(("steplabel", step), lambda c: label.configure(fg=c), C["muted"], C["text"], 0.3)
+            except tk.TclError:
+                pass
 
-        self.run_job(work, done)
+    def on_scan_done(self, result):
+        wait = MIN_SCAN_SECONDS - (time.perf_counter() - self.scan_started)
+        if wait > 0:
+            self.root.after(int(wait * 1000), lambda: self.finish_scan(result))
+        else:
+            self.finish_scan(result)
 
-    # --- Фоновые задачи ---
-
-    @staticmethod
-    def check_all():
-        ctx = engine.Context()
-        return ctx, {t.id: engine.status(t, ctx) for t in tweaks.TWEAKS}
-
-    def on_checked(self, result):
+    def finish_scan(self, result):
         self.busy = False
         if self.message == ("checking", {}):
             self.message = None
         if isinstance(result, Exception):
-            self.update_view()
+            self.scan = {"services": {}, "checks": {}, "ctx": None}
             self.show_errors([str(result)])
+        else:
+            self.scan = result
+            # Без прав администратора часть параметров не прочитать, а исходный снимок хранится навсегда
+            if not self.snapshots and self.admin:
+                self.take_initial_snapshot()
+        self.selected = {i for i in self.selected if self.selectable(self.tweak_by_id[i])}
+        self.refresh_view()
+
+    def take_initial_snapshot(self):
+        """Самый первый снимок — как было до SimpleTool. Делается в фоне сразу после первого сканирования."""
+        ctx, statuses = self.scan["ctx"], self.status_map()
+
+        def done(result):
+            self.snapshots = engine.list_snapshots()
+            if self.page == "snapshots" and not self.busy:
+                self.refresh_view()
+            else:
+                self.update_nav_counts()
+
+        self.run_job(lambda: engine.take_snapshot(tweaks.TWEAKS, ctx, "initial", statuses, VERSION), done)
+
+    def apply_selected(self):
+        chosen = [t for t in tweaks.TWEAKS if t.id in self.selected and self.card_state(t) != "applied"]
+        if not chosen:
+            self.message = ("nothing_to_apply", {})
+            self.update_footer()
             return
-        self.ctx, self.statuses = result
-        self.update_view()
+        lang, ctx = self.lang, self.scan["ctx"]
+        self.start_work(chosen, lambda t: engine.apply(t, lang, ctx), "working_apply", "done_apply", "before_apply")
+
+    def revert_selected(self):
+        chosen = [t for t in tweaks.TWEAKS if t.id in self.selected and self.card_state(t) in REVERTIBLE]
+        if not chosen:
+            self.message = ("nothing_to_revert", {})
+            self.update_footer()
+            return
+        ctx = self.scan["ctx"]
+        self.start_work(chosen, lambda t: engine.revert(t, ctx), "working_revert", "done_revert", "before_revert")
+
+    def run_action(self, working_key, work, on_done):
+        """Долгое действие в фоне: окно занято, в подвале крутится индикатор."""
+        self.busy = True
+        self.message = (working_key, {})
+        for tweak_id in self.cards:
+            self.paint_card(self.tweak_by_id[tweak_id])
+        self.update_footer()
+
+        def done(result):
+            self.busy = False
+            on_done(result)
+
+        self.run_job(work, done)
+
+    def start_work(self, chosen, action, working_key, done_key, snapshot_kind):
+        """Делает снимок «до», применяет или откатывает твики в фоне, затем заново сканирует систему."""
+        names = {t.id: self.text("tweaks", t.id)[0] for t in chosen}
+        ctx, statuses, failed = self.scan["ctx"], self.status_map(), self.t("snap_failed")
+
+        def work():
+            errors = []
+            try:
+                engine.take_snapshot(tweaks.TWEAKS, ctx or engine.Context(), snapshot_kind, statuses, VERSION)
+            except OSError as exc:
+                errors.append(f"{failed} {exc}")
+            for tweak in chosen:
+                errors += [f"{names[tweak.id]}: {error}" for error in action(tweak)]
+            engine.notify_shell()
+            return errors, collect_scan()
+
+        def done(result):
+            self.selected.clear()
+            self.snapshots = engine.list_snapshots()
+            if isinstance(result, Exception):
+                errors = [str(result)]
+                self.start_scan()
+            else:
+                errors, self.scan = result
+            self.message = (done_key, {"n": len(chosen)})
+            self.refresh_view()
+            text = self.t(done_key, n=len(chosen))
+            if errors:
+                self.notify(self.t("errors_title"), C["warn"], ICONS["warning"])
+                self.show_errors(errors)
+            else:
+                self.notify(text, C["ok"], ICONS["check"])
+
+        self.run_action(working_key, work, done)
 
     def run_job(self, work, done):
         def target():
@@ -587,32 +1375,41 @@ class App:
     def poll(self):
         while True:
             try:
-                done, result = self.jobs.get_nowait()
+                callback, payload = self.jobs.get_nowait()
             except queue.Empty:
                 break
-            done(result)
-        self.root.after(50, self.poll)
+            callback(payload)
+        self.poll_job = self.root.after(40, self.poll)
+
+    def on_destroy(self, event):
+        # Окно закрыто: отменяем опрос очереди, иначе Tk вызовет его уже после закрытия
+        if event.widget is self.root:
+            self.animator.stop()
+            if getattr(self, "poll_job", None):
+                self.root.after_cancel(self.poll_job)
 
     # --- Диалоги ---
 
     def dialog(self, title, icon, color, heading, text):
         """Окно в стиле blagotech: значок, заголовок, текст. Возвращает (окно, рамка для содержимого)."""
         px = self.px
-        win = tk.Toplevel(self.root, bg=CARD)
+        win = tk.Toplevel(self.root, bg=C["surface"])
         win.withdraw()
         win.title(title)
         win.transient(self.root)
         win.resizable(False, False)
-        body = tk.Frame(win, bg=CARD)
+        body = tk.Frame(win, bg=C["surface"])
         body.pack(padx=px(28), pady=(px(24), px(22)))
         body.columnconfigure(1, weight=1)  # лишняя ширина достаётся тексту, а не колонке значка
-        tk.Label(body, text=icon, font=self.fonts["icon_big"], fg=color, bg=mix(color, CARD, 0.14),
-                 width=2, pady=px(6)).grid(row=0, column=0, rowspan=2, sticky="nw")
-        tk.Label(body, text=heading, font=self.fonts["dialog"], fg=TEXT, bg=CARD, anchor="w").grid(
+        badge = Card(body, self.scale, fill=mix(color, C["surface"], 0.14), border=mix(color, C["surface"], 0.4),
+                     radius=14, pad=4)
+        badge.grid(row=0, column=0, rowspan=2, sticky="nw")
+        tk.Label(badge.body, text=icon, font=self.fonts["icon_big"], fg=color, bg=badge.fill).pack(padx=px(8), pady=px(6))
+        tk.Label(body, text=heading, font=self.fonts["dialog"], fg=C["text"], bg=C["surface"], anchor="w").grid(
             row=0, column=1, sticky="w", padx=(px(16), 0))
-        tk.Label(body, text=text, font=self.fonts["body"], fg=MUTED, bg=CARD, justify="left", anchor="w",
+        tk.Label(body, text=text, font=self.fonts["body"], fg=C["muted"], bg=C["surface"], justify="left", anchor="w",
                  wraplength=px(440)).grid(row=1, column=1, sticky="w", padx=(px(16), 0), pady=(px(6), 0))
-        content = tk.Frame(body, bg=CARD)
+        content = tk.Frame(body, bg=C["surface"])
         content.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(px(18), 0))
         return win, content
 
@@ -621,43 +1418,43 @@ class App:
         x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_reqheight()) // 3
         win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
-        style_title_bar(win)
+        theme.style_title_bar(win)
+        theme.set_window_icon(win, ICON_PATH)
+        win.bind("<Escape>", lambda e: win.destroy())
         win.deiconify()
         win.grab_set()
         win.focus_set()
 
+    def restart_as_admin(self, error_label=None):
+        code = relaunch_as_admin()
+        if code > 32:
+            self.root.destroy()
+        elif code != 5 and error_label is not None:  # 5 — пользователь отменил запрос UAC
+            error_label.configure(text=self.t("admin_failed"))
+
     def show_admin_dialog(self):
         px = self.px
-        win, content = self.dialog(self.t("admin_title"), ICONS["shield"], AMBER, self.t("admin_title"),
+        win, content = self.dialog(self.t("admin_title"), ICONS["shield"], C["warn"], self.t("admin_title"),
                                    self.t("admin_text"))
-        error = tk.Label(content, text="", font=self.fonts["small"], fg=AMBER, bg=CARD, anchor="w")
+        error = tk.Label(content, text="", font=self.fonts["small"], fg=C["warn"], bg=C["surface"], anchor="w")
         error.pack(fill="x")
-
-        def restart():
-            code = relaunch_as_admin()
-            if code > 32:
-                self.root.destroy()
-            elif code != 5:  # 5 — пользователь отменил запрос UAC
-                error.config(text=self.t("admin_failed"))
-
-        padding = (px(18), px(8))
-        FlatButton(content, self.t("admin_restart"), restart, self.fonts["button"], padding).pack(side="right")
-        FlatButton(content, self.t("admin_continue"), win.destroy, self.fonts["button"], padding,
-                   primary=False).pack(side="right", padx=(0, px(10)))
+        GradientButton(content, self.t("admin_restart"), lambda: self.restart_as_admin(error), self.fonts["button"],
+                       self.scale, self.animator, pad=(18, 8)).pack(side="right")
+        GradientButton(content, self.t("admin_continue"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
         self.present(win)
 
     def show_errors(self, errors):
         px = self.px
-        win, content = self.dialog(self.t("errors_title"), ICONS["warning"], AMBER, self.t("errors_title"),
+        win, content = self.dialog(self.t("errors_title"), ICONS["warning"], C["warn"], self.t("errors_title"),
                                    self.t("errors_intro"))
-        text = tk.Text(content, font=self.fonts["small"], fg=TEXT, bg=NAVY, relief="flat", wrap="word",
-                       width=72, height=min(12, 2 * len(errors) + 1), padx=px(12), pady=px(10),
-                       highlightthickness=0)
+        text = tk.Text(content, font=self.fonts["small"], fg=C["text"], bg=C["bg"], relief="flat", wrap="word",
+                       width=72, height=min(12, 2 * len(errors) + 1), padx=px(12), pady=px(10), highlightthickness=0)
         text.insert("1.0", "\n\n".join(errors))
-        text.config(state="disabled")
+        text.configure(state="disabled")
         text.pack(fill="x")
-        FlatButton(content, self.t("close"), win.destroy, self.fonts["button"], (px(18), px(8))).pack(
-            side="right", pady=(px(16), 0))
+        GradientButton(content, self.t("close"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       pad=(18, 8)).pack(side="right", pady=(px(16), 0))
         self.present(win)
 
 
@@ -673,15 +1470,16 @@ def main():
     root = tk.Tk()
     root.withdraw()
     try:
-        root.iconbitmap(default=os.path.join(BASE_DIR, "assets", "app.ico"))
+        root.iconbitmap(default=ICON_PATH)
     except tk.TclError:
         pass
     app = App(root)
-    width = min(app.px(1060), root.winfo_screenwidth() - app.px(40))
-    height = min(app.px(720), root.winfo_screenheight() - app.px(80))
-    root.minsize(app.px(880), app.px(560))
+    width = min(app.px(1080), root.winfo_screenwidth() - app.px(40))
+    height = min(app.px(740), root.winfo_screenheight() - app.px(80))
+    root.minsize(app.px(900), app.px(580))
     root.geometry(f"{width}x{height}+{(root.winfo_screenwidth() - width) // 2}+{(root.winfo_screenheight() - height) // 3}")
-    style_title_bar(root)
+    theme.style_title_bar(root)
+    theme.set_window_icon(root, ICON_PATH)
     root.deiconify()
     root.mainloop()
 

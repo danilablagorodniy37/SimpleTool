@@ -1,7 +1,9 @@
-"""Движок твиков: реестр, службы, задачи планировщика, ярлыки и резервные копии для отката."""
+"""Движок твиков: реестр, службы, задачи планировщика, ярлыки, резервные копии и снимки системы."""
 import ctypes
+import datetime
 import json
 import os
+import platform
 import subprocess
 import winreg
 
@@ -209,6 +211,13 @@ def notify_shell():
 # У каждой операции: admin, id, available(ctx), applied(ctx) -> True/False/None (None = не влияет на статус),
 # snapshot(ctx) -> состояние до применения, apply(lang) -> список созданных ключей, restore(снимок), reset().
 
+class Unknown(Exception):
+    """Состояние операции узнать не удалось; reason — ключ причины для подсказки в интерфейсе."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
 class Value:
     """Значение реестра. data может быть функцией от языка (подписи пунктов меню)."""
 
@@ -276,7 +285,9 @@ class OwnedKey:
         return create_key(self.path)
 
     def restore(self, existed):
-        if not existed:
+        if existed:
+            create_key(self.path)
+        else:
             self.reset()
 
     def reset(self):
@@ -338,7 +349,9 @@ class Task:
         return ctx.tasks is None or self.path.lower() in ctx.tasks
 
     def applied(self, ctx):
-        return None if ctx.tasks is None else ctx.tasks.get(self.path.lower())
+        if ctx.tasks is None:
+            raise Unknown("tasks_unavailable")
+        return ctx.tasks.get(self.path.lower())
 
     def snapshot(self, ctx):
         # True = задача была включена
@@ -349,8 +362,7 @@ class Task:
         return []
 
     def restore(self, was_enabled):
-        if was_enabled:
-            self.reset()
+        run(["schtasks.exe", "/change", "/tn", self.path, "/enable" if was_enabled else "/disable"])
 
     def reset(self):
         run(["schtasks.exe", "/change", "/tn", self.path, "/enable"])
@@ -386,7 +398,10 @@ class Shortcut:
 
     def restore(self, existed):
         for path in self._paths():
-            if path not in existed and os.path.exists(path):
+            if path in existed:
+                if not os.path.exists(path):
+                    create_shortcut(path, self.target, self.args, self.icon)
+            elif os.path.exists(path):
                 os.remove(path)
 
     def reset(self):
@@ -419,17 +434,45 @@ def _try(check, ctx, default=None):
         return default
 
 
+def check(tweak, ctx):
+    """Состояние твика и каждой его операции.
+
+    Возвращает (status, rows): status — applied / partial / not_applied / unknown / unavailable,
+    rows — список (операция, применена ли: True/False/None, причина: None / "missing" / ключ из reasons).
+    """
+    if tweak.requires and not tweak.requires():
+        return "unavailable", []
+    rows = []
+    for op in tweak.ops:
+        if not _try(op.available, ctx, default=True):
+            rows.append((op, None, "missing"))
+            continue
+        try:
+            rows.append((op, op.applied(ctx), None))
+        except Unknown as exc:
+            rows.append((op, None, exc.reason))
+        except PermissionError:
+            rows.append((op, None, "access_denied"))
+        except OSError:
+            rows.append((op, None, "error"))
+    present = [row for row in rows if row[2] != "missing"]
+    if not present:
+        return "unavailable", rows
+    known = [state for _, state, _ in present if state is not None]
+    unknown = any(reason for _, _, reason in present)
+    if any(known) and not all(known):
+        status = "partial"
+    elif known and not any(known):
+        status = "not_applied"  # хотя бы одна часть точно не применена
+    elif unknown or not known:
+        status = "unknown"
+    else:
+        status = "applied"
+    return status, rows
+
+
 def status(tweak, ctx):
-    """applied / partial / not_applied / unavailable"""
-    ops = tweak.available_ops(ctx)
-    if not ops:
-        return "unavailable"
-    states = [s for s in (_try(op.applied, ctx) for op in ops) if s is not None]
-    if states and all(states):
-        return "applied"
-    if any(states):
-        return "partial"
-    return "not_applied"
+    return check(tweak, ctx)[0]
 
 
 # --- Применение и откат с резервной копией ---
@@ -503,3 +546,122 @@ def revert(tweak, ctx):
             backup[tweak.id] = entry
     save_backup(backup)
     return errors
+
+
+def forget_backups(keep):
+    """Удаляет резервные копии твиков, которых нет в keep: после восстановления снимка они устарели."""
+    backup = load_backup()
+    for tweak_id in [i for i in backup if i not in keep]:
+        del backup[tweak_id]
+    save_backup(backup)
+
+
+# --- Снимки системы: состояние всего, что меняет SimpleTool, на определённый момент ---
+
+AUTO_SNAPSHOTS_KEPT = 20  # исходный снимок и снимки, сделанные вручную, не удаляются
+
+
+def snapshots_dir():
+    path = os.path.join(data_dir(), "snapshots")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def take_snapshot(tweaks, ctx, kind, statuses, app_version):
+    """Сохраняет текущее состояние каждой операции каждого твика. Возвращает путь к файлу снимка."""
+    now = datetime.datetime.now()
+    data = {"format": 1, "app": app_version, "windows": platform.version(),
+            "created": now.isoformat(timespec="seconds"), "kind": kind, "tweaks": {}, "keys": {}}
+    for tweak in tweaks:
+        ops = {}
+        for op in tweak.available_ops(ctx):
+            try:
+                ops[op.id] = op.snapshot(ctx)
+            except OSError:
+                continue  # без прав администратора часть параметров не прочитать
+            if isinstance(op, (Value, OwnedKey)):
+                # Какие разделы реестра существовали: созданные позже удаляются при восстановлении
+                parts = op.path.split("\\")
+                for i in range(2, len(parts) + 1):
+                    path = "\\".join(parts[:i])
+                    if path not in data["keys"]:
+                        data["keys"][path] = key_exists(path)
+        data["tweaks"][tweak.id] = {"status": statuses.get(tweak.id), "ops": ops}
+    base = os.path.join(snapshots_dir(), f"{now:%Y-%m-%d_%H-%M-%S}_{kind}")
+    path, n = base + ".json", 1
+    while os.path.exists(path):
+        n += 1
+        path = f"{base}_{n}.json"
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+    prune_snapshots()
+    return path
+
+
+def list_snapshots():
+    """Снимки от новых к старым: список (путь, данные)."""
+    items = []
+    for name in os.listdir(snapshots_dir()):
+        if name.endswith(".json"):
+            path = os.path.join(snapshots_dir(), name)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    items.append((path, json.load(f)))
+            except (OSError, ValueError):
+                continue
+    items.sort(key=lambda item: item[1].get("created", ""), reverse=True)
+    return items
+
+
+def prune_snapshots():
+    automatic = [path for path, data in list_snapshots() if data.get("kind") not in ("initial", "manual")]
+    for path in automatic[AUTO_SNAPSHOTS_KEPT:]:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def restore_snapshot(tweaks, data, ctx):
+    """Возвращает каждую сохранённую в снимке операцию к её состоянию на момент снимка. Возвращает ошибки."""
+    errors = []
+    for tweak in tweaks:
+        entry = data.get("tweaks", {}).get(tweak.id)
+        if not entry:
+            continue
+        for op in reversed(tweak.available_ops(ctx)):
+            if op.id in entry["ops"]:
+                try:
+                    op.restore(entry["ops"][op.id])
+                except (OSError, RuntimeError) as exc:
+                    errors.append(f"{op}: {exc}")
+    created = [path for path, existed in data.get("keys", {}).items() if not existed]
+    for path in sorted(created, key=lambda p: p.count("\\"), reverse=True):
+        try:
+            if is_empty_key(path):
+                delete_key(path)
+        except OSError:
+            pass
+    return errors
+
+
+RESTORE_POINT_SCRIPT = (
+    "$before = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count; "
+    "Checkpoint-Computer -Description 'SimpleTool' -RestorePointType MODIFY_SETTINGS "
+    "-WarningVariable warn -WarningAction SilentlyContinue -ErrorAction Stop; "
+    "$after = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count; "
+    "if ($after -gt $before) { 'CREATED' } else { 'NOT CREATED: ' + ($warn -join ' ') }")
+
+
+def create_restore_point():
+    """Точка восстановления Windows (весь реестр и системные файлы). Возвращает (успех, сообщение Windows)."""
+    try:
+        output = powershell(RESTORE_POINT_SCRIPT).strip()
+    except RuntimeError as exc:
+        return False, str(exc)
+    last = output.splitlines()[-1] if output else ""
+    if last == "CREATED":
+        return True, ""
+    return False, last.replace("NOT CREATED:", "").strip()
