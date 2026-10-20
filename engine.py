@@ -1,0 +1,505 @@
+"""Движок твиков: реестр, службы, задачи планировщика, ярлыки и резервные копии для отката."""
+import ctypes
+import json
+import os
+import subprocess
+import winreg
+
+CREATE_NO_WINDOW = 0x08000000
+HIVES = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}
+WOW64 = winreg.KEY_WOW64_64KEY
+
+# Маркер «значения нет» для стандартных значений
+ABSENT = object()
+
+
+def is_admin():
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+def data_dir():
+    """Папка для настроек и резервных копий: %LOCALAPPDATA%\\SimpleTool."""
+    path = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "SimpleTool")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def run(args):
+    """Запускает консольную программу без окна. При ошибке бросает RuntimeError с её выводом."""
+    result = subprocess.run(args, capture_output=True, encoding="oem", errors="replace",
+                            creationflags=CREATE_NO_WINDOW)
+    if result.returncode != 0:
+        output = (result.stderr or result.stdout).strip()
+        raise RuntimeError(output or f"{args[0]}: exit code {result.returncode}")
+    return result.stdout
+
+
+def powershell(script):
+    return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script])
+
+
+# --- Реестр ---
+
+def _split(path):
+    hive, _, sub = path.partition("\\")
+    return HIVES[hive], sub
+
+
+def read_value(path, name):
+    """Возвращает (данные, тип) или None, если значения нет."""
+    hive, sub = _split(path)
+    try:
+        with winreg.OpenKey(hive, sub, 0, winreg.KEY_READ | WOW64) as key:
+            return winreg.QueryValueEx(key, name)
+    except FileNotFoundError:
+        return None
+
+
+def key_exists(path):
+    hive, sub = _split(path)
+    try:
+        winreg.OpenKey(hive, sub, 0, winreg.KEY_READ | WOW64).Close()
+        return True
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        return True  # ключ есть, но читать его могут только администраторы
+
+
+def create_key(path):
+    """Создаёт ключ вместе с недостающими родителями и возвращает список созданных ключей."""
+    hive_name, _, sub = path.partition("\\")
+    parts = sub.split("\\")
+    created = []
+    for i in range(1, len(parts) + 1):
+        current = hive_name + "\\" + "\\".join(parts[:i])
+        if not key_exists(current):
+            hive, current_sub = _split(current)
+            winreg.CreateKeyEx(hive, current_sub, 0, winreg.KEY_WRITE | WOW64).Close()
+            created.append(current)
+    return created
+
+
+def write_value(path, name, data, kind):
+    hive, sub = _split(path)
+    with winreg.CreateKeyEx(hive, sub, 0, winreg.KEY_SET_VALUE | WOW64) as key:
+        winreg.SetValueEx(key, name, 0, kind, data)
+
+
+def delete_value(path, name):
+    hive, sub = _split(path)
+    try:
+        with winreg.OpenKey(hive, sub, 0, winreg.KEY_SET_VALUE | WOW64) as key:
+            winreg.DeleteValue(key, name)
+    except FileNotFoundError:
+        pass
+
+
+def is_empty_key(path):
+    hive, sub = _split(path)
+    try:
+        with winreg.OpenKey(hive, sub, 0, winreg.KEY_READ | WOW64) as key:
+            subkeys, values, _ = winreg.QueryInfoKey(key)
+            return subkeys == 0 and values == 0
+    except OSError:
+        return False
+
+
+def delete_key(path):
+    hive, sub = _split(path)
+    try:
+        winreg.DeleteKeyEx(hive, sub, WOW64)
+    except FileNotFoundError:
+        pass
+
+
+def delete_tree(path):
+    hive, sub = _split(path)
+    try:
+        with winreg.OpenKey(hive, sub, 0, winreg.KEY_READ | WOW64) as key:
+            children = [winreg.EnumKey(key, i) for i in range(winreg.QueryInfoKey(key)[0])]
+    except FileNotFoundError:
+        return
+    for child in children:
+        delete_tree(path + "\\" + child)
+    delete_key(path)
+
+
+def prune_empty_parents(path):
+    """Удаляет опустевшие родительские ключи, но не выше ...\\Classes."""
+    if "\\classes\\" not in path.lower():
+        return
+    parent = path.rpartition("\\")[0]
+    while parent.rpartition("\\")[2].lower() != "classes" and is_empty_key(parent):
+        delete_key(parent)
+        parent = parent.rpartition("\\")[0]
+
+
+def _pack(found):
+    """Данные реестра в виде, пригодном для JSON."""
+    if found is None:
+        return None
+    data, kind = found
+    if isinstance(data, bytes):
+        data = {"hex": data.hex()}
+    return [data, kind]
+
+
+def _unpack(packed):
+    data, kind = packed
+    if isinstance(data, dict):
+        data = bytes.fromhex(data["hex"])
+    return data, kind
+
+
+# --- Задачи планировщика, ярлыки ---
+
+TASKS_SCRIPT = ("[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false; "
+                "Get-ScheduledTask | ForEach-Object { '{0}{1}|{2}' -f $_.TaskPath, $_.TaskName, [int]$_.State }")
+
+
+def load_tasks():
+    """Словарь «путь задачи в нижнем регистре -> отключена ли она». None, если список получить не удалось."""
+    try:
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", TASKS_SCRIPT],
+                                capture_output=True, encoding="utf-8", errors="replace",
+                                creationflags=CREATE_NO_WINDOW, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    tasks = {}
+    for line in result.stdout.splitlines():
+        name, sep, state = line.lstrip("﻿").rpartition("|")
+        if sep:
+            tasks[name.strip("\\").lower()] = state.strip() == "1"  # 1 = Disabled
+    return tasks
+
+
+def desktop_dir():
+    buf = ctypes.create_unicode_buffer(260)
+    ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf)  # CSIDL_DESKTOPDIRECTORY
+    return buf.value
+
+
+def create_shortcut(lnk, target, args, icon):
+    def quote(text):
+        return "'" + text.replace("'", "''") + "'"
+    # WScript.Shell портит символы вне кодовой страницы системы (кириллица в английской Windows),
+    # поэтому ярлык сохраняется под латинским именем и переименовывается уже из Python
+    tmp = os.path.join(os.path.dirname(lnk), "SimpleTool-shortcut.tmp.lnk")
+    powershell(f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({quote(tmp)}); "
+               f"$s.TargetPath = {quote(target)}; $s.Arguments = {quote(args)}; "
+               f"$s.IconLocation = {quote(icon)}; $s.Save()")
+    os.replace(tmp, lnk)
+
+
+def notify_shell():
+    """Сообщает Проводнику, что ассоциации и контекстные меню изменились."""
+    try:
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED
+    except (AttributeError, OSError):
+        pass
+
+
+# --- Операции твиков ---
+# У каждой операции: admin, id, available(ctx), applied(ctx) -> True/False/None (None = не влияет на статус),
+# snapshot(ctx) -> состояние до применения, apply(lang) -> список созданных ключей, restore(снимок), reset().
+
+class Value:
+    """Значение реестра. data может быть функцией от языка (подписи пунктов меню)."""
+
+    def __init__(self, path, name, data, kind=winreg.REG_DWORD, default=ABSENT, check=True):
+        self.path, self.name, self.data, self.kind = path, name, data, kind
+        self.default, self.check = default, check
+        self.admin = not path.startswith("HKCU")
+        self.id = f"value:{path}|{name}"
+
+    def __str__(self):
+        return f"{self.path}\\{self.name or '(Default)'}"
+
+    def available(self, ctx):
+        return True
+
+    def applied(self, ctx):
+        if not self.check:
+            return None
+        found = read_value(self.path, self.name)
+        return found is not None and found[0] == self.data
+
+    def snapshot(self, ctx):
+        return _pack(read_value(self.path, self.name))
+
+    def apply(self, lang):
+        created = create_key(self.path)
+        data = self.data(lang) if callable(self.data) else self.data
+        write_value(self.path, self.name, data, self.kind)
+        return created
+
+    def restore(self, snap):
+        if snap is None:
+            delete_value(self.path, self.name)
+        else:
+            write_value(self.path, self.name, *_unpack(snap))
+
+    def reset(self):
+        if self.default is ABSENT:
+            delete_value(self.path, self.name)
+        else:
+            write_value(self.path, self.name, self.default, self.kind)
+
+
+class OwnedKey:
+    """Ключ, который создаёт твик (пункт контекстного меню). При откате удаляется целиком."""
+
+    def __init__(self, path):
+        self.path = path
+        self.admin = not path.startswith("HKCU")
+        self.id = f"key:{path}"
+
+    def __str__(self):
+        return self.path
+
+    def available(self, ctx):
+        return True
+
+    def applied(self, ctx):
+        return None
+
+    def snapshot(self, ctx):
+        return key_exists(self.path)
+
+    def apply(self, lang):
+        return create_key(self.path)
+
+    def restore(self, existed):
+        if not existed:
+            self.reset()
+
+    def reset(self):
+        delete_tree(self.path)
+        prune_empty_parents(self.path)
+
+
+class Service:
+    """Служба Windows: отключение автозапуска (Start = 4) и остановка."""
+
+    def __init__(self, name, default_start):
+        self.name, self.default_start = name, default_start
+        self.path = rf"HKLM\SYSTEM\CurrentControlSet\Services\{name}"
+        self.admin = True
+        self.id = f"service:{name}"
+
+    def __str__(self):
+        return self.name
+
+    def available(self, ctx):
+        return key_exists(self.path)
+
+    def applied(self, ctx):
+        found = read_value(self.path, "Start")
+        return found is not None and found[0] == 4
+
+    def snapshot(self, ctx):
+        found = read_value(self.path, "Start")
+        return found[0] if found else None
+
+    def apply(self, lang):
+        write_value(self.path, "Start", 4, winreg.REG_DWORD)
+        try:
+            run(["sc.exe", "stop", self.name])
+        except RuntimeError:
+            pass  # служба уже остановлена
+        return []
+
+    def restore(self, start):
+        if start is not None:
+            write_value(self.path, "Start", start, winreg.REG_DWORD)
+
+    def reset(self):
+        write_value(self.path, "Start", self.default_start, winreg.REG_DWORD)
+
+
+class Task:
+    """Задача планировщика: отключение."""
+
+    def __init__(self, path):
+        self.path = path
+        self.admin = True
+        self.id = f"task:{path.lower()}"
+
+    def __str__(self):
+        return self.path
+
+    def available(self, ctx):
+        return ctx.tasks is None or self.path.lower() in ctx.tasks
+
+    def applied(self, ctx):
+        return None if ctx.tasks is None else ctx.tasks.get(self.path.lower())
+
+    def snapshot(self, ctx):
+        # True = задача была включена
+        return ctx.tasks is None or not ctx.tasks.get(self.path.lower(), False)
+
+    def apply(self, lang):
+        run(["schtasks.exe", "/change", "/tn", self.path, "/disable"])
+        return []
+
+    def restore(self, was_enabled):
+        if was_enabled:
+            self.reset()
+
+    def reset(self):
+        run(["schtasks.exe", "/change", "/tn", self.path, "/enable"])
+
+
+class Shortcut:
+    """Ярлык на Рабочем столе. names — имя ярлыка на каждом языке."""
+
+    def __init__(self, names, target, args, icon):
+        self.names = names
+        self.target, self.args, self.icon = (os.path.expandvars(x) for x in (target, args, icon))
+        self.admin = False
+        self.id = f"shortcut:{names['en']}"
+
+    def __str__(self):
+        return self.names["en"]
+
+    def _paths(self):
+        return [os.path.join(desktop_dir(), name + ".lnk") for name in self.names.values()]
+
+    def available(self, ctx):
+        return os.path.exists(self.target)
+
+    def applied(self, ctx):
+        return any(os.path.exists(path) for path in self._paths())
+
+    def snapshot(self, ctx):
+        return [path for path in self._paths() if os.path.exists(path)]
+
+    def apply(self, lang):
+        create_shortcut(os.path.join(desktop_dir(), self.names[lang] + ".lnk"), self.target, self.args, self.icon)
+        return []
+
+    def restore(self, existed):
+        for path in self._paths():
+            if path not in existed and os.path.exists(path):
+                os.remove(path)
+
+    def reset(self):
+        self.restore([])
+
+
+class Tweak:
+    def __init__(self, id, category, ops, requires=None):
+        self.id, self.category, self.ops, self.requires = id, category, ops, requires
+        self.admin = any(op.admin for op in ops)
+
+    def available_ops(self, ctx):
+        if self.requires and not self.requires():
+            return []
+        return [op for op in self.ops if _try(op.available, ctx, default=True)]
+
+
+class Context:
+    """Общие для проверки всех твиков данные: состояние задач планировщика."""
+
+    def __init__(self):
+        self.tasks = load_tasks()
+
+
+def _try(check, ctx, default=None):
+    """Проверка, которой может не хватить прав на чтение (без прав администратора) — тогда default."""
+    try:
+        return check(ctx)
+    except OSError:
+        return default
+
+
+def status(tweak, ctx):
+    """applied / partial / not_applied / unavailable"""
+    ops = tweak.available_ops(ctx)
+    if not ops:
+        return "unavailable"
+    states = [s for s in (_try(op.applied, ctx) for op in ops) if s is not None]
+    if states and all(states):
+        return "applied"
+    if any(states):
+        return "partial"
+    return "not_applied"
+
+
+# --- Применение и откат с резервной копией ---
+
+def backup_path():
+    return os.path.join(data_dir(), "backup.json")
+
+
+def load_backup():
+    try:
+        with open(backup_path(), encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def save_backup(backup):
+    tmp = backup_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(backup, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, backup_path())
+
+
+def apply(tweak, lang, ctx):
+    """Применяет твик. Перед первым применением запоминает исходное состояние. Возвращает список ошибок."""
+    errors = []
+    backup = load_backup()
+    ops = tweak.available_ops(ctx)
+    entry = backup.get(tweak.id)
+    if entry is None:
+        entry = {"ops": {}, "created": []}
+        for op in ops:
+            try:
+                entry["ops"][op.id] = op.snapshot(ctx)
+            except OSError as exc:
+                errors.append(f"{op}: {exc}")
+        # Операцию без сохранённого исходного состояния не применяем: её нельзя было бы откатить
+        ops = [op for op in ops if op.id in entry["ops"]]
+    for op in ops:
+        try:
+            entry["created"] += op.apply(lang)
+        except (OSError, RuntimeError) as exc:
+            errors.append(f"{op}: {exc}")
+    backup[tweak.id] = entry
+    save_backup(backup)
+    return errors
+
+
+def revert(tweak, ctx):
+    """Возвращает исходное состояние из резервной копии, а без неё — стандартные значения Windows."""
+    errors = []
+    backup = load_backup()
+    entry = backup.pop(tweak.id, None)
+    for op in reversed(tweak.available_ops(ctx)):
+        try:
+            if entry is not None and op.id in entry["ops"]:
+                op.restore(entry["ops"][op.id])
+            else:
+                op.reset()
+        except (OSError, RuntimeError) as exc:
+            errors.append(f"{op}: {exc}")
+    if entry is not None:
+        # Ключи, созданные при применении, удаляем, если они опустели (сначала самые глубокие)
+        for path in sorted(set(entry["created"]), key=lambda p: p.count("\\"), reverse=True):
+            try:
+                if is_empty_key(path):
+                    delete_key(path)
+            except OSError:
+                pass
+        if errors:
+            backup[tweak.id] = entry
+    save_backup(backup)
+    return errors
