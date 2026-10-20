@@ -30,11 +30,17 @@ def data_dir():
 
 
 def clean_env():
-    """Окружение для дочерних программ без PSModulePath. Если SimpleTool запущен из PowerShell 7, его пути
-    к модулям попадают в Windows PowerShell 5.1, и тот теряет встроенные командлеты (Get-FileHash,
-    Checkpoint-Computer). Без переменной Windows PowerShell сам восстанавливает свои пути."""
+    """Окружение для дочерних программ со стандартными путями модулей Windows PowerShell 5.1.
+
+    Если SimpleTool запущен из PowerShell 7 или в системе прописаны его пути к модулям, Windows PowerShell
+    загружает несовместимые модули PowerShell 7 и теряет встроенные командлеты (Get-FileHash,
+    Checkpoint-Computer). SimpleTool пользуется только встроенными модулями, поэтому пути задаются явно.
+    """
     env = dict(os.environ)
-    env.pop("PSModulePath", None)
+    env["PSModulePath"] = os.pathsep.join([
+        os.path.expandvars(r"%ProgramFiles%\WindowsPowerShell\Modules"),
+        os.path.expandvars(r"%SystemRoot%\System32\WindowsPowerShell\v1.0\Modules"),
+    ])
     return env
 
 
