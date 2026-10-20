@@ -23,5 +23,10 @@ class Terms(unittest.TestCase):
         with open(terms_md.PATH, encoding="utf-8") as f:
             self.assertEqual(f.read(), terms_md.render(), "run python tools/terms_md.py")
 
+    def test_terms_json_is_up_to_date(self):
+        # The website copies its terms page from terms.json
+        with open(terms_md.JSON_PATH, encoding="utf-8") as f:
+            self.assertEqual(f.read(), terms_md.render_json(), "run python tools/terms_md.py")
+
     def test_terms_md_ships_with_the_repository(self):
         self.assertTrue(os.path.exists(terms_md.PATH))

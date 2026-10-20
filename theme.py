@@ -140,22 +140,28 @@ def gradient_pill(width, height, radius, start, end, background, glow=0.0):
     return _image(("pill", width, height, radius, start, end, background, round(glow, 2)), width, height, pixel)
 
 
-def glow(width, height, color, background, strength=0.22):
+GLOW_SHADES = 128  # the spot is mixed from this many shades: finer than one step of an 8-bit color
+
+
+def glow(width, height, color, background, strength=0.22, step=2):
     """A soft elliptical color spot like the glow on the blagotech website: brightest at the top center
     and fading to every edge, so the image can go anywhere without visible borders.
-    Drawn at half size and scaled up."""
-    small_w, small_h = max(width // 2, 1), max(height // 2, 1)
+
+    Drawn at 1/step of the size and zoomed: the spot is so soft that the blocks cannot be seen. The caller grows
+    step with the display scale, so drawing (pure Python, pixel by pixel) takes as long at 200% as at 100%."""
+    small_w, small_h = max(width // step, 1), max(height // step, 1)
+    last = GLOW_SHADES - 1
+    shades = [mix(color, background, strength * (i / last) ** 2) for i in range(GLOW_SHADES)]
 
     def pixel(x, y):
         dx = (x + 0.5) / small_w * 2 - 1
         dy = (y + 0.5) / small_h * 1.25
-        fade = max(0.0, 1.0 - math.hypot(dx, dy))
-        return mix(color, background, strength * fade * fade)
+        return shades[round(max(0.0, 1.0 - math.hypot(dx, dy)) * last)]
 
     key = ("glow", small_w, small_h, color, background, strength)
-    if key + ("zoom",) not in _cache:
-        _cache[key + ("zoom",)] = _image(key, small_w, small_h, pixel).zoom(2, 2)
-    return _cache[key + ("zoom",)]
+    if key + ("zoom", step) not in _cache:
+        _cache[key + ("zoom", step)] = _image(key, small_w, small_h, pixel).zoom(step, step)
+    return _cache[key + ("zoom", step)]
 
 
 def gradient_line(width, height, start, end):

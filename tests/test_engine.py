@@ -1,4 +1,5 @@
 """The engine in edge cases: statuses, failures mid-apply, deletion boundaries, snapshots, output parsing."""
+import datetime
 import hashlib
 import os
 import subprocess
@@ -8,7 +9,7 @@ import winreg
 from unittest import mock
 
 import engine
-from engine import ABSENT, OwnedKey, Task, Tweak, Unknown, Value
+from engine import ABSENT, OwnedKey, Service, Task, Tweak, Unknown, Value
 from tests.sandbox import Sandbox
 
 ROOT = r"HKCU\Software\Probe"
@@ -147,6 +148,29 @@ class EngineTests(unittest.TestCase):
         engine.revert(tweak, self.ctx)
         self.assertEqual(self.sandbox.state()["shortcuts"], [])
 
+    def test_service_start_type_goes_through_the_service_manager(self):
+        """The service manager applies a startup type at once; a registry value alone waits for a restart."""
+        service = Service("dmwappushservice", 3)
+        self.sandbox.seed_value(service.path, "Start", 3, winreg.REG_DWORD)
+        tweak = Tweak("svc", "privacy", [service])
+        self.assertEqual(engine.apply(tweak, "en", self.ctx), [])
+        self.assertEqual(self.sandbox.start_types, [("dmwappushservice", 4)])
+        self.assertEqual(engine.status(tweak, self.ctx), "applied")
+        self.assertEqual(engine.revert(tweak, self.ctx), [])
+        self.assertEqual(self.sandbox.start_types[-1], ("dmwappushservice", 3))
+        self.assertEqual(engine.read_value(service.path, "Start")[0], 3)
+
+    def test_service_registry_when_the_service_manager_refuses(self):
+        self.sandbox.scm_refuses = True  # as for services Windows protects from configuration changes
+        service = Service("WaaSMedicSvc", 3)
+        self.sandbox.seed_value(service.path, "Start", 3, winreg.REG_DWORD)
+        tweak = Tweak("svc", "privacy", [service])
+        self.assertEqual(engine.apply(tweak, "en", self.ctx), [])
+        self.assertEqual(self.sandbox.start_types, [])
+        self.assertEqual(engine.read_value(service.path, "Start")[0], 4)
+        engine.revert(tweak, self.ctx)
+        self.assertEqual(engine.read_value(service.path, "Start")[0], 3)
+
     def test_absent_default_deletes_value(self):
         value = Value(ROOT, "Policy", 1)
         self.assertIs(value.default, ABSENT)
@@ -193,13 +217,62 @@ class ParsingTests(unittest.TestCase):
             self.assertIsNone(engine.load_tasks())
 
     def test_restore_point_results(self):
-        with mock.patch.object(engine, "powershell", return_value="CREATED\r\n"):
-            self.assertEqual(engine.create_restore_point(), (True, ""))
-        with mock.patch.object(engine, "powershell", return_value="NOT CREATED: A new restore point cannot be created"):
-            self.assertEqual(engine.create_restore_point(), (False, "A new restore point cannot be created"))
-        with mock.patch.object(engine, "powershell", side_effect=RuntimeError("System Restore is disabled")):
-            self.assertEqual(engine.create_restore_point(), (False, "System Restore is disabled"))
+        scripts = []
 
+        def powershell(output):
+            def run(script, timeout=None):
+                scripts.append(script)
+                if isinstance(output, Exception):
+                    raise output
+                return output
+            return run
+
+        with mock.patch.object(engine, "system_protection_on", return_value=True):
+            with mock.patch.object(engine, "powershell", powershell("CREATED\r\n")):
+                self.assertEqual(engine.create_restore_point(), (True, "", False))
+            self.assertNotIn("Enable-ComputerRestore", scripts[-1])
+            with mock.patch.object(engine, "powershell",
+                                   powershell("NOT CREATED: A new restore point cannot be created")):
+                self.assertEqual(engine.create_restore_point(), (False, "A new restore point cannot be created", False))
+            with mock.patch.object(engine, "powershell", powershell(RuntimeError("System Restore is disabled"))):
+                self.assertEqual(engine.create_restore_point(), (False, "System Restore is disabled", False))
+        # System Protection is off: it is turned on in the same script, before the restore point
+        with mock.patch.object(engine, "system_protection_on", return_value=False), \
+                mock.patch.object(engine, "powershell", powershell("CREATED")):
+            self.assertEqual(engine.create_restore_point(), (True, "", True))
+        self.assertTrue(scripts[-1].startswith("Enable-ComputerRestore -Drive ($env:SystemDrive + '\\')"))
+        # Unknown state: nothing is turned on that may already be on
+        with mock.patch.object(engine, "system_protection_on", return_value=None), \
+                mock.patch.object(engine, "powershell", powershell("CREATED")):
+            self.assertEqual(engine.create_restore_point(), (True, "", False))
+        self.assertNotIn("Enable-ComputerRestore", scripts[-1])
+
+    def test_system_protection_state(self):
+        volumes = ["\\\\?\\Volume{66f98281-2248-488e-ad69-405b08ad2867}\\:(C%3A)"]
+        with mock.patch.dict(os.environ, {"SystemDrive": "C:"}):
+            with mock.patch.object(engine, "read_value", return_value=(volumes, winreg.REG_MULTI_SZ)):
+                self.assertTrue(engine.system_protection_on())
+            with mock.patch.object(engine, "read_value", return_value=None):
+                self.assertFalse(engine.system_protection_on())
+            with mock.patch.object(engine, "read_value", side_effect=PermissionError(5, "Access is denied")):
+                self.assertIsNone(engine.system_protection_on())
+        with mock.patch.dict(os.environ, {"SystemDrive": "D:"}), \
+                mock.patch.object(engine, "read_value", return_value=(volumes, winreg.REG_MULTI_SZ)):
+            self.assertFalse(engine.system_protection_on(), "only the Windows drive counts")
+
+    def test_last_restore_point(self):
+        utc = datetime.timezone.utc
+        with mock.patch.object(engine, "powershell", return_value="2026-10-19T21:31:09\r\n"):
+            created = engine.last_restore_point()
+            self.assertEqual(created, datetime.datetime(2026, 10, 19, 21, 31, 9, tzinfo=utc))
+            self.assertEqual(engine.recent_restore_point(now=created + datetime.timedelta(hours=23)), created)
+            self.assertIsNone(engine.recent_restore_point(now=created + datetime.timedelta(hours=25)))
+        with mock.patch.object(engine, "powershell", return_value="NONE\r\n"):
+            self.assertIsNone(engine.last_restore_point())
+            self.assertIsNone(engine.recent_restore_point())
+        with mock.patch.object(engine, "powershell", return_value="Get-ComputerRestorePoint : Access denied"), \
+                self.assertRaises(RuntimeError):
+            engine.last_restore_point()
 
 if __name__ == "__main__":
     unittest.main()

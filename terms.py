@@ -4,7 +4,7 @@ Change VERSION whenever the text changes: SimpleTool then shows the terms again 
 TERMS.md in the repository root is generated from this file: python tools/terms_md.py
 """
 
-VERSION = "2026-10-20"
+VERSION = "2026-10-20.2"
 
 TERMS = {
     "en": {
@@ -23,8 +23,10 @@ TERMS = {
              "computer. You choose which changes to make, and you are responsible for that choice and its "
              "consequences."),
             ("Before you change anything",
-             "Back up your important files and create a Windows restore point: the System snapshots page has a "
-             "button for it. Read the description of every tweak before you apply it. Use SimpleTool only on a "
+             "Back up your important files. Before SimpleTool applies tweaks, it asks for a Windows restore point "
+             "and offers to create one; if System Protection is off for the Windows drive, it turns it on for that. "
+             "You may choose to continue without a restore point, and if you do, you accept that a change may leave "
+             "no way back. Read the description of every tweak before you apply it. Use SimpleTool only on a "
              "computer that you own or are allowed to change. On a work or school computer, ask your administrator "
              "first."),
             ("What can go wrong",
@@ -43,8 +45,12 @@ TERMS = {
              "for fraud, or any other liability that the law does not allow to be excluded or limited. If you use "
              "SimpleTool as a consumer, these terms do not affect your statutory rights."),
             ("Your data",
-             "SimpleTool does not collect personal data and sends nothing over the internet. Its settings, backups "
-             "and snapshots stay on your computer in %LOCALAPPDATA%\\SimpleTool; delete that folder to remove them."),
+             "SimpleTool does not collect personal data. It connects to the internet only when you press “Check for "
+             "updates”: it then asks blagotech.uk for the number of the latest version. That request carries what "
+             "every web request does, such as your IP address, and nothing about your computer; blagotech.uk is "
+             "hosted by Cloudflare. If you write to us about a problem, your message and the files you attach are "
+             "used only to answer you. SimpleTool's settings, backups and snapshots stay on your computer in "
+             "%LOCALAPPDATA%\\SimpleTool; delete that folder to remove them."),
             ("Licence and trademarks",
              "The source code of SimpleTool is released under the MIT License, and nothing in these terms limits the "
              "rights that licence gives you. The blagotech name, the b!t mark and the logo are not covered by the "
@@ -57,7 +63,7 @@ TERMS = {
              "Northern Ireland, you may also bring proceedings in your local courts. If a translation of these terms "
              "differs from the English version, the English version applies."),
             ("Contact",
-             "Questions about SimpleTool or these terms: service@blagotech.uk."),
+             "Questions about SimpleTool or these terms, and reports of problems: service@blagotech.uk."),
         ],
     },
     "ru": {
@@ -77,8 +83,11 @@ TERMS = {
              "ошибок или подходит для вашего компьютера. Вы сами выбираете, какие изменения вносить, и сами отвечаете "
              "за этот выбор и его последствия."),
             ("Прежде чем что-то менять",
-             "Сделайте резервную копию важных файлов и создайте точку восстановления Windows: на странице «Снимки "
-             "системы» для этого есть кнопка. Прочитайте описание каждого твика, прежде чем применять его. "
+             "Сделайте резервную копию важных файлов. Перед применением твиков SimpleTool просит точку "
+             "восстановления Windows и предлагает её создать; если защита системы для диска с Windows выключена, он "
+             "для этого её включает. Вы можете продолжить без точки восстановления, и в этом случае вы принимаете, "
+             "что после изменения пути назад может не быть. Прочитайте описание каждого твика, прежде чем применять "
+             "его. "
              "Используйте SimpleTool только на компьютере, который принадлежит вам или который вам разрешено "
              "настраивать. На рабочем или учебном компьютере сначала спросите администратора."),
             ("Что может пойти не так",
@@ -99,9 +108,12 @@ TERMS = {
              "позволяет исключить или ограничить. Если вы используете SimpleTool как потребитель, это соглашение не "
              "затрагивает ваших прав, предусмотренных законом."),
             ("Ваши данные",
-             "SimpleTool не собирает персональные данные и ничего не отправляет через интернет. Его настройки, "
-             "резервные копии и снимки хранятся на вашем компьютере в папке %LOCALAPPDATA%\\SimpleTool; чтобы "
-             "удалить их, удалите эту папку."),
+             "SimpleTool не собирает персональные данные. В интернет он обращается, только когда вы нажимаете "
+             "«Проверить обновления»: тогда он запрашивает у blagotech.uk номер последней версии. Этот запрос "
+             "содержит то же, что и любой веб-запрос, например ваш IP-адрес, и ничего о вашем компьютере; сайт "
+             "blagotech.uk работает на Cloudflare. Если вы напишете нам о проблеме, ваше письмо и приложенные файлы "
+             "используются только для ответа вам. Настройки, резервные копии и снимки SimpleTool хранятся на вашем "
+             "компьютере в папке %LOCALAPPDATA%\\SimpleTool; чтобы удалить их, удалите эту папку."),
             ("Лицензия и товарные знаки",
              "Исходный код SimpleTool распространяется по лицензии MIT, и это соглашение не ограничивает права, "
              "которые она вам даёт. Название blagotech, знак b!t и логотип лицензией MIT не охватываются."),
@@ -113,7 +125,7 @@ TERMS = {
              "Северной Ирландии, вы также можете обратиться в суд по месту жительства. Если перевод соглашения "
              "расходится с английской версией, действует английская версия."),
             ("Контакты",
-             "Вопросы о SimpleTool и этом соглашении: service@blagotech.uk."),
+             "Вопросы о SimpleTool и этом соглашении, а также сообщения о проблемах: service@blagotech.uk."),
         ],
     },
     "uk": {
@@ -132,8 +144,10 @@ TERMS = {
              "гарантій того, що програма придатна для певної мети, працює без помилок або підходить для вашого "
              "комп'ютера. Ви самі обираєте, які зміни вносити, і самі відповідаєте за цей вибір та його наслідки."),
             ("Перш ніж щось змінювати",
-             "Зробіть резервну копію важливих файлів і створіть точку відновлення Windows: на сторінці «Знімки "
-             "системи» для цього є кнопка. Прочитайте опис кожного твіка, перш ніж застосовувати його. "
+             "Зробіть резервну копію важливих файлів. Перед застосуванням твіків SimpleTool просить точку "
+             "відновлення Windows і пропонує її створити; якщо захист системи для диска з Windows вимкнено, він для "
+             "цього його вмикає. Ви можете продовжити без точки відновлення, і в такому разі ви приймаєте, що після "
+             "зміни шляху назад може не бути. Прочитайте опис кожного твіка, перш ніж застосовувати його. "
              "Використовуйте SimpleTool лише на комп'ютері, який належить вам або який вам дозволено налаштовувати. "
              "На робочому чи навчальному комп'ютері спершу запитайте адміністратора."),
             ("Що може піти не так",
@@ -154,9 +168,13 @@ TERMS = {
              "чи обмежити. Якщо ви використовуєте SimpleTool як споживач, ця угода не зачіпає ваших прав, "
              "передбачених законом."),
             ("Ваші дані",
-             "SimpleTool не збирає персональні дані й нічого не надсилає через інтернет. Його налаштування, резервні "
-             "копії та знімки зберігаються на вашому комп'ютері в папці %LOCALAPPDATA%\\SimpleTool; щоб видалити їх, "
-             "видаліть цю папку."),
+             "SimpleTool не збирає персональні дані. До інтернету він звертається, лише коли ви натискаєте "
+             "«Перевірити оновлення»: тоді він запитує в blagotech.uk номер останньої версії. Цей запит містить те "
+             "саме, що й будь-який веб-запит, наприклад вашу IP-адресу, і нічого про ваш комп'ютер; сайт "
+             "blagotech.uk працює на Cloudflare. Якщо ви напишете нам про проблему, ваш лист і додані файли "
+             "використовуються лише для відповіді вам. Налаштування, резервні копії та знімки SimpleTool "
+             "зберігаються на вашому комп'ютері в папці %LOCALAPPDATA%\\SimpleTool; щоб видалити їх, видаліть цю "
+             "папку."),
             ("Ліцензія та торговельні марки",
              "Вихідний код SimpleTool поширюється за ліцензією MIT, і ця угода не обмежує права, які вона вам надає. "
              "Назва blagotech, знак b!t і логотип ліцензією MIT не охоплюються."),
@@ -168,7 +186,7 @@ TERMS = {
              "Ірландії, ви також можете звернутися до суду за місцем проживання. Якщо переклад угоди відрізняється "
              "від англійської версії, діє англійська версія."),
             ("Контакти",
-             "Питання про SimpleTool і цю угоду: service@blagotech.uk."),
+             "Питання про SimpleTool і цю угоду, а також повідомлення про проблеми: service@blagotech.uk."),
         ],
     },
 }

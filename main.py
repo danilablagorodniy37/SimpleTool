@@ -14,6 +14,7 @@ import time
 import traceback
 import tkinter as tk
 import tkinter.font as tkfont
+import urllib.parse
 from ctypes import wintypes
 from tkinter import ttk
 
@@ -26,11 +27,13 @@ import terms
 import theme
 import tray
 import tweaks
+import updates
 from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
                      Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.6"
+VERSION = "0.6.1"
+SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
 PAGES = ["overview"] + tweaks.CATEGORIES + ["memory", "snapshots"]
@@ -130,6 +133,7 @@ class App:
         self.admin = engine.is_admin()
         self.other_account = engine.other_account()  # started with another account's password: (it, signed in)
         self.error_shown = False  # an unexpected error is shown once per session, every one goes to error.log
+        self.checking_updates = False
         root.report_callback_exception = self.report_error
         self.settings = load_settings()
         lang = self.settings.get("lang")
@@ -342,7 +346,8 @@ class App:
                                               image=theme.gradient_line(px(44), px(3), C["grad_a"], C["grad_b"]))
         self.h_desc = self.header.create_text(px(GUTTER), px(80), anchor="nw", font=self.fonts["body"], fill=C["muted"])
         controls = tk.Frame(self.header, bg=C["bg"])
-        # Compact buttons: theme is an icon only, language is a code; the full names are in the menus
+        # Compact buttons: help and theme are icons only, language is a code; the full names are in the menus
+        self.drop_button(controls, ICONS["info"], None, self.help_menu).pack(side="left", padx=(0, px(8)))
         self.drop_button(controls, ICONS["palette"], None, self.theme_menu).pack(side="left", padx=(0, px(8)))
         self.drop_button(controls, ICONS["globe"], LANGUAGE_CODES[self.lang], self.language_menu).pack(side="left")
         self.h_controls = self.header.create_window(0, 0, window=controls, anchor="e")
@@ -384,7 +389,7 @@ class App:
         self.message_label.pack(side="left", fill="x", expand=True)
 
     def drop_button(self, parent, icon, label, build_menu):
-        """A button with a drop-down menu (theme, language)."""
+        """A button with a drop-down menu (help, theme, language)."""
         px = self.px
         card = Card(parent, self.scale, fill=C["surface"], border=C["border"], radius=10, pad=3)
         parts = [tk.Label(card.body, text=icon, font=self.fonts["icon_small"], fg=C["accent"], bg=card.fill)]
@@ -409,16 +414,28 @@ class App:
             widget.bind("<Leave>", lambda e: None if self.pointer_inside(card) else border(C["border"]))
         return card
 
-    def popup_menu(self, title, items, current, command):
+    def menu(self, title):
         menu = tk.Menu(self.root, tearoff=False, bg=C["surface"], fg=C["text"], activebackground=C["primary"],
                        activeforeground="#FFFFFF", disabledforeground=C["dim"], selectcolor=C["accent"],
                        font=self.fonts["body"], bd=0)
         menu.add_command(label=title, state="disabled")
+        return menu
+
+    def popup_menu(self, title, items, current, command):
+        menu = self.menu(title)
         menu.add_separator()
         variable = tk.StringVar(menu, value=current)
         for value, label in items:
             menu.add_radiobutton(label=label, value=value, variable=variable, command=lambda v=value: command(v))
         menu.variable = variable  # keep a reference so the garbage collector does not collect the variable
+        return menu
+
+    def help_menu(self):
+        menu = self.menu(f"SimpleTool {VERSION} {self.t('beta').lower()}")
+        menu.add_separator()
+        for key, command in (("update_link", self.check_updates), ("report_link", self.show_report),
+                             ("terms_link", self.show_terms)):
+            menu.add_command(label=self.t(key), command=command)
         return menu
 
     def language_menu(self):
@@ -556,7 +573,7 @@ class App:
         self.header.itemconfigure(self.h_desc, text=desc)
         strength = 0.18 if C["name"] == "light" else 0.26
         self.header.itemconfigure(self.h_glow, image=theme.glow(self.px(GLOW_WIDTH), self.px(190), CATEGORY_COLORS[page],
-                                                                C["bg"], strength))
+                                                                C["bg"], strength, step=max(2, round(2 * self.scale))))
         for widget in self.links.winfo_children():
             widget.destroy()
         if page == "overview":
@@ -900,7 +917,7 @@ class App:
         restore.pack(side="left")
         self.action_buttons.append((restore, True))
         if not initial:
-            self.link(actions, self.t("snap_delete"), lambda: self.delete_snapshot(path), font="small",
+            self.link(actions, self.t("snap_delete"), lambda: self.confirm_delete(path, data), font="small",
                       color=C["dim"]).pack(side="left", padx=(px(12), 0))
         self.page_cards.append(card)
 
@@ -923,18 +940,24 @@ class App:
         self.run_action("snap_saving", lambda: engine.take_snapshot(tweaks.TWEAKS, ctx or engine.Context(), "manual",
                                                                     statuses, VERSION), done)
 
-    def create_restore_point(self):
+    def create_restore_point(self, then=None, failed=None):
+        """Creates a Windows restore point in the background. Then calls then(), or failed(Windows message)."""
         def done(result):
             self.message = None
-            ok, detail = (False, str(result)) if isinstance(result, Exception) else result
+            ok, detail, enabled = (False, str(result), False) if isinstance(result, Exception) else result
+            self.update_footer()
             if ok:
-                self.notify(self.t("rp_done"), C["ok"], ICONS["check"])
+                self.notify(self.t("rp_done_enabled" if enabled else "rp_done"), C["ok"], ICONS["check"])
+                if then:
+                    then()
+            elif failed:
+                failed(detail)
             else:
                 self.notify(self.t("rp_failed"), C["warn"], ICONS["warning"])
                 self.show_errors([self.t("rp_failed") + (f"\n{detail}" if detail else "")])
-            self.update_footer()
 
-        self.run_action("rp_working", engine.create_restore_point, done)
+        # Not "acting": closing SimpleTool while Windows creates the point interrupts nothing
+        self.run_action("rp_working", engine.create_restore_point, done, acting=False)
 
     def confirm_restore(self, data):
         date = self.format_date(data.get("created"))
@@ -986,6 +1009,21 @@ class App:
                 self.notify(self.t("snap_restored", date=date), C["ok"], ICONS["check"])
 
         self.run_action("snap_working", work, done)
+
+    def confirm_delete(self, path, data):
+        date = self.format_date(data.get("created"))
+        win, content = self.dialog(self.t("snap_delete_title"), ICONS["snapshots"], C["warn"],
+                                   self.t("snap_delete_title"), self.t("snap_delete_text", date=date))
+
+        def go():
+            win.destroy()
+            self.delete_snapshot(path)
+
+        GradientButton(content, self.t("snap_delete_ok"), go, self.fonts["button"], self.scale, self.animator,
+                       pad=(18, 8), danger=True).pack(side="right")
+        GradientButton(content, self.t("cancel"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, self.px(10)))
+        self.present(win)
 
     def delete_snapshot(self, path):
         if self.busy:
@@ -1214,8 +1252,13 @@ class App:
         config, stats = snap["config"], snap["stats"]
         on = config["enabled"]
         self.mem["title"].configure(text=self.t("mem_on" if on else "mem_off"))
-        self.mem["text"].configure(text=self.t("mem_on_text", seconds=config["interval"]) if on else
-                                   self.t("mem_off_text"))
+        if not on:
+            text = self.t("mem_off_text")
+        elif self.limiter.active():
+            text = self.t("mem_on_text", seconds=config["interval"])
+        else:  # nothing to limit: closing the window exits instead of going to the tray
+            text = self.t("mem_on_idle_text")
+        self.mem["text"].configure(text=text)
         self.mem["freed"].configure(text=self.size_text(snap["freed"]))
         if self.mem["toggle"].on != on:  # switched from the tray menu
             self.mem["toggle"].set(on)
@@ -1827,8 +1870,36 @@ class App:
             self.message = ("nothing_to_apply", {})
             self.update_footer()
             return
-        lang, ctx = self.lang, self.scan["ctx"]
-        self.start_work(chosen, lambda t: engine.apply(t, lang, ctx), "working_apply", "done_apply", "before_apply")
+
+        def apply():
+            lang, ctx = self.lang, self.scan["ctx"]
+            self.start_work(chosen, lambda t: engine.apply(t, lang, ctx), "working_apply", "done_apply",
+                            "before_apply")
+
+        self.ensure_restore_point(apply)
+
+    def ensure_restore_point(self, proceed):
+        """Tweaks are applied only after a Windows restore point: one from the last 24 hours, a new one, or the
+        user's explicit decision to go on without one."""
+        if not self.admin:  # Windows lists and creates restore points only for administrators
+            self.show_restore_point_dialog(proceed)
+            return
+
+        def recent():
+            try:
+                return engine.recent_restore_point()
+            except RuntimeError:
+                return None  # cannot tell: the dialog offers to create one
+
+        def done(point):
+            self.message = None
+            self.update_footer()
+            if point:
+                proceed()
+            else:
+                self.show_restore_point_dialog(proceed)
+
+        self.run_action("rp_checking", recent, done, acting=False)
 
     def revert_selected(self):
         chosen = [t for t in tweaks.TWEAKS if t.id in self.selected and self.card_state(t) in REVERTIBLE]
@@ -1839,9 +1910,10 @@ class App:
         ctx = self.scan["ctx"]
         self.start_work(chosen, lambda t: engine.revert(t, ctx), "working_revert", "done_revert", "before_revert")
 
-    def run_action(self, working_key, work, on_done):
-        """A long action in the background: the window is busy, the footer shows a spinner."""
-        self.busy = self.acting = True
+    def run_action(self, working_key, work, on_done, acting=True):
+        """A long action in the background: the window is busy, the footer shows a spinner. While it is acting
+        (changing the system) SimpleTool cannot be closed."""
+        self.busy, self.acting = True, acting
         self.message = (working_key, {})
         for tweak_id in self.cards:
             self.paint_card(self.tweak_by_id[tweak_id])
@@ -1935,7 +2007,8 @@ class App:
             return
         self.error_shown = True
         try:
-            self.show_errors([f"{exc_type.__name__}: {exc}", error_log_path()], "crash_title", "crash_intro")
+            self.show_errors([f"{exc_type.__name__}: {exc}", error_log_path()], "crash_title", "crash_intro",
+                             report=True)
         except Exception:  # the window itself may be what is broken
             pass
 
@@ -1956,7 +2029,7 @@ class App:
 
     # --- Dialogs ---
 
-    def dialog(self, title, icon, color, heading, text):
+    def dialog(self, title, icon, color, heading, text, heading_color=None):
         """A blagotech-style window: icon, heading, text. Returns (window, content frame)."""
         px = self.px
         win = tk.Toplevel(self.root, bg=C["surface"])
@@ -1971,8 +2044,8 @@ class App:
                      radius=14, pad=4)
         badge.grid(row=0, column=0, rowspan=2, sticky="nw")
         tk.Label(badge.body, text=icon, font=self.fonts["icon_big"], fg=color, bg=badge.fill).pack(padx=px(8), pady=px(6))
-        tk.Label(body, text=heading, font=self.fonts["dialog"], fg=C["text"], bg=C["surface"], anchor="w").grid(
-            row=0, column=1, sticky="w", padx=(px(16), 0))
+        tk.Label(body, text=heading, font=self.fonts["dialog"], fg=heading_color or C["text"], bg=C["surface"],
+                 anchor="w").grid(row=0, column=1, sticky="w", padx=(px(16), 0))
         tk.Label(body, text=text, font=self.fonts["body"], fg=C["muted"], bg=C["surface"], justify="left", anchor="w",
                  wraplength=px(440)).grid(row=1, column=1, sticky="w", padx=(px(16), 0), pady=(px(6), 0))
         content = tk.Frame(body, bg=C["surface"])
@@ -2086,10 +2159,10 @@ class App:
         win.destroy()
         self.startup_dialogs()
 
-    def show_errors(self, errors, title_key="errors_title", intro_key="errors_intro"):
+    def show_errors(self, errors, title_key="errors_title", intro_key="errors_intro", report=False):
         px = self.px
         win, content = self.dialog(self.t(title_key), ICONS["warning"], C["warn"], self.t(title_key),
-                                   self.t(intro_key))
+                                   self.t(intro_key, email=SUPPORT_EMAIL))
         text = tk.Text(content, font=self.fonts["small"], fg=C["text"], bg=C["bg"], relief="flat", wrap="word",
                        width=72, height=min(12, 2 * len(errors) + 1), padx=px(12), pady=px(10), highlightthickness=0)
         text.insert("1.0", "\n\n".join(errors))
@@ -2097,7 +2170,222 @@ class App:
         text.pack(fill="x")
         GradientButton(content, self.t("close"), win.destroy, self.fonts["button"], self.scale, self.animator,
                        pad=(18, 8)).pack(side="right", pady=(px(16), 0))
+        if report:
+            def report_it():
+                win.destroy()
+                self.show_report()
+
+            GradientButton(content, self.t("report_link"), report_it, self.fonts["button"], self.scale,
+                           self.animator, primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)),
+                                                                          pady=(px(16), 0))
         self.present(win)
+
+    # --- Restore point before Apply ---
+
+    def show_restore_point_dialog(self, proceed, error=None):
+        """Asks for a restore point before tweaks are applied. Going on without one takes a second, scarier
+        dialog (show_no_restore_point_dialog)."""
+        px = self.px
+        win, content = self.dialog(self.t("rp_gate_title"), ICONS["shield"], C["warn"], self.t("rp_gate_title"),
+                                   self.t("rp_gate_text" if self.admin else "rp_gate_admin_text"))
+        if error is not None:
+            failure = tk.Label(content, text=self.t("rp_failed") + (f"\n{error}" if error else ""),
+                               font=self.fonts["small"], fg=C["bad"], bg=C["surface"], anchor="w", justify="left",
+                               wraplength=px(500))
+            failure.pack(fill="x")
+            self.link(content, self.t("rp_open_protection"), self.open_system_protection, font="small").pack(
+                anchor="w", pady=(px(6), 0))
+        buttons = tk.Frame(content, bg=C["surface"])
+        buttons.pack(fill="x", pady=(px(16) if error is not None else 0, 0))
+
+        def create():
+            win.destroy()
+            self.create_restore_point(then=proceed,
+                                      failed=lambda detail: self.show_restore_point_dialog(proceed, detail))
+
+        def skip():
+            win.destroy()
+            self.show_no_restore_point_dialog(proceed)
+
+        if self.admin:
+            GradientButton(buttons, self.t("rp_gate_create"), create, self.fonts["button"], self.scale,
+                           self.animator, pad=(18, 8)).pack(side="right")
+        else:
+            error_label = tk.Label(content, text="", font=self.fonts["small"], fg=C["warn"], bg=C["surface"],
+                                   anchor="w")
+            error_label.pack(fill="x", before=buttons)
+            GradientButton(buttons, self.t("admin_restart"), lambda: self.restart_as_admin(error_label),
+                           self.fonts["button"], self.scale, self.animator, pad=(18, 8)).pack(side="right")
+        GradientButton(buttons, self.t("cancel"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.link(buttons, self.t("rp_gate_skip"), skip, font="small", color=C["dim"]).pack(side="left")
+        self.present(win)
+
+    def show_no_restore_point_dialog(self, proceed):
+        """Going on without a restore point: the risk is spelled out, and the button works only after the user
+        ticks that they take it."""
+        px = self.px
+        red = GradientButton.DANGER[0]
+        win, content = self.dialog(self.t("rp_skip_title"), ICONS["warning"], red, self.t("rp_skip_title"),
+                                   self.t("rp_skip_text"), heading_color=red)
+        row = tk.Frame(content, bg=C["surface"], cursor="hand2")
+        row.pack(fill="x")
+        box = CheckBox(row, px(18), self.animator)
+        box.pack(side="left", anchor="n", pady=(px(2), 0))
+        label = tk.Label(row, text=self.t("rp_skip_confirm"), font=self.fonts["small_bold"], fg=C["text"],
+                         bg=C["surface"], anchor="w", justify="left", wraplength=px(470))
+        label.pack(side="left", fill="x", padx=(px(10), 0))
+        buttons = tk.Frame(content, bg=C["surface"])
+        buttons.pack(fill="x", pady=(px(18), 0))
+
+        def go():
+            win.destroy()
+            proceed()
+
+        def back():
+            win.destroy()
+            self.show_restore_point_dialog(proceed)
+
+        apply = GradientButton(buttons, self.t("rp_skip_apply"), go, self.fonts["button"], self.scale, self.animator,
+                               pad=(18, 8), danger=True)
+        apply.pack(side="right")
+        apply.set_enabled(False)
+        GradientButton(buttons, self.t("back"), back, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+
+        def toggle(event=None):
+            checked = box.progress < 0.5
+            box.set(checked, True)
+            apply.set_enabled(checked)
+
+        for widget in (row, box, label):
+            widget.bind("<Button-1>", toggle)
+        self.present(win)
+
+    def open_system_protection(self):
+        """The System Protection tab of System Properties: turning it on, disk space, restore points."""
+        try:
+            subprocess.Popen(["SystemPropertiesProtection.exe"], creationflags=engine.CREATE_NO_WINDOW)
+        except OSError as exc:
+            self.show_errors([str(exc)])
+
+    # --- Updates and problem reports ---
+
+    def open_url(self, url):
+        try:
+            os.startfile(url)
+            return True
+        except OSError:
+            return False
+
+    def check_updates(self):
+        """Asks blagotech.uk for the newest version. Only on request: SimpleTool never goes online by itself."""
+        if self.checking_updates:
+            return
+        self.checking_updates = True
+        self.notify(self.t("update_checking"), C["accent"], ICONS["refresh"])
+
+        def work():
+            try:
+                return updates.check(VERSION)
+            except updates.CheckFailed as exc:
+                return exc
+
+        def done(result):
+            self.checking_updates = False
+            if isinstance(result, Exception):
+                self.show_update_failed(str(result))
+            elif result["newer"]:
+                self.show_update(result)
+            else:
+                self.notify(self.t("update_latest", version=VERSION), C["ok"], ICONS["check"])
+
+        self.run_job(work, done)
+
+    def show_update(self, info):
+        px = self.px
+        win, content = self.dialog(self.t("update_title"), ICONS["refresh"], C["accent"],
+                                   self.t("update_heading", version=info["version"]),
+                                   self.t("update_text", current=VERSION))
+        site = updates.PAGES.get(self.lang, updates.PAGES["en"])
+
+        def download():
+            win.destroy()
+            self.open_url(info["url"] or site)
+
+        GradientButton(content, self.t("update_download"), download, self.fonts["button"], self.scale,
+                       self.animator, pad=(18, 8)).pack(side="right")
+        GradientButton(content, self.t("update_later"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.link(content, self.t("update_notes"), lambda: self.open_url(info["page"] or site), font="small").pack(
+            side="left")
+        self.present(win)
+
+    def show_update_failed(self, error):
+        px = self.px
+        win, content = self.dialog(self.t("update_failed_title"), ICONS["warning"], C["warn"],
+                                   self.t("update_failed_title"), self.t("update_failed_text", error=error))
+
+        def site():
+            win.destroy()
+            self.open_url(updates.PAGES.get(self.lang, updates.PAGES["en"]))
+
+        GradientButton(content, self.t("update_open_site"), site, self.fonts["button"], self.scale, self.animator,
+                       pad=(18, 8)).pack(side="right")
+        GradientButton(content, self.t("close"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.present(win)
+
+    def show_report(self):
+        """Where to send a bug report: an email to SUPPORT_EMAIL with the versions filled in, and the error log."""
+        px = self.px
+        win, content = self.dialog(self.t("report_title"), ICONS["info"], C["accent"], self.t("report_title"),
+                                   self.t("report_text", email=SUPPORT_EMAIL))
+        line = tk.Frame(content, bg=C["surface"])
+        line.pack(fill="x")
+        # A read-only field: the address can be selected and copied by hand too
+        address = tk.Entry(line, font=self.fonts["mono"], fg=C["text"], bg=C["bg"], relief="flat",
+                           readonlybackground=C["bg"], highlightthickness=0, width=len(SUPPORT_EMAIL) + 2)
+        address.insert(0, SUPPORT_EMAIL)
+        address.configure(state="readonly")
+        address.pack(side="left", ipady=px(6), ipadx=px(8))
+        self.link(line, self.t("report_copy"), self.copy_address, font="small").pack(side="left", padx=(px(12), 0))
+        buttons = tk.Frame(content, bg=C["surface"])
+        buttons.pack(fill="x", pady=(px(18), 0))
+
+        def write():
+            win.destroy()
+            self.write_report()
+
+        GradientButton(buttons, self.t("report_write"), write, self.fonts["button"], self.scale, self.animator,
+                       pad=(18, 8)).pack(side="right")
+        GradientButton(buttons, self.t("report_log"), self.open_error_log, self.fonts["button"], self.scale,
+                       self.animator, primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.present(win)
+
+    def write_report(self):
+        subject = self.t("report_subject", version=VERSION)
+        body = self.t("report_body", version=VERSION, windows=platform.version())
+        url = f"mailto:{SUPPORT_EMAIL}?" + urllib.parse.urlencode({"subject": subject, "body": body},
+                                                                  quote_via=urllib.parse.quote)
+        if not self.open_url(url):  # no email program is set up: the address goes to the clipboard instead
+            self.copy_address()
+
+    def copy_address(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(SUPPORT_EMAIL)
+        self.notify(self.t("report_copied", email=SUPPORT_EMAIL), C["ok"], ICONS["check"])
+
+    def open_error_log(self):
+        """Shows error.log selected in File Explorer, or the data folder if there have been no errors."""
+        path = error_log_path()
+        try:
+            if os.path.exists(path):
+                subprocess.Popen(f'explorer.exe /select,"{path}"')
+            else:
+                os.startfile(engine.data_dir())
+        except OSError as exc:
+            self.show_errors([str(exc)])
 
 
 def work_area(root):
@@ -2115,7 +2403,8 @@ def start_failed(exc):
     """SimpleTool could not open its window: a plain Windows message, because Tk itself may be what failed."""
     log_error(traceback.format_exc())
     lang = i18n.detect_language()
-    text = i18n.TEXTS[lang]["ui"]["start_failed"].format(error=f"{type(exc).__name__}: {exc}", path=error_log_path())
+    text = i18n.TEXTS[lang]["ui"]["start_failed"].format(error=f"{type(exc).__name__}: {exc}", path=error_log_path(),
+                                                         email=SUPPORT_EMAIL)
     ctypes.windll.user32.MessageBoxW(None, text, "SimpleTool", 0x10)  # MB_ICONERROR
 
 

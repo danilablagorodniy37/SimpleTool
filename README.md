@@ -10,7 +10,12 @@ for programs such as Chrome and Discord. Tick the tweaks you want, press **Apply
 [latest release](https://github.com/danilablagorodniy37/SimpleTool/releases/latest) on GitHub.
 
 On the first run SimpleTool shows its [terms of use](TERMS.md) and works only after you accept them.
-They are shown again if they change; the sidebar has a link to read them at any time.
+They are shown again if they change; the sidebar has a link to read them at any time. What changed
+in each version is in the [changelog](CHANGELOG.md).
+
+SimpleTool goes online only when you ask it to: the menu behind the ⓘ button at the top of the window
+has **Check for updates**, which asks blagotech.uk for the number of the latest version. The same
+menu has **Report a problem**: bug reports go to service@blagotech.uk.
 
 The interface is in English, Russian and Ukrainian, with three colour themes (Navy, Midnight and
 Light). SimpleTool picks the language of Windows; switch language and theme in the top right corner.
@@ -76,7 +81,7 @@ another account's administrator password, Windows runs it as that other account:
 SimpleTool warns about it at startup.
 
 If something goes wrong, SimpleTool writes the details to `%LOCALAPPDATA%\SimpleTool\error.log`.
-Attach that file when you report a problem.
+Send that file to service@blagotech.uk when you report a problem (ⓘ → **Report a problem**).
 
 ## Portable version
 
@@ -97,8 +102,11 @@ mistake.
 
 ## Before you apply anything
 
-- SimpleTool changes the registry, services and scheduled tasks. Create a Windows restore point
-  first: the **System snapshots** page has a button for it.
+- SimpleTool changes the registry, services and scheduled tasks. Before it applies anything it asks
+  for a Windows restore point: if there is none from the last 24 hours, it offers to create one, and
+  turns System Protection on for the Windows drive if it is off. Going on without a restore point
+  takes a second warning and a tick that you take the risk. The **System snapshots** page has a
+  button for a restore point too.
 - **Snapshots.** SimpleTool saves the state of every setting it can change before each Apply,
   Revert and restore. The first time it runs as administrator it also saves the original state,
   which is kept forever, as are the snapshots you make yourself; of the automatic ones the latest 20
@@ -123,6 +131,32 @@ python tools/check_secrets.py --history   # manual run over the whole history
 GitHub Actions runs the same check and [gitleaks](https://github.com/gitleaks/gitleaks) on every
 push and pull request.
 
+### Releases
+
+The release workflow (`.github/workflows/release.yml`) builds and publishes a version when its tag is
+pushed. Nothing is built or uploaded by hand:
+
+1. Set `VERSION` in `main.py` and describe the version in a `## <version>` section of
+   [CHANGELOG.md](CHANGELOG.md); a test fails until both match.
+2. If the terms of use changed: change `VERSION` in `terms.py` too (SimpleTool then asks everyone to
+   accept them again) and run `python tools/terms_md.py`, which writes `TERMS.md` and `terms.json`.
+   On the website, `node tools/sync-terms.js` copies `terms.json` into the terms page; deploy it with
+   the release.
+3. Commit, push, then tag: `git tag v0.6.1` and `git push origin v0.6.1`.
+
+The workflow checks that the tag matches `VERSION`, runs the tests, builds the exe with `build.py`,
+signs a build provenance attestation for it, and creates the release with `SimpleTool.exe`,
+`THIRD-PARTY-NOTICES.txt` and notes made of the changelog section and the SHA-256. Anyone can check
+that a downloaded exe was built by this workflow:
+
+```powershell
+gh attestation verify SimpleTool.exe -R danilablagorodniy37/SimpleTool
+```
+
+The website's download button, its counter and the update check read the latest release that is not
+a prerelease, and the asset named exactly `SimpleTool.exe`. The last step of the workflow warns if
+the terms on blagotech.uk are not the ones the program shows.
+
 ### Tests
 
 ```powershell
@@ -131,7 +165,8 @@ python -m unittest discover -s tests -t . -v
 
 The tests cannot change your system. Registry access is redirected to a sandbox key
 (`HKCU\Software\SimpleToolTest`) and any access outside it fails the test; `sc.exe` and `schtasks.exe`
-are replaced with fakes. Inside the sandbox every tweak is applied and reverted, alone and all at
+are replaced with fakes, and so is the service manager. Nothing goes online: the update check is
+tested against fake answers. Inside the sandbox every tweak is applied and reverted, alone and all at
 once, and the result must match the original state exactly. A catalog audit checks that no tweak
 touches UAC, Defender, Winlogon, startup entries, the boot configuration, critical services or
 Windows Update tasks. The memory limiter is tested on fake processes and, with real Windows calls,

@@ -157,17 +157,19 @@ class Pill(tk.Canvas):
 
 
 class GradientButton(tk.Canvas):
-    """A button: the primary one has the brand gradient and a hover glow, the secondary one is flat."""
+    """A button: the primary one has the brand gradient and a hover glow, the secondary one is flat.
+    A danger button is red: for an action the user takes against SimpleTool's advice."""
 
     STEPS = 6  # glow steps, so the images are cached
+    DANGER = ("#E5484D", "#C2373C")  # the same red in every theme: white text stays readable on it
 
-    def __init__(self, parent, text, command, font, scale, animator, primary=True, pad=(20, 8)):
+    def __init__(self, parent, text, command, font, scale, animator, primary=True, pad=(20, 8), danger=False):
         self.bg = parent.cget("bg")
         measure = tkfont.Font(font=font)
         self.w = measure.measure(text) + 2 * round(pad[0] * scale)
         self.h = measure.metrics("linespace") + 2 * round(pad[1] * scale)
         super().__init__(parent, width=self.w, height=self.h, bg=self.bg, highlightthickness=0, bd=0, cursor="hand2")
-        self.command, self.animator, self.primary = command, animator, primary
+        self.command, self.animator, self.primary, self.danger = command, animator, primary, danger
         self.radius = round(10 * scale)
         self.enabled, self.hover, self.level = True, 0.0, None
         self.image = self.create_image(0, 0, anchor="nw")
@@ -200,8 +202,9 @@ class GradientButton(tk.Canvas):
             fill = mix(C["raised"], self.bg, 0.6)
             image = theme.gradient_pill(self.w, self.h, self.radius, fill, fill, self.bg)
             text = C["dim"]
-        elif self.primary:
-            image = theme.gradient_pill(self.w, self.h, self.radius, C["grad_a"], C["grad_b"], self.bg, glow=level * 0.22)
+        elif self.primary or self.danger:
+            start, end = self.DANGER if self.danger else (C["grad_a"], C["grad_b"])
+            image = theme.gradient_pill(self.w, self.h, self.radius, start, end, self.bg, glow=level * 0.22)
             text = C["on_primary"]
         else:
             fill = lerp(C["raised"], mix(C["accent"], C["raised"], 0.3), level)

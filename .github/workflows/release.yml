@@ -1,0 +1,64 @@
+name: Release
+
+# A version tag publishes a release: git tag v0.6.1 && git push origin v0.6.1
+# The exe is built here from the tagged source, not on a developer's PC, and GitHub signs a provenance
+# attestation for it, so anyone can check where SimpleTool.exe came from.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write      # create the release
+  id-token: write      # sign the build provenance
+  attestations: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The tag matches VERSION in main.py
+        shell: bash
+        run: |
+          version=$(python -c "import build; print(build.app_version())")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME, but main.py says VERSION = \"$version\""
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Tests
+        run: python -m unittest discover -s tests -t .
+
+      - name: Build
+        run: python build.py
+
+      - name: Release notes
+        run: python tools/release_notes.py $env:VERSION dist/SimpleTool.exe dist/release-notes.md
+
+      - name: Provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/SimpleTool.exe
+
+      # The asset name must stay SimpleTool.exe and the release must not be a prerelease: the website's
+      # download button and counter, and the update check in SimpleTool, read the latest release by that name
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create $env:GITHUB_REF_NAME dist/SimpleTool.exe dist/THIRD-PARTY-NOTICES.txt
+          --verify-tag --title "SimpleTool $env:VERSION beta" --notes-file dist/release-notes.md
+
+      - name: The website shows the same terms of use
+        run: python tools/check_site_terms.py
