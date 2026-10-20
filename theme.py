@@ -1,0 +1,168 @@
+"""Палитры blagotech, цветовые утилиты и картинки, которые Tk не умеет рисовать сам: градиенты и свечение."""
+import ctypes
+import math
+import tkinter as tk
+
+# Цвета фирменного стиля blagotech: тёмно-синий #0A1B33, синий #2F8CF5 / #5FB4FF, бирюзовый #34D8A8,
+# плашки #12294A / #16345C, светло-серый #E3E9F1. Градиент акцента — от синего к бирюзовому.
+_SIDEBAR = {
+    "side": "#081628", "side_hover": "#0F2341", "side_active": "#16345C", "side_border": "#1A2F50",
+    "side_text": "#E8EEFC", "side_muted": "#9FB0D6", "side_dim": "#6F7FA6",
+}
+
+PALETTES = {
+    "navy": dict(_SIDEBAR,
+                 bg="#0A1B33", surface="#12294A", raised="#16345C", border="#223B60", border_hover="#3D5F8F",
+                 text="#E8EEFC", muted="#B8C3E6", dim="#7F8DB0",
+                 accent="#5FB4FF", primary="#2F8CF5", grad_a="#2F8CF5", grad_b="#34D8A8", on_primary="#FFFFFF",
+                 ok="#34D8A8", warn="#F0B783", bad="#FCA5A5", caption="#081628"),
+    "midnight": dict(side="#040A15", side_hover="#0B172B", side_active="#12264A", side_border="#0F1D35",
+                     side_text="#EEF3FF", side_muted="#93A3C8", side_dim="#5F6F94",
+                     bg="#070F1E", surface="#0D1B33", raised="#132748", border="#1B3051", border_hover="#2C6E78",
+                     text="#EEF3FF", muted="#A9B6D6", dim="#6E7EA3",
+                     accent="#34D8A8", primary="#2F8CF5", grad_a="#2F8CF5", grad_b="#34D8A8", on_primary="#FFFFFF",
+                     ok="#34D8A8", warn="#F0B783", bad="#FCA5A5", caption="#040A15"),
+    "light": dict(_SIDEBAR,
+                  bg="#F2F5FA", surface="#FFFFFF", raised="#E3E9F1", border="#D8E0EC", border_hover="#8FB3E6",
+                  text="#0A1B33", muted="#43546E", dim="#8391A8",
+                  accent="#2F8CF5", primary="#2F8CF5", grad_a="#2F8CF5", grad_b="#2BC79A", on_primary="#FFFFFF",
+                  ok="#0E9F74", warn="#C2701A", bad="#D64545", caption="#081628"),
+}
+THEMES = list(PALETTES)
+
+# Цвет каждого раздела: значок в меню, свечение в шапке
+CATEGORY_COLORS = {"overview": "#5FB4FF", "privacy": "#34D8A8", "system": "#7C9CFF",
+                   "explorer": "#86D9BD", "context": "#F0B783", "snapshots": "#4AC6D4"}
+
+# Текущая палитра; use() подменяет её содержимое, и все модули видят новые цвета
+C = dict(PALETTES["navy"])
+
+
+def use(name):
+    C.clear()
+    C.update(PALETTES.get(name, PALETTES["navy"]))
+    C["name"] = name if name in PALETTES else "navy"
+
+
+def rgb(color):
+    return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def hex_color(r, g, b):
+    return "#%02X%02X%02X" % (round(r), round(g), round(b))
+
+
+def mix(color, background, alpha):
+    """Цвет color с непрозрачностью alpha поверх background."""
+    return hex_color(*(c * alpha + b * (1 - alpha) for c, b in zip(rgb(color), rgb(background))))
+
+
+def lerp(start, end, t):
+    """Цвет на отрезке от start до end."""
+    return mix(end, start, t)
+
+
+def style_title_bar(window, caption=None):
+    """Тёмный заголовок окна в цвет боковой панели (Windows 10 1809+, цвет — Windows 11)."""
+    try:
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        color = caption or C["caption"]
+        colorref = int(color[5:7] + color[3:5] + color[1:3], 16)  # 0x00BBGGRR
+        for attribute, value in ((20, 1), (35, colorref)):  # DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_CAPTION_COLOR
+            data = ctypes.c_int(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(data), ctypes.sizeof(data))
+    except (AttributeError, OSError):
+        pass
+
+
+def set_window_icon(window, path):
+    """Даёт окну иконки ровно тех размеров, которые Windows просит для текущего DPI.
+
+    Tk ставит только иконку класса окна, и панель задач растягивает её маленький кадр — значок
+    выходит размытым. Иконки окна (WM_SETICON) нужного размера Windows берёт из .ico без масштабирования.
+    """
+    try:
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int,
+                                      ctypes.c_uint]
+        user32.SendMessageW.restype = ctypes.c_void_p
+        user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        window.update_idletasks()
+        hwnd = user32.GetParent(window.winfo_id())
+        try:
+            dpi = user32.GetDpiForWindow(hwnd) or 96
+            sizes = {1: user32.GetSystemMetricsForDpi(11, dpi), 0: user32.GetSystemMetricsForDpi(49, dpi)}
+        except AttributeError:  # Windows 10 до 1607
+            sizes = {1: user32.GetSystemMetrics(11), 0: user32.GetSystemMetrics(49)}
+        for kind, size in sizes.items():  # 1 — ICON_BIG (панель задач, Alt+Tab), 0 — ICON_SMALL (заголовок)
+            icon = user32.LoadImageW(None, path, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+            if icon:
+                user32.SendMessageW(hwnd, 0x80, kind, icon)  # WM_SETICON
+    except (AttributeError, OSError):
+        pass
+
+
+# --- Картинки ---
+
+_cache = {}
+
+
+def _image(key, width, height, pixel):
+    """PhotoImage, где цвет каждой точки даёт pixel(x, y). Результат кэшируется по key."""
+    if key not in _cache:
+        image = tk.PhotoImage(width=width, height=height)
+        rows = ("{" + " ".join(pixel(x, y) for x in range(width)) + "}" for y in range(height))
+        image.put(" ".join(rows))
+        _cache[key] = image
+    return _cache[key]
+
+
+def _coverage(x, y, width, height, radius):
+    """Насколько точка покрыта прямоугольником со скруглёнными углами (0–1, со сглаживанием края)."""
+    cx = min(max(x + 0.5, radius), width - radius)
+    cy = min(max(y + 0.5, radius), height - radius)
+    distance = math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+    return max(0.0, min(1.0, radius - distance + 0.5))
+
+
+def gradient_pill(width, height, radius, start, end, background, glow=0.0):
+    """Скруглённая плашка с горизонтальным градиентом; glow осветляет её при наведении."""
+    width, height = max(int(width), 2), max(int(height), 2)
+    lighter = [mix("#FFFFFF", c, glow) for c in (start, end)]
+    columns = [lerp(lighter[0], lighter[1], x / max(width - 1, 1)) for x in range(width)]
+
+    def pixel(x, y):
+        cover = _coverage(x, y, width, height, radius)
+        return columns[x] if cover >= 1 else mix(columns[x], background, cover)
+
+    return _image(("pill", width, height, radius, start, end, background, round(glow, 2)), width, height, pixel)
+
+
+def glow(width, height, color, background, strength=0.22):
+    """Мягкое эллиптическое пятно цвета, как подсветка на сайте blagotech: ярче всего вверху посередине
+    и затухает ко всем краям, поэтому картинку можно ставить где угодно без видимых границ.
+    Рисуется вдвое мельче и растягивается."""
+    small_w, small_h = max(width // 2, 1), max(height // 2, 1)
+
+    def pixel(x, y):
+        dx = (x + 0.5) / small_w * 2 - 1
+        dy = (y + 0.5) / small_h * 1.25
+        fade = max(0.0, 1.0 - math.hypot(dx, dy))
+        return mix(color, background, strength * fade * fade)
+
+    key = ("glow", small_w, small_h, color, background, strength)
+    if key + ("zoom",) not in _cache:
+        _cache[key + ("zoom",)] = _image(key, small_w, small_h, pixel).zoom(2, 2)
+    return _cache[key + ("zoom",)]
+
+
+def gradient_line(width, height, start, end):
+    width, height = max(int(width), 1), max(int(height), 1)
+    return _image(("line", width, height, start, end), width, height,
+                  lambda x, y: lerp(start, end, x / max(width - 1, 1)))
+
+
+def clear_cache():
+    _cache.clear()
