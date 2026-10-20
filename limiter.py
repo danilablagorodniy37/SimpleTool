@@ -1,13 +1,13 @@
-"""Ограничение памяти программ (Chrome, Discord и т. п.).
+"""Memory limits for programs (Chrome, Discord and so on).
 
-Два режима для каждой программы:
-* мягкий — лимит на программу целиком: когда её процессы вместе занимают в оперативной памяти больше лимита,
-  SimpleTool выгружает их рабочие наборы (EmptyWorkingSet), начиная с самых больших. Программа не падает,
-  выгруженные страницы Windows подгружает обратно, когда они понадобятся;
-* жёсткий — потолок Windows на каждый процесс программы (SetProcessWorkingSetSizeEx с жёстким максимумом).
-  Потолки действуют, пока живёт процесс, и снимаются, когда ограничитель выключают или SimpleTool закрывается.
+Two modes for each program:
+* soft: one limit for the whole program. When its processes together use more RAM than the limit,
+  SimpleTool trims their working sets (EmptyWorkingSet), largest first. The program keeps running,
+  and Windows brings the trimmed pages back when they are needed;
+* hard: a Windows cap on every process of the program (SetProcessWorkingSetSizeEx with a hard maximum).
+  The caps last as long as the process and are removed when the limiter is turned off or SimpleTool exits.
 
-Ограничитель работает в фоновом потоке, пока открыт SimpleTool, в том числе свёрнутый в трей.
+The limiter runs in a background thread while SimpleTool is open, including when it is hidden to the tray.
 """
 import ctypes
 import json
@@ -21,15 +21,15 @@ import engine
 MB = 1024 * 1024
 MIN_LIMIT_MB = 100
 MAX_LIMIT_MB = 65536
-# Лимиты, по которым ходят кнопки «−» и «+»: до гигабайта по 100 МБ, дальше всё крупнее
+# Limits the − and + buttons step through: 100 MB steps up to a gigabyte, larger steps after that
 LIMIT_STEPS = list(range(100, 1001, 100)) + [1280, 1536, 1792, 2048, 2560, 3072, 3584, 4096, 5120, 6144, 7168,
                                              8192, 10240, 12288, 16384, 24576, 32768, 49152, 65536]
-CUSTOM_LIMIT = 1024
+CUSTOM_LIMIT = 1024  # default limit for programs that are not in DEFAULT_LIMITS
 INTERVALS = [2, 5, 10, 30]
 DEFAULT_INTERVAL = 5
-SOFT_TARGET = 0.85  # после выгрузки программа должна занимать не больше 85 % лимита, чтобы не выгружать её каждый цикл
+SOFT_TARGET = 0.85  # after trimming the program must use at most 85 % of the limit, so it is not trimmed every cycle
 
-# Системные процессы и сам SimpleTool: ограничение памяти у них может подвесить Windows
+# System processes and SimpleTool itself: limiting their memory can freeze Windows
 PROTECTED = {
     "system", "idle", "registry", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "lsaiso", "lsm",
     "svchost", "fontdrvhost", "dwm", "explorer", "sihost", "taskhostw", "ctfmon", "memory compression",
@@ -38,26 +38,26 @@ PROTECTED = {
     "textinputhost", "wudfhost", "dllhost", "simpletool", "python", "pythonw",
 }
 
-# (имя процесса, название, лимит по умолчанию в МБ)
-PRESETS = [
-    ("chrome", "Google Chrome", 2048), ("msedge", "Microsoft Edge", 2048), ("firefox", "Mozilla Firefox", 2048),
-    ("brave", "Brave", 2048), ("opera", "Opera", 2048), ("vivaldi", "Vivaldi", 2048),
-    ("browser", "Yandex Browser", 2048), ("discord", "Discord", 700),
-    ("telegram", "Telegram", 500), ("steamwebhelper", "Steam", 800), ("spotify", "Spotify", 500),
-    ("obs64", "OBS Studio", 1024), ("ms-teams", "Microsoft Teams", 1024), ("slack", "Slack", 800),
-]
-PRESET_NAMES = {name: title for name, title, _ in PRESETS}
-PRESET_LIMITS = {name: limit for name, _, limit in PRESETS}
+# Default limits (MB) for programs that usually use a lot of memory
+DEFAULT_LIMITS = {
+    "chrome": 2048, "msedge": 2048, "firefox": 2048, "brave": 2048, "opera": 2048, "vivaldi": 2048, "browser": 2048,
+    "discord": 700, "telegram": 500, "steamwebhelper": 800, "spotify": 500, "obs64": 1024, "ms-teams": 1024,
+    "slack": 800, "zoom": 800,
+}
 
 
 def normalize(name):
-    """Имя процесса без пути и .exe в нижнем регистре: «Chrome.exe» -> «chrome»."""
+    """Process name without the path and .exe, lowercase: "Chrome.exe" -> "chrome"."""
     name = os.path.basename(name.strip()).lower()
     return name[:-4] if name.endswith(".exe") else name
 
 
 def is_protected(name):
     return normalize(name) in PROTECTED
+
+
+def default_limit(name):
+    return DEFAULT_LIMITS.get(normalize(name), CUSTOM_LIMIT)
 
 
 def clamp_limit(mb):
@@ -82,7 +82,7 @@ class _MemoryCounters(ctypes.Structure):
 
 
 class WindowsApi:
-    """Тонкая обёртка над kernel32: в тестах её подменяет поддельная реализация."""
+    """A thin wrapper over kernel32: tests replace it with a fake implementation."""
 
     QUERY = 0x1000       # PROCESS_QUERY_LIMITED_INFORMATION
     SET_QUOTA = 0x0100   # PROCESS_SET_QUOTA
@@ -104,7 +104,7 @@ class WindowsApi:
         self.k = k
 
     def processes(self):
-        """[(pid, имя процесса без .exe)]"""
+        """[(pid, process name without .exe)]"""
         snapshot = self.k.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
         if not snapshot or snapshot == wintypes.HANDLE(-1).value:
             return []
@@ -123,7 +123,7 @@ class WindowsApi:
         return self.k.OpenProcess(access, False, pid)
 
     def working_set(self, pid):
-        """Сколько процесс занимает в оперативной памяти (байт) или None, если доступа нет."""
+        """How much RAM the process uses (bytes), or None if there is no access."""
         handle = self._open(pid, self.QUERY)
         if not handle:
             return None
@@ -167,7 +167,7 @@ class WindowsApi:
     def clear_hard_limit(self, pid):
         handle = self._open(pid, self.QUERY | self.SET_QUOTA)
         if not handle:
-            return False  # процесс уже завершился — вместе с ним исчез и потолок
+            return False  # the process has already exited, and its cap went with it
         try:
             quota = self._quota(handle)
             if quota is None:
@@ -177,7 +177,7 @@ class WindowsApi:
             self.k.CloseHandle(handle)
 
 
-# --- Настройки ---
+# --- Settings ---
 
 def config_path():
     return os.path.join(engine.data_dir(), "limiter.json")
@@ -204,10 +204,13 @@ def load_config():
         except (KeyError, TypeError, ValueError):
             continue
         if not name or name in seen or is_protected(name):
-            continue  # повреждённый или опасный файл настроек не должен ограничить системный процесс
+            continue  # a damaged or malicious settings file must not limit a system process
         seen.add(name)
-        config["rules"].append({"name": name, "limit_mb": limit, "mode": "hard" if rule.get("mode") == "hard" else "soft",
-                                "enabled": bool(rule.get("enabled", True))})
+        entry = {"name": name, "limit_mb": limit, "mode": "hard" if rule.get("mode") == "hard" else "soft",
+                 "enabled": bool(rule.get("enabled", True))}
+        if isinstance(rule.get("title"), str) and rule["title"].strip():
+            entry["title"] = rule["title"].strip()[:80]  # program name for the card
+        config["rules"].append(entry)
     return config
 
 
@@ -218,17 +221,17 @@ def save_config(config):
     os.replace(tmp, config_path())
 
 
-# --- Ограничитель ---
+# --- Limiter ---
 
 class Limiter:
-    """Фоновый поток: раз в interval секунд проверяет программы из списка и держит их в пределах лимита."""
+    """Background thread: every interval seconds checks the listed programs and keeps them within limits."""
 
     def __init__(self, api=None, config=None):
         self.api = api or WindowsApi()
         self.config = config if config is not None else load_config()
         self.lock = threading.Lock()
-        self.stats = {}     # имя -> {"count", "bytes", "denied", "largest", "freed", "trims"}
-        self.capped = {}    # pid -> (имя, лимит в байтах): процессы, которым SimpleTool поставил жёсткий потолок
+        self.stats = {}     # name -> {"count", "bytes", "denied", "largest", "freed", "trims"}
+        self.capped = {}    # pid -> (name, limit in bytes): processes SimpleTool has given a hard cap
         self.freed_total = 0
         self.checked_at = None
         self.own_pid = os.getpid()
@@ -236,17 +239,17 @@ class Limiter:
         self._wake = threading.Event()
         self._thread = None
 
-    # Настройки меняет окно, поток читает их под той же блокировкой
+    # The window changes the settings, the thread reads them under the same lock
 
     def update(self, change, save=True):
-        """change(config) меняет настройки; изменения вступают в силу сразу."""
+        """change(config) changes the settings; the changes take effect immediately."""
         with self.lock:
             change(self.config)
             if save:
                 try:
                     save_config(self.config)
                 except OSError:
-                    pass  # не удалось записать файл: настройки всё равно действуют до выхода
+                    pass  # the file could not be written: the settings still apply until exit
         self._wake.set()
 
     def active(self):
@@ -258,7 +261,7 @@ class Limiter:
             return {"stats": {name: dict(s) for name, s in self.stats.items()}, "freed": self.freed_total,
                     "config": json.loads(json.dumps(self.config))}
 
-    # Поток
+    # Thread
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -268,7 +271,7 @@ class Limiter:
         self._thread.start()
 
     def stop(self):
-        """Останавливает поток и снимает все жёсткие потолки, которые ставил SimpleTool."""
+        """Stops the thread and removes every hard cap SimpleTool has set."""
         self._stop.set()
         self._wake.set()
         if self._thread:
@@ -279,7 +282,7 @@ class Limiter:
         while not self._stop.is_set():
             try:
                 self.cycle()
-            except Exception:  # сбой одного цикла не должен останавливать ограничитель навсегда
+            except Exception:  # one failed cycle must not stop the limiter for good
                 pass
             with self.lock:
                 interval = self.config["interval"]
@@ -293,7 +296,7 @@ class Limiter:
                 del self.capped[pid]
 
     def cycle(self):
-        """Один проход: замер всех программ из списка и, если нужно, выгрузка памяти или потолки."""
+        """One pass: measure every listed program and, if needed, trim memory or set caps."""
         with self.lock:
             enabled = self.config["enabled"]
             rules = [dict(rule) for rule in self.config["rules"]]
@@ -302,7 +305,7 @@ class Limiter:
             if pid != self.own_pid and pid > 4:
                 groups.setdefault(name, []).append(pid)
                 names_by_pid[pid] = name
-        # Завершившиеся процессы забываем; номер, доставшийся другой программе, тоже не наш
+        # Forget exited processes; a process ID that now belongs to another program is not ours either
         self.capped = {pid: value for pid, value in self.capped.items() if names_by_pid.get(pid) == value[0]}
         stats, freed = {}, 0
         for rule in rules:
@@ -315,7 +318,7 @@ class Limiter:
             stat = {"count": len(pids), "bytes": sum(readable.values()), "denied": len(pids) - len(readable),
                     "largest": max(readable.values(), default=0), "freed": 0, "trims": 0}
             on = enabled and rule["enabled"]
-            # Потолки снимаются, если программу выключили или перевели в мягкий режим
+            # Caps are removed when the program is turned off or switched to soft mode
             if not on or rule["mode"] != "hard":
                 self.release([pid for pid in pids if pid in self.capped])
             if on and rule["mode"] == "soft" and stat["bytes"] > limit:
@@ -325,7 +328,7 @@ class Limiter:
                         break
                     if self.api.trim(pid):
                         after = self.api.working_set(pid)
-                        if after is None:  # процесс завершился в эту секунду
+                        if after is None:  # the process exited just now
                             continue
                         gained = max(0, readable[pid] - after)
                         total -= gained
@@ -340,7 +343,7 @@ class Limiter:
                         self.capped[pid] = (name, limit)
             freed += stat["freed"]
             stats[name] = stat
-        # Программы, убранные из списка, не должны остаться с потолком
+        # Programs removed from the list must not keep a cap
         names = {rule["name"] for rule in rules}
         self.release([pid for pid, (name, _) in list(self.capped.items()) if name not in names])
         with self.lock:
@@ -350,7 +353,7 @@ class Limiter:
 
 
 def running_programs(api=None):
-    """Запущенные программы для выбора: [(имя, процессов, байт)], самые «тяжёлые» первыми, без системных."""
+    """Running programs to choose from: [(name, processes, bytes)], heaviest first, without system ones."""
     api = api or WindowsApi()
     totals = {}
     own = os.getpid()

@@ -1,7 +1,7 @@
-"""Каждый твик каталога в песочнице: применение, статус, откат, повторное применение, снимки.
+"""Every tweak in the catalog inside the sandbox: apply, status, revert, apply again, snapshots.
 
-После отката и восстановления снимка реестр, задачи и ярлыки должны совпасть с исходными до байта,
-а значения, которые пользователь задал сам, — остаться нетронутыми.
+After a revert or a snapshot restore the registry, tasks and shortcuts must match the original byte for byte,
+and values the user set themselves must stay untouched.
 """
 import unittest
 import winreg
@@ -13,7 +13,7 @@ from tests.sandbox import Sandbox, SandboxEscape
 
 
 def seed(sandbox, user_values):
-    """Исходное «системное» состояние: службы включены, задачи включены, часть значений задана пользователем."""
+    """The original "system" state: services on, tasks on, some values set by the user."""
     for tweak in tweaks.TWEAKS:
         for i, op in enumerate(tweak.ops):
             if isinstance(op, Service):
@@ -30,7 +30,7 @@ def seed(sandbox, user_values):
 class EveryTweak(unittest.TestCase):
     def setUp(self):
         self.sandbox = Sandbox().start()
-        # Просмотрщик фотографий есть не везде (например, в CI): проверяем его логику независимо от ПК
+        # Photo Viewer is not everywhere (for example in CI): check its logic regardless of the PC
         self.requires = {t.id: t.requires for t in tweaks.TWEAKS}
         for tweak in tweaks.TWEAKS:
             tweak.requires = None
@@ -64,7 +64,7 @@ class EveryTweak(unittest.TestCase):
         ctx = self.sandbox.ctx
         before = self.sandbox.state()
         for tweak in tweaks.TWEAKS:
-            for lang in ("en", "uk"):  # второе применение на другом языке меняет только подписи меню
+            for lang in ("en", "uk"):  # applying again in another language changes only the menu labels
                 self.assertEqual(engine.apply(tweak, lang, ctx), [])
         for tweak in tweaks.TWEAKS:
             self.assertEqual(engine.revert(tweak, ctx), [])
@@ -83,17 +83,17 @@ class EveryTweak(unittest.TestCase):
         self.assertEqual(self.sandbox.state(), before)
 
     def test_revert_without_backup_reaches_defaults(self):
-        """Твики, применённые не SimpleTool (например, другой программой): откат ставит стандартные значения."""
+        """Tweaks applied by something other than SimpleTool (another program, say): revert sets the defaults."""
         seed(self.sandbox, user_values=False)
         ctx = self.sandbox.ctx
         for tweak in tweaks.TWEAKS:
             engine.apply(tweak, "en", ctx)
-        engine.save_backup({})  # как будто резервной копии нет
+        engine.save_backup({})  # as if there were no backup
         for tweak in tweaks.TWEAKS:
             with self.subTest(tweak=tweak.id):
                 self.assertEqual(engine.revert(tweak, ctx), [])
                 self.assertIn(engine.status(tweak, ctx), ("not_applied", "partial"))
-        # Службы снова запускаются, задачи снова включены
+        # Services start again, tasks are enabled again
         for tweak in tweaks.TWEAKS:
             for op in tweak.ops:
                 if isinstance(op, Service):
@@ -113,7 +113,7 @@ class EveryTweak(unittest.TestCase):
 
 
 class SandboxTripwire(unittest.TestCase):
-    """Сама растяжка должна срабатывать, иначе остальные тесты ничего не гарантируют."""
+    """The tripwire itself must fire, otherwise the other tests guarantee nothing."""
 
     def test_write_outside_sandbox_is_blocked(self):
         with Sandbox() as sandbox:

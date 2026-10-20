@@ -1,1 +1,1 @@
-"""Тексты SimpleTool: по модулю на язык (en, ru, uk) с одинаковым набором ключей."""
+"""SimpleTool texts: one module per language (en, ru, uk) with the same set of keys."""

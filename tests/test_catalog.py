@@ -1,4 +1,4 @@
-"""Аудит каталога твиков без запуска: ни один твик не трогает то, что может сломать Windows."""
+"""Static audit of the tweak catalog: no tweak touches anything that could break Windows."""
 import re
 import unittest
 import winreg
@@ -10,7 +10,7 @@ from engine import ABSENT, OwnedKey, Service, Shortcut, Task, Value
 ALL_OPS = [(tweak, op) for tweak in tweaks.TWEAKS for op in tweak.ops]
 VALUES = [(tweak, op) for tweak, op in ALL_OPS if isinstance(op, Value)]
 
-# Разделы и параметры, изменение которых может сломать загрузку, вход, защиту или обновления Windows
+# Keys and values whose change can break Windows boot, sign-in, protection or updates
 DANGEROUS_PATHS = [
     r"\\Winlogon", r"\\Image File Execution Options", r"\\SafeBoot", r"\\Session Manager",
     r"\\CurrentVersion\\Run", r"\\Windows Defender", r"\\WindowsUpdate", r"\\Lsa\b", r"\\SecurityProviders",
@@ -19,7 +19,7 @@ DANGEROUS_PATHS = [
 DANGEROUS_NAMES = {"EnableLUA", "ConsentPromptBehaviorAdmin", "PromptOnSecureDesktop", "DisableAntiSpyware",
                    "SmartScreenEnabled", "EnableSmartScreen", "SaveZoneInformation", "Shell", "Userinit",
                    "AppInit_DLLs", "ImagePath", "Debugger", "LargeSystemCache", "Hidden", "ShowSuperHidden"}
-# Записи в HKLM\SYSTEM разрешены только здесь: остальное там — ядро Windows
+# Writes to HKLM\SYSTEM are allowed only here: everything else there is the Windows core
 SYSTEM_ALLOWED = [
     r"HKLM\SYSTEM\CurrentControlSet\Control\WMI\Autologger\Diagtrack-Listener|Start",
     r"HKLM\SYSTEM\CurrentControlSet\Control\FileSystem|LongPathsEnabled",
@@ -27,24 +27,24 @@ SYSTEM_ALLOWED = [
     r"\8EC4B3A5-6868-48c2-BE75-4F3044BE88A7|Attributes",
 ]
 SERVICES_ALLOWED = {"DiagTrack", "dmwappushservice", "NvTelemetryContainer"}
-# Задачи, без которых Windows не обновляется, не защищается или не обслуживает себя
+# Tasks without which Windows does not update, protect or maintain itself
 TASKS_FORBIDDEN = ["UpdateOrchestrator", "WindowsUpdate", "Windows Defender", "Windows Error Reporting\\QueueReporting",
                    "TaskScheduler", "Registry\\RegIdleBackup", "SystemRestore", "Time Synchronization", "BitLocker"]
 TASK_PREFIXES = ("microsoft\\windows\\", "microsoft\\office\\", "nvtm")
-# Собственные ключи, которые твики создают и удаляют при откате
+# Owned keys that tweaks create and delete on revert
 OWNED_ALLOWED = [
     r"HKLM\SOFTWARE\Classes\.cmd\ShellNew", r"HKLM\SOFTWARE\Classes\.reg\ShellNew",
     r"HKLM\SOFTWARE\Classes\Applications\photoviewer.dll\shell\open",
     r"HKCU\Software\Classes\Unknown\shell\edit", r"HKCU\Software\Classes\MSInfoFile\shell\open",
 ]
 FORBIDDEN_IN_COMMANDS = [r"\bdel\b", r"\brd\b", r"\brmdir\b", r"\bformat\b", r"reg(\.exe)? delete",
-                         r"shutdown[^&]*\s/f\b",  # принудительное закрытие программ без сохранения
+                         r"shutdown[^&]*\s/f\b",  # forced closing of programs without saving
                          r"\bdiskpart\b", r"bcdedit\s*/delete\b", r"Remove-Item", r"\bvssadmin\b",
                          r"Set-MpPreference", r"\bnet\s+user\b"]
 
 
 def commands():
-    """Команды пунктов меню: значения (Default) ключей ...\\command."""
+    """Menu item commands: (Default) values of ...\\command keys."""
     for tweak, op in VALUES:
         if op.path.lower().endswith("\\command") and op.name == "" and isinstance(op.data, str):
             yield tweak, op.data
@@ -91,7 +91,7 @@ class CatalogSafety(unittest.TestCase):
                         self.assertNotIn(forbidden.lower(), op.path.lower())
 
     def test_deleted_keys_belong_to_simpletool(self):
-        """При откате удаляется только то, что создал сам SimpleTool."""
+        """Revert deletes only what SimpleTool itself created."""
         for tweak, op in ALL_OPS:
             if isinstance(op, OwnedKey):
                 with self.subTest(key=op.path):

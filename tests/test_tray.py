@@ -1,4 +1,4 @@
-"""Значок в трее: появляется, передаёт щелчок в окно через post и чисто удаляется (на секунду виден в трее)."""
+"""Tray icon: appears, passes a click to the window via post and is removed cleanly (visible for a second)."""
 import ctypes
 import os
 import sys
@@ -23,7 +23,7 @@ class Tray(unittest.TestCase):
             icon.set_tooltip("SimpleTool test 2")
             send = ctypes.windll.user32.SendMessageW
             send.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-            send(hwnd, tray.WM_TRAY, 0, tray.WM_LBUTTONUP)  # щелчок по значку
+            send(hwnd, tray.WM_TRAY, 0, tray.WM_LBUTTONUP)  # click on the icon
             self.assertEqual(posted, [icon.on_open], "a click opens the window via post, not from the tray thread")
         finally:
             icon.hide()
@@ -37,7 +37,7 @@ class Tray(unittest.TestCase):
 class SingleInstance(unittest.TestCase):
     def test_second_copy_wakes_the_first(self):
         import tray
-        name = f"Local\simpletool-test-{os.getpid()}-{time.time_ns()}"
+        name = f"Local\\simpletool-test-{os.getpid()}-{time.time_ns()}"
         first, second = tray.SingleInstance(name), tray.SingleInstance(name)
         woken = []
         self.assertTrue(first.acquire())

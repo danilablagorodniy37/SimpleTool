@@ -1,4 +1,4 @@
-"""Движок в отдельных ситуациях: статусы, сбои посреди применения, границы удаления, снимки, разбор вывода."""
+"""The engine in edge cases: statuses, failures mid-apply, deletion boundaries, snapshots, output parsing."""
 import hashlib
 import os
 import subprocess
@@ -15,7 +15,7 @@ ROOT = r"HKCU\Software\Probe"
 
 
 class BrokenValue(Value):
-    """Значение, запись которого падает, как при нехватке прав."""
+    """A value whose write fails, as with insufficient rights."""
 
     def apply(self, lang):
         raise PermissionError(5, "Access is denied")
@@ -46,7 +46,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(engine.status(Tweak("d", "system", [Task("Missing\\Task")]), self.ctx), "unavailable")
         self.assertEqual(engine.status(Tweak("e", "system", [on], requires=lambda: False), self.ctx), "unavailable")
         self.assertEqual(engine.status(Tweak("f", "system", [UnreadableValue(ROOT, "X", 1)]), self.ctx), "unknown")
-        # Неизвестная часть при точно не применённой другой — «не применено», а не «неизвестно»
+        # An unknown part while another one is definitely not applied gives "not applied", not "unknown"
         self.assertEqual(engine.status(Tweak("g", "system", [off, UnreadableValue(ROOT, "X", 1)]), self.ctx),
                          "not_applied")
 
@@ -66,12 +66,12 @@ class EngineTests(unittest.TestCase):
         self.assertIn("Access is denied", errors[0])
         self.assertEqual(engine.read_value(ROOT, "First")[0], 1)
         self.assertEqual(engine.read_value(ROOT, "Last")[0], 1)
-        self.assertIn("x", engine.load_backup())  # откат возможен и после частичного сбоя
+        self.assertIn("x", engine.load_backup())  # revert works after a partial failure too
         self.assertEqual(engine.revert(tweak, self.ctx), [])
         self.assertIsNone(engine.read_value(ROOT, "First"))
 
     def test_value_without_snapshot_is_not_applied(self):
-        """Если исходное значение не прочитать, менять его нельзя: потом его не вернуть."""
+        """If the original value cannot be read, it must not be changed: it could not be put back."""
         tweak = Tweak("y", "system", [UnreadableValue(ROOT, "Secret", 1), Value(ROOT, "Other", 1)])
         errors = engine.apply(tweak, "en", self.ctx)
         self.assertEqual(len(errors), 1)
@@ -161,7 +161,7 @@ PS7_MODULES = os.path.expandvars(r"%ProgramFiles%\PowerShell\7\Modules")
 class PowerShellEnvironment(unittest.TestCase):
     @unittest.skipUnless(os.path.isdir(PS7_MODULES), "PowerShell 7 is not installed")
     def test_builtin_cmdlets_work_when_started_from_powershell_7(self):
-        """Запуск SimpleTool из PowerShell 7 оставляет его PSModulePath — Windows PowerShell не должен ломаться."""
+        """Starting SimpleTool from PowerShell 7 leaves its PSModulePath: Windows PowerShell must not break."""
         with tempfile.NamedTemporaryFile(delete=False) as f:
             f.write(b"simpletool")
         poisoned = PS7_MODULES + os.pathsep + os.environ.get("PSModulePath", "")
@@ -174,7 +174,7 @@ class PowerShellEnvironment(unittest.TestCase):
 
 
 class ParsingTests(unittest.TestCase):
-    """Разбор вывода PowerShell — без запуска PowerShell."""
+    """Parsing PowerShell output without running PowerShell."""
 
     def run_tasks(self, stdout, code=0):
         result = subprocess.CompletedProcess([], code, stdout=stdout, stderr="")

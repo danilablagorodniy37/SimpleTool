@@ -1,4 +1,4 @@
-"""Ограничитель памяти: логика на поддельном API и настоящие вызовы Windows на собственном дочернем процессе."""
+"""Memory limiter: logic on a fake API and real Windows calls on the test's own child process."""
 import json
 import os
 import shutil
@@ -15,7 +15,7 @@ from limiter import MB, Limiter, WindowsApi
 
 
 class FakeApi:
-    """Процессы в памяти: {pid: [имя, байт]}; denied — к каким нет доступа."""
+    """Processes in memory: {pid: [name, bytes]}; denied lists the ones without access."""
 
     def __init__(self, procs):
         self.procs = {pid: [name, size * MB] for pid, (name, size) in procs.items()}
@@ -68,7 +68,7 @@ class LimiterLogic(unittest.TestCase):
     def test_soft_trims_largest_first_and_stops_under_limit(self):
         lim = self.make(config(("chrome", 1000, "soft", True)))
         lim.cycle()
-        self.assertEqual(self.api.calls, [("trim", 100), ("trim", 101)])  # 1800 -> 990 -> 450 МБ, 300 не тронут
+        self.assertEqual(self.api.calls, [("trim", 100), ("trim", 101)])  # 1800 -> 990 -> 450 MB, 300 untouched
         stat = lim.snapshot()["stats"]["chrome"]
         self.assertEqual(stat["count"], 3)
         self.assertLessEqual(stat["bytes"], 1000 * MB * limiter.SOFT_TARGET)
@@ -89,7 +89,7 @@ class LimiterLogic(unittest.TestCase):
         lim = self.make(config(("chrome", 500, "hard", True)))
         lim.cycle()
         self.assertEqual(self.api.caps, {100: 500 * MB, 101: 500 * MB, 102: 500 * MB})
-        lim.cycle()  # повторно потолки не ставятся
+        lim.cycle()  # caps are not set again
         self.assertEqual(sum(1 for c in self.api.calls if c[0] == "cap"), 3)
         lim.update(lambda c: c["rules"][0].update(mode="soft"), save=False)
         lim.cycle()
@@ -111,7 +111,7 @@ class LimiterLogic(unittest.TestCase):
 
     def test_never_touches_other_or_protected_processes(self):
         cfg = config(("chrome", 100, "soft", True))
-        cfg["rules"].append({"name": "explorer", "limit_mb": 100, "mode": "hard", "enabled": True})  # в обход проверок
+        cfg["rules"].append({"name": "explorer", "limit_mb": 100, "mode": "hard", "enabled": True})  # skips the checks
         lim = self.make(cfg)
         lim.cycle()
         self.assertNotIn(300, self.touched())
@@ -141,7 +141,7 @@ class LimiterLogic(unittest.TestCase):
     def test_reused_process_number_is_not_released(self):
         lim = self.make(config(("chrome", 500, "hard", True)))
         lim.cycle()
-        self.api.procs[100][0] = "notepad"  # chrome завершился, его номер достался другой программе
+        self.api.procs[100][0] = "notepad"  # chrome exited, its process ID went to another program
         lim.cycle()
         lim.stop()
         self.assertNotIn(("uncap", 100), self.api.calls, "another program must not be touched")
@@ -170,16 +170,16 @@ class LimiterConfig(unittest.TestCase):
     def test_round_trip_and_validation(self):
         with open(limiter.config_path(), "w", encoding="utf-8") as f:
             json.dump({"enabled": True, "interval": 999, "rules": [
-                {"name": "Chrome.exe", "limit_mb": 5, "mode": "hard"},
-                {"name": "chrome", "limit_mb": 4000},          # дубликат
-                {"name": "svchost", "limit_mb": 500},          # системный процесс
-                {"name": "discord", "limit_mb": "oops"},       # испорченное значение
-                {"limit_mb": 500},                            # без имени
+                {"name": "Chrome.exe", "limit_mb": 5, "mode": "hard", "title": "  Google Chrome  "},
+                {"name": "chrome", "limit_mb": 4000},          # duplicate
+                {"name": "svchost", "limit_mb": 500},          # system process
+                {"name": "discord", "limit_mb": "oops"},       # broken value
+                {"limit_mb": 500},                            # no name
             ]}, f)
         cfg = limiter.load_config()
         self.assertEqual(cfg["interval"], limiter.DEFAULT_INTERVAL)
         self.assertEqual(cfg["rules"], [{"name": "chrome", "limit_mb": limiter.MIN_LIMIT_MB, "mode": "hard",
-                                         "enabled": True}])
+                                         "enabled": True, "title": "Google Chrome"}])
         limiter.save_config(cfg)
         self.assertEqual(limiter.load_config(), cfg)
 
@@ -193,8 +193,10 @@ class LimiterConfig(unittest.TestCase):
         self.assertEqual(limiter.normalize(r"C:\Program Files\Google\Chrome.EXE"), "chrome")
         for name in ("explorer.exe", "svchost", "csrss", "lsass", "dwm", "SimpleTool.exe", "winlogon"):
             self.assertTrue(limiter.is_protected(name), name)
-        for name, _, _ in limiter.PRESETS:
+        for name in limiter.DEFAULT_LIMITS:
             self.assertFalse(limiter.is_protected(name), name)
+        self.assertEqual(limiter.default_limit("Discord.exe"), 700)
+        self.assertEqual(limiter.default_limit("pycharm64"), limiter.CUSTOM_LIMIT)
 
     def test_running_programs_hides_system_and_self(self):
         api = FakeApi({os.getpid(): ("chrome", 100), 10: ("svchost", 500), 11: ("discord", 300), 12: ("discord", 50)})
@@ -203,7 +205,7 @@ class LimiterConfig(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32", "Windows API")
 class RealWindowsApi(unittest.TestCase):
-    """Настоящие вызовы Windows — только на дочернем процессе, который тест запускает сам."""
+    """Real Windows calls, only on a child process the test starts itself."""
 
     def setUp(self):
         code = ("b = bytearray(200 * 2**20)\nfor i in range(0, len(b), 4096): b[i] = 1\n"
@@ -242,8 +244,8 @@ class RealWindowsApi(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32", "Windows API")
 class RealLimiterEndToEnd(unittest.TestCase):
-    """Весь ограничитель с настоящими вызовами Windows. Цель — копия python под уникальным именем,
-    которую тест запускает сам: ни один другой процесс на ПК не подходит под это имя."""
+    """The whole limiter with real Windows calls. The target is a copy of python under a unique name
+    that the test starts itself: no other process on the PC matches that name."""
 
     NAME = "simpletool-memtest"
     CHILD = ("import sys\nb = bytearray(300 * 2**20)\n"
@@ -253,7 +255,7 @@ class RealLimiterEndToEnd(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="simpletool-memtest-")
-        base = sys.base_prefix  # не python из venv: тот запускает настоящий python.exe дочерним процессом
+        base = sys.base_prefix  # not the venv python: that one starts the real python.exe as a child process
         shutil.copy(os.path.join(base, "python.exe"), os.path.join(self.dir, self.NAME + ".exe"))
         for name in os.listdir(base):
             if name.lower().endswith(".dll"):
@@ -282,19 +284,19 @@ class RealLimiterEndToEnd(unittest.TestCase):
         api = lim.api
         self.assertGreater(api.working_set(pid), 250 * MB)
 
-        lim.cycle()  # мягкий: программа больше лимита — память выгружается
+        lim.cycle()  # soft: the program is over the limit, so its memory is trimmed
         stat = lim.snapshot()["stats"][self.NAME]
         self.assertEqual(stat["count"], 1)
         self.assertGreater(stat["freed"], 150 * MB)
         self.assertLess(api.working_set(pid), 100 * MB)
 
         lim.update(lambda c: c["rules"][0].update(mode="hard"), save=False)
-        lim.cycle()  # жёсткий: даже если процесс снова трогает все 300 МБ, в RAM он держится в пределах лимита
+        lim.cycle()  # hard: even when the process touches all 300 MB again, it stays within the limit in RAM
         self.assertIn(pid, lim.capped)
         self.touch()
         self.assertLess(api.working_set(pid), 110 * MB)
 
-        lim.stop()  # выход из SimpleTool снимает потолок, и процесс снова может занять всю память
+        lim.stop()  # exiting SimpleTool removes the cap, and the process can use all its memory again
         self.assertEqual(lim.capped, {})
         self.touch()
         self.assertGreater(api.working_set(pid), 250 * MB)

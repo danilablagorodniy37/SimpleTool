@@ -1,4 +1,4 @@
-"""Каталог твиков. Значения реестра сверены с базой «ТВикинариум» и проверены под Windows 10/11."""
+"""Tweak catalog. Registry values are tested on Windows 10/11."""
 import os
 from winreg import REG_DWORD, REG_EXPAND_SZ, REG_SZ
 
@@ -16,19 +16,19 @@ THIS_PC = HKCU_CLASSES + r"\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell"
 
 
 def elevated(args, hidden=True):
-    """Команда пункта меню, которая запускает cmd.exe /c ... от имени администратора."""
+    """A menu item command that runs cmd.exe /c ... as administrator."""
     style = " -WindowStyle Hidden" if hidden else ""
     return ('powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process cmd.exe -Verb RunAs'
             f"{style} -ArgumentList '{args}'\"")
 
 
 def menu_item(path, label, command, icon=None, extended=False, shield=False, kind=REG_SZ):
-    """Пункт контекстного меню: свой ключ с подписью, значком и командой."""
+    """A context menu item: its own key with a label, an icon and a command."""
     ops = [OwnedKey(path), Value(path, "MUIVerb", label, REG_SZ, check=False)]
     if icon:
         ops.append(Value(path, "Icon", icon, REG_SZ))
     if extended:
-        ops.append(Value(path, "Extended", "", REG_SZ))  # только с Shift
+        ops.append(Value(path, "Extended", "", REG_SZ))  # Shift only
     if shield:
         ops.append(Value(path, "HasLUAShield", "", REG_SZ))
     ops.append(Value(path + r"\command", "", command, kind))
@@ -36,7 +36,7 @@ def menu_item(path, label, command, icon=None, extended=False, shield=False, kin
 
 
 def submenu(path, label, icon, items):
-    """Вложенное меню: items — список (имя ключа, подпись, команда)."""
+    """A submenu: items is a list of (key name, label, command)."""
     ops = [OwnedKey(path), Value(path, "MUIVerb", label, REG_SZ, check=False),
            Value(path, "Icon", icon, REG_SZ), Value(path, "SubCommands", "", REG_SZ)]
     for name, item_label, command in items:
@@ -48,13 +48,13 @@ def photo_viewer_installed():
     return os.path.exists(os.path.expandvars(r"%ProgramFiles%\Windows Photo Viewer\PhotoViewer.dll"))
 
 
-# --- Конфиденциальность ---
+# --- Privacy ---
 
 DATA_COLLECTION_TASKS = [
     r"Microsoft\Windows\Maintenance\WinSAT",
     r"Microsoft\Windows\Autochk\Proxy",
     r"Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
-    r"Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser Exp",  # имя в Windows 11
+    r"Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser Exp",  # name in Windows 11
     r"Microsoft\Windows\Application Experience\ProgramDataUpdater",
     r"Microsoft\Windows\Application Experience\StartupAppTask",
     r"Microsoft\Windows\PI\Sqm-Tasks",
@@ -130,7 +130,7 @@ PRIVACY = [
     ]),
 ]
 
-# --- Система ---
+# --- System ---
 
 PHOTO_VIEWER_TYPES = [".bmp", ".dib", ".gif", ".ico", ".jfif", ".jpe", ".jpeg", ".jpg", ".png", ".tga"]
 PHOTO_VIEWER_OPEN = HKLM_CLASSES + r"\Applications\photoviewer.dll\shell\open"
@@ -170,7 +170,7 @@ SYSTEM = [
     ]),
 ]
 
-# --- Проводник ---
+# --- File Explorer ---
 
 EXPLORER_TWEAKS = [
     Tweak("file_extensions", "explorer", [Value(ADVANCED, "HideFileExt", 0, default=1)]),
@@ -191,10 +191,10 @@ EXPLORER_TWEAKS = [
     ]),
 ]
 
-# --- Контекстное меню ---
-# Пункты пишутся в HKCU\Software\Classes под своими именами SimpleTool.*, чтобы откат удалял только их.
+# --- Context menu ---
+# Items are written to HKCU\Software\Classes under their own SimpleTool.* names, so revert deletes only them.
 
-ADMINS = "*S-1-5-32-544"  # группа «Администраторы» по SID, не зависит от языка Windows
+ADMINS = "*S-1-5-32-544"  # the Administrators group by SID, independent of the Windows language
 HASHES = ["MD5", "SHA1", "SHA256", "SHA384", "SHA512"]
 IMAGE_TYPES = [".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".tif", ".tiff"]
 FIREWALL_RULE = r'name=\"SimpleTool - %1\"'
@@ -256,7 +256,7 @@ CONTEXT = [
         op for base in ("Directory", r"Directory\Background")
         for op in (
             OwnedKey(rf"{HKCU_CLASSES}\{base}\shell\SimpleTool.HiddenItems"),
-            # Встроенная команда Проводника «Скрытые элементы»; подпись Windows переводит сама
+            # Built-in Explorer command "Hidden items"; Windows translates the label itself
             Value(rf"{HKCU_CLASSES}\{base}\shell\SimpleTool.HiddenItems", "ExplorerCommandHandler",
                   "{f7300245-1f4b-41ba-8948-6fd392064494}", REG_SZ),
             Value(rf"{HKCU_CLASSES}\{base}\shell\SimpleTool.HiddenItems", "CommandStateSync", "", REG_SZ),

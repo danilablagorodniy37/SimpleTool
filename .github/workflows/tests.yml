@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Все тесты, которые меняют реестр, работают в песочнице HKCU\Software\SimpleToolTest,
-      # службы и задачи подменяются; окно проверяется только на чтение
+      # Every test that changes the registry runs in the sandbox HKCU\Software\SimpleToolTest,
+      # services and tasks are replaced with fakes; the window is only checked read-only
       - name: Tests
         run: python -m unittest discover -s tests -t . -v

@@ -137,6 +137,12 @@ TEXTS = {
         "mem_freed": "Freed so far",
         "mem_apps": "Programs",
         "mem_add": "Add a program",
+        "mem_installed_hint": "Programs installed on this PC. The ones running now come first, with the memory "
+                              "they use.",
+        "mem_installed_loading": "Looking for programs installed on this PC…",
+        "mem_installed_empty": "No other installed programs were found. Choose one from the running programs.",
+        "mem_show_all": "Show all ({n})",
+        "mem_show_less": "Show fewer",
         "mem_pick": "Choose from running…",
         "mem_now": "Now {size} in {count} processes",
         "mem_idle": "Not running",

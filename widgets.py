@@ -1,4 +1,4 @@
-"""Элементы интерфейса с анимациями: карточки, плашки, кнопки, флажки, индикаторы и уведомления."""
+"""Animated UI elements: cards, pills, buttons, checkboxes, indicators and notifications."""
 import math
 import time
 import tkinter as tk
@@ -17,7 +17,8 @@ def ease_in_out(t):
 
 
 class Animator:
-    """Покадровые анимации на root.after (~60 кадров в секунду). Новая анимация с тем же ключом заменяет старую."""
+    """Frame animations on root.after (~60 frames per second). A new animation with the same key replaces
+    the old one."""
 
     def __init__(self, root):
         self.root = root
@@ -33,7 +34,7 @@ class Animator:
             self.job = self.root.after(0, self._tick)
 
     def stop(self):
-        """Окно закрывается: отменяем следующий кадр, иначе Tk вызовет его уже после закрытия."""
+        """The window is closing: cancel the next frame, otherwise Tk calls it after the window is gone."""
         self.tweens.clear()
         if self.job:
             try:
@@ -61,7 +62,7 @@ class Animator:
                     del self.tweens[key]
                     if done:
                         done()
-            except tk.TclError:  # виджет уже удалён — анимация больше не нужна
+            except tk.TclError:  # the widget is already deleted, so the animation is no longer needed
                 self.tweens.pop(key, None)
         try:
             if self.tweens:
@@ -79,7 +80,7 @@ def round_points(x1, y1, x2, y2, r):
 
 
 def fade_in(animator, key, widgets, delay=0.0, duration=0.32):
-    """Проявляет текст: цвет надписей плавно идёт от цвета фона к своему."""
+    """Fades text in: label colors go smoothly from the background color to their own."""
     items = []
     for widget in widgets:
         if isinstance(widget, tk.Label) and not widget.cget("image"):
@@ -102,8 +103,8 @@ def descendants(widget):
 
 
 class Card(tk.Frame):
-    """Карточка со скруглёнными углами. Размер задаёт содержимое (рамка body), а скруглённый фон
-    рисуется на холсте-подложке, растянутом под всю карточку."""
+    """A card with rounded corners. The content (the body frame) sets the size, and the rounded background
+    is drawn on a backdrop canvas stretched under the whole card."""
 
     def __init__(self, parent, scale, fill=None, border=None, radius=12, pad=6):
         self.fill = fill or C["surface"]
@@ -126,7 +127,7 @@ class Card(tk.Frame):
 
 
 class Pill(tk.Canvas):
-    """Плашка состояния со скруглёнными краями; смена цвета анимируется."""
+    """A status pill with rounded ends; color changes are animated."""
 
     def __init__(self, parent, font, scale, animator):
         self.bg = parent.cget("bg")
@@ -156,9 +157,9 @@ class Pill(tk.Canvas):
 
 
 class GradientButton(tk.Canvas):
-    """Кнопка: основная — с фирменным градиентом и подсветкой при наведении, второстепенная — плоская."""
+    """A button: the primary one has the brand gradient and a hover glow, the secondary one is flat."""
 
-    STEPS = 6  # ступени подсветки, чтобы картинки кэшировались
+    STEPS = 6  # glow steps, so the images are cached
 
     def __init__(self, parent, text, command, font, scale, animator, primary=True, pad=(20, 8)):
         self.bg = parent.cget("bg")
@@ -218,7 +219,7 @@ class GradientButton(tk.Canvas):
 
 
 class CheckBox(tk.Canvas):
-    """Флажок: заливка и галочка дорисовываются анимацией."""
+    """A checkbox: the fill and the check mark are drawn with an animation."""
 
     def __init__(self, parent, size, animator):
         self.bg = parent.cget("bg")
@@ -266,7 +267,7 @@ class CheckBox(tk.Canvas):
 
 
 class ScanRings(tk.Canvas):
-    """Анимация сканирования: расходящиеся кольца и две вращающиеся дуги фирменных цветов."""
+    """Scan animation: expanding rings and two rotating arcs in the brand colors."""
 
     def __init__(self, parent, size, scale, icon, icon_font):
         self.bg = parent.cget("bg")
@@ -306,7 +307,7 @@ class ScanRings(tk.Canvas):
 
 
 class Spinner(tk.Canvas):
-    """Маленький индикатор работы в подвале."""
+    """A small activity indicator in the footer."""
 
     def __init__(self, parent, size, scale):
         self.bg = parent.cget("bg")
@@ -341,14 +342,15 @@ class Spinner(tk.Canvas):
 
 
 class Toast:
-    """Уведомление, которое выезжает снизу справа и само прячется."""
+    """A notification that slides in at the bottom right and hides itself."""
 
     def __init__(self, root, animator, scale, fonts):
         self.root, self.animator, self.scale, self.fonts = root, animator, scale, fonts
         self.card = None
 
     def show(self, text, color, icon, margin=None, seconds=4.0):
-        """margin — отступ от правого края окна, чтобы уведомление стояло по краю колонки содержимого."""
+        """margin is the distance from the right edge of the window, so the notification lines up with
+        the content column."""
         self.hide(now=True)
         px = lambda n: round(n * self.scale)
         card = Card(self.root, self.scale, fill=C["surface"], border=mix(color, C["surface"], 0.6), radius=12, pad=6)
@@ -380,7 +382,7 @@ class Toast:
 
 
 class Toggle(tk.Canvas):
-    """Переключатель: бегунок переезжает с анимацией. command(включён) вызывается после щелчка."""
+    """A switch: the knob slides with an animation. command(on) is called after a click."""
 
     def __init__(self, parent, scale, animator, on=False, command=None):
         self.bg = parent.cget("bg")
@@ -423,7 +425,7 @@ class Toggle(tk.Canvas):
 
 
 class Segmented(tk.Canvas):
-    """Выбор одного варианта из нескольких; подсветка выбранного переезжает с анимацией."""
+    """Choose one option out of several; the highlight slides to the selected one."""
 
     def __init__(self, parent, options, value, font, scale, animator, command=None):
         self.bg = parent.cget("bg")
@@ -449,7 +451,7 @@ class Segmented(tk.Canvas):
         self._draw()
 
     def _span(self, pos):
-        """Левый край и ширина подсветки для дробной позиции между вариантами."""
+        """Left edge and width of the highlight for a fractional position between options."""
         lefts = [2 + sum(self.widths[:i]) for i in range(len(self.widths))]
         i = min(int(pos), len(self.widths) - 1)
         j, frac = min(i + 1, len(self.widths) - 1), pos - i
@@ -484,7 +486,7 @@ class Segmented(tk.Canvas):
 
 
 class Meter(tk.Canvas):
-    """Полоска «занято / лимит»: бирюзовая в норме, оранжевая у предела, красная сверх лимита."""
+    """A "used / limit" bar: teal when fine, orange near the limit, red above it."""
 
     def __init__(self, parent, scale, animator):
         self.bg = parent.cget("bg")
@@ -519,7 +521,7 @@ class Meter(tk.Canvas):
 
 
 class Stepper(tk.Frame):
-    """Значение с кнопками «−» и «+», которые переключают его по лестнице values."""
+    """A value with − and + buttons that step it through the values ladder."""
 
     def __init__(self, parent, value, values, fmt, font, scale, command=None):
         super().__init__(parent, bg=parent.cget("bg"))
@@ -550,7 +552,7 @@ class Stepper(tk.Frame):
 
 
 class Flow(tk.Frame):
-    """Раскладывает дочерние элементы строками слева направо и переносит то, что не помещается."""
+    """Lays out child widgets in rows from left to right and wraps what does not fit."""
 
     def __init__(self, parent, gap_x, gap_y):
         super().__init__(parent, bg=parent.cget("bg"), height=1)

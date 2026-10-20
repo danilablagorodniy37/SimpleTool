@@ -1,20 +1,20 @@
-"""Проверка перед публикацией: секреты, личные данные и файлы, которым не место в открытом репозитории.
+"""Pre-publication check: secrets, personal data and files that do not belong in a public repository.
 
-Запуск из корня репозитория:
-    python tools/check_secrets.py            # все файлы, которые попадут в репозиторий
-    python tools/check_secrets.py --staged   # только подготовленные к коммиту (pre-commit)
-    python tools/check_secrets.py --history  # все версии всех файлов в истории git (CI)
+Run from the repository root:
+    python tools/check_secrets.py            # every file that goes into the repository
+    python tools/check_secrets.py --staged   # only files staged for commit (pre-commit)
+    python tools/check_secrets.py --history  # every version of every file in the git history (CI)
 
-Что ищет:
-  * токены и ключи: GitHub, GitLab, AWS, Google, Slack, Stripe, OpenAI/Anthropic, Telegram, JWT,
-    приватные ключи, пароли и ключи в присваиваниях, логины в URL, строки с высокой энтропией;
-  * личные данные: e-mail (кроме noreply GitHub), пути профиля C:\\Users\\<имя>, локальные диски D:–Z:,
-    SID учётных записей, имена компьютеров, а на Windows — имя пользователя и компьютера;
-  * файлы, которые нельзя публиковать: .env, ключи и сертификаты, базы данных, архивы,
-    настройки IDE, docs/ (база «ТВикинариум» — чужой контент), данные SimpleTool с компьютера;
-  * метаданные в картинках (текстовые блоки PNG, EXIF).
-Ложное срабатывание можно пропустить пометкой «secret-scan: allow» в той же строке.
-Код выхода 1, если что-то найдено.
+What it looks for:
+  * tokens and keys: GitHub, GitLab, AWS, Google, Slack, Stripe, OpenAI/Anthropic, Telegram, JWT,
+    private keys, passwords and keys in assignments, logins in URLs, high-entropy strings;
+  * personal data: e-mail (except GitHub noreply), profile paths C:\\Users\\<name>, local drives D:-Z:,
+    account SIDs, computer names, and on Windows the user and computer name;
+  * files that must not be published: .env, keys and certificates, databases, archives,
+    IDE settings, docs/ (local notes and third-party materials), SimpleTool data from a PC;
+  * metadata in images (PNG text chunks, EXIF).
+A false positive can be skipped with a "secret-scan: allow" mark on the same line.
+Exit code 1 if anything is found.
 """
 import math
 import os
@@ -68,7 +68,7 @@ TOKEN = re.compile(r"[A-Za-z0-9+/_=-]{32,}")
 
 
 def personal_patterns():
-    """Общие шаблоны плюс имя пользователя и компьютера, если проверка идёт на Windows."""
+    """Common patterns plus the user and computer name when the check runs on Windows."""
     patterns = list(PERSONAL)
     if os.name == "nt":
         for kind, value in (("Windows user name", os.environ.get("USERNAME", "")),
@@ -87,7 +87,7 @@ def entropy(text):
 
 
 def shown(value, secret):
-    """Секрет в отчёте не печатается целиком."""
+    """A secret is never printed in full in the report."""
     return value[:4] + "..." if secret else value
 
 
@@ -101,7 +101,7 @@ def scan_line(label, line, findings):
                 continue
             findings.append(f"{label}: {kind}: {shown(value, secret)}")
     for token in TOKEN.findall(line):
-        # Случайные ключи содержат и буквы, и цифры; длинные слова и пути через дефис — нет
+        # Random keys contain both letters and digits; long words and hyphenated paths do not
         if re.search(r"\d", token) and re.search(r"[A-Za-z]", token) and entropy(token) > 4.5:
             findings.append(f"{label}: high-entropy string: {shown(token, True)}")
 
@@ -117,7 +117,7 @@ def scan_binary(label, data, findings):
             findings.append(f"{label}: image metadata ({chunk.decode()} chunk)")
     if b"Exif\x00\x00" in data:
         findings.append(f"{label}: image metadata (EXIF)")
-    # Пути, адреса и ключи могут сидеть в метаданных или ресурсах двоичного файла
+    # Paths, addresses and keys can hide in the metadata or resources of a binary file
     for run in re.findall(rb"[\x20-\x7e]{8,}", data):
         text = run.decode("ascii")
         for kind, pattern, secret in CHECKS:
@@ -143,7 +143,7 @@ def worktree_files():
             with open(path, "rb") as f:
                 yield path, path, f.read()
         except FileNotFoundError:
-            continue  # удалён, но ещё в индексе
+            continue  # deleted, but still in the index
 
 
 def staged_files():
@@ -153,7 +153,7 @@ def staged_files():
 
 
 def history_files():
-    """Каждая версия каждого файла из всех веток и тегов."""
+    """Every version of every file from all branches and tags."""
     paths = {}
     for line in git("rev-list", "--all", "--objects").decode("utf-8", "replace").splitlines():
         sha, _, path = line.partition(" ")
@@ -164,7 +164,7 @@ def history_files():
     while pos < len(out):
         end = out.index(b"\n", pos)
         header = out[pos:end].split()
-        if len(header) != 3:  # объект не найден
+        if len(header) != 3:  # object not found
             pos = end + 1
             continue
         sha, kind, size = header[0].decode(), header[1], int(header[2])

@@ -1,11 +1,11 @@
-"""Сборка портативной версии: один SimpleTool.exe, которому не нужен установленный Python.
+"""Portable build: a single SimpleTool.exe that does not need Python installed.
 
-Запуск из корня репозитория:
+Run from the repository root:
     python build.py
 
-Результат — dist/SimpleTool.exe. Его можно скопировать на флешку и запускать на любом Windows 10/11.
-Данные программы (снимки, резервные копии, настройки) хранятся на каждом компьютере в
-%LOCALAPPDATA%\\SimpleTool: снимок описывает конкретный ПК и не должен уезжать на флешке к другому.
+The result is dist/SimpleTool.exe. Copy it to a USB stick and run it on any Windows 10/11 PC.
+The program data (snapshots, backups, settings) stays on each computer in
+%LOCALAPPDATA%\\SimpleTool: a snapshot describes one particular PC and must not travel to another one.
 """
 import hashlib
 import os
@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 
-PYINSTALLER = "6.22.3"  # закреплённая версия: сборка повторяется одинаково на любом компьютере
+PYINSTALLER = "6.22.3"  # pinned version: the build is reproducible on any computer
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(ROOT, "build")
 DIST = os.path.join(ROOT, "dist")
@@ -44,7 +44,7 @@ def app_version():
 
 
 def python_with_pyinstaller():
-    """Текущий Python, если в нём нужная версия PyInstaller, иначе отдельное окружение .build-venv."""
+    """The current Python if it has the required PyInstaller version, otherwise a separate .build-venv."""
     try:
         import PyInstaller
         if PyInstaller.__version__ == PYINSTALLER:
@@ -60,7 +60,7 @@ def python_with_pyinstaller():
 
 
 def exe_is_locked(path):
-    """Запущенный exe нельзя перезаписать — лучше сказать об этом сразу, а не падать в конце сборки."""
+    """A running exe cannot be overwritten: better to say so right away than to fail at the end of the build."""
     if not os.path.exists(path):
         return False
     try:
@@ -80,7 +80,7 @@ def main():
     with open(version_file, "w", encoding="utf-8") as f:
         f.write(VERSION_INFO.format(numbers=numbers, version=version))
 
-    # Пути абсолютные: PyInstaller считает относительные пути от папки со spec-файлом (build/)
+    # Absolute paths: PyInstaller resolves relative paths from the spec file folder (build/)
     subprocess.run([
         python_with_pyinstaller(), "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
         "--name", "SimpleTool",

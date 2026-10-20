@@ -1,4 +1,4 @@
-"""Тексты на трёх языках: все ключи и подстановки на месте, иначе при смене языка окно упадёт."""
+"""Texts in three languages: every key and placeholder is in place, otherwise switching language crashes."""
 import re
 import string
 import unittest
@@ -59,7 +59,7 @@ class Texts(unittest.TestCase):
                 self.assertEqual(len(texts["reasons"][reason]), 2)
 
     def test_product_is_named_simpletool_only(self):
-        """Продукт называется SimpleTool: интерфейс не называет другие программы-твикеры."""
+        """The product is named SimpleTool: the interface names no other tweaking program."""
         for lang, texts in i18n.TEXTS.items():
             blob = repr(texts)
             self.assertNotRegex(blob, r"(?i)tweaker", lang)

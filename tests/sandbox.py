@@ -1,9 +1,9 @@
-"""Песочница для тестов: SimpleTool работает как обычно, но не может изменить систему.
+"""Test sandbox: SimpleTool works as usual but cannot change the system.
 
-* Все пути реестра перенаправляются в HKCU\\Software\\SimpleToolTest\\<id>\\<HKLM|HKCU>\\...
-* Любое открытие, создание или удаление раздела реестра за пределами песочницы роняет тест (растяжка).
-* sc.exe и schtasks.exe подменяются: службы и задачи не трогаются, вызовы записываются.
-* Ярлыки, снимки и резервные копии пишутся во временную папку; остальные внешние команды запрещены.
+* Every registry path is redirected to HKCU\\Software\\SimpleToolTest\\<id>\\<HKLM|HKCU>\\...
+* Opening, creating or deleting any registry key outside the sandbox fails the test (tripwire).
+* sc.exe and schtasks.exe are replaced: services and tasks are not touched, the calls are recorded.
+* Shortcuts, snapshots and backups go to a temporary folder; other external commands are forbidden.
 """
 import os
 import shutil
@@ -17,11 +17,11 @@ SANDBOX_ROOT = r"Software\SimpleToolTest"
 
 
 class SandboxEscape(AssertionError):
-    """Код попытался выйти за пределы песочницы — в настоящей системе это изменило бы реестр."""
+    """The code tried to leave the sandbox: on a real system this would have changed the registry."""
 
 
 class GuardedWinreg:
-    """Модуль winreg, который пропускает только разделы внутри песочницы."""
+    """A winreg module that lets through only keys inside the sandbox."""
 
     def __init__(self, root):
         self.root = root.lower() + "\\"
@@ -49,7 +49,7 @@ class GuardedWinreg:
 
 
 class FakeContext:
-    """Состояние задач планировщика в песочнице (вместо Get-ScheduledTask)."""
+    """Scheduled task state in the sandbox (instead of Get-ScheduledTask)."""
 
     def __init__(self, sandbox):
         self.sandbox = sandbox
@@ -64,19 +64,19 @@ class Sandbox:
         self.id = uuid.uuid4().hex[:10]
         self.root = rf"{SANDBOX_ROOT}\{self.id}"
         self.tmp = tempfile.mkdtemp(prefix="simpletool-test-")
-        self.tasks = {}       # путь задачи в нижнем регистре -> отключена ли
-        self.commands = []    # все вызовы sc.exe / schtasks.exe
+        self.tasks = {}       # lowercase task path -> whether it is disabled
+        self.commands = []    # every sc.exe / schtasks.exe call
         self._saved = []
         self.ctx = FakeContext(self)
 
-    # --- пути ---
+    # --- paths ---
 
     def subkey(self, path):
-        """Настоящий путь (HKLM\\... или HKCU\\...) -> раздел в песочнице."""
+        """A real path (HKLM\\... or HKCU\\...) -> the key in the sandbox."""
         hive, _, sub = path.partition("\\")
         return rf"{self.root}\{hive}" + (rf"\{sub}" if sub else "")
 
-    # --- подмены ---
+    # --- fakes ---
 
     def _patch(self, target, name, value):
         self._saved.append((target, name, getattr(target, name)))
@@ -92,7 +92,7 @@ class Sandbox:
         self._patch(engine, "create_shortcut", self.fake_shortcut)
         self._patch(engine, "notify_shell", lambda: None)
         self._patch(engine, "load_tasks", self.forbidden)
-        # Корни разделов в настоящей Windows существуют всегда, их нельзя ни создать, ни удалить
+        # Root keys always exist in real Windows and can be neither created nor deleted
         for hive in ("HKCU", "HKLM"):
             self.seed_key(hive)
         return self
@@ -131,7 +131,7 @@ class Sandbox:
         with open(lnk, "w", encoding="utf-8") as f:
             f.write(f"{target} {args} | {icon}")
 
-    # --- подготовка и снимок состояния ---
+    # --- setup and state snapshot ---
 
     def seed_value(self, path, name, data, kind):
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, self.subkey(path), 0, winreg.KEY_WRITE) as key:
@@ -141,7 +141,7 @@ class Sandbox:
         winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, self.subkey(path), 0, winreg.KEY_WRITE).Close()
 
     def state(self):
-        """Всё, что SimpleTool может изменить: реестр песочницы, задачи, ярлыки."""
+        """Everything SimpleTool can change: the sandbox registry, tasks, shortcuts."""
         registry = {}
         _dump(winreg.HKEY_CURRENT_USER, self.root, registry, len(self.root) + 1)
         shortcuts = sorted(f for f in os.listdir(self.tmp) if f.endswith(".lnk"))
