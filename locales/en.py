@@ -27,10 +27,65 @@ TEXTS = {
         "terms_link": "Terms of use",
         "terms_accept": "I accept",
         "terms_exit": "Exit",
+        "back": "Back",
+        "update_link": "Check for updates",
+        "update_checking": "Checking for updates…",
+        "update_latest": "You have the latest version, {version}.",
+        "update_title": "Update available",
+        "update_heading": "SimpleTool {version} is available",
+        "update_text": "You have version {current}. Download the new SimpleTool.exe and run it instead of this one: "
+                       "settings, backups and snapshots stay where they are. Close this copy first.",
+        "update_download": "Download",
+        "update_notes": "What's new",
+        "update_later": "Later",
+        "update_failed_title": "Could not check for updates",
+        "update_failed_text": "SimpleTool got no answer from blagotech.uk: {error}\n\nCheck the internet "
+                              "connection, or look for a new version on the website.",
+        "update_open_site": "Open the website",
+        "report_link": "Report a problem",
+        "report_title": "Report a problem",
+        "report_text": "Found a bug, or did something go wrong? Write to the address below: what you did, what you "
+                       "expected and what happened. If SimpleTool saved an error log, attach it: “Open error log” "
+                       "shows the file.",
+        "report_write": "Write an email",
+        "report_log": "Open error log",
+        "report_copy": "Copy address",
+        "report_copied": "Address copied: {email}",
+        "report_subject": "SimpleTool {version}: a problem",
+        "report_body": "SimpleTool {version}, Windows {windows}\n\nWhat I did:\n\n\nWhat happened:\n\n\n(Attach "
+                       "error.log if there is one.)\n",
+        "rp_checking": "Checking Windows restore points…",
+        "rp_gate_title": "First, a restore point",
+        "rp_gate_text": "SimpleTool is about to change Windows settings. If something goes wrong, a Windows restore "
+                        "point is the reliable way back: it saves the whole registry and system files, and System "
+                        "Restore can return to it even when Windows does not start.\n\nThere is no restore point "
+                        "from the last 24 hours. Creating one takes a minute or two. If System Protection is off "
+                        "for the Windows drive, SimpleTool turns it on.",
+        "rp_gate_admin_text": "SimpleTool is about to change Windows settings. Before that it creates a Windows "
+                              "restore point: the reliable way back if something goes wrong. Windows lets only "
+                              "administrators create restore points.\n\nRestart SimpleTool as administrator: it "
+                              "creates the restore point, and then you apply the tweaks.",
+        "rp_gate_create": "Create restore point and apply",
+        "rp_gate_skip": "Continue without a restore point…",
+        "rp_open_protection": "Open System Protection settings",
+        "rp_done_enabled": "System Protection turned on, Windows restore point created.",
+        "rp_skip_title": "Without a restore point you are on your own",
+        "rp_skip_text": "If a change breaks Windows, there may be no way back: you may lose programs, settings or "
+                        "files and have to reinstall Windows.\n\nSimpleTool is provided as is, without any warranty "
+                        "(see the terms of use). Neither SimpleTool nor blagotech can repair your system.",
+        "rp_skip_confirm": "I understand the risk. Whatever happens to my computer is my own responsibility.",
+        "rp_skip_apply": "Apply without a restore point",
+        "snap_delete_title": "Delete this snapshot?",
+        "snap_delete_text": "The snapshot from {date} will be deleted for good: you will not be able to restore it.",
+        "snap_delete_ok": "Delete",
+        "mem_on_idle_text": "Nothing is being limited yet: add a program below or turn one on. Until then, closing "
+                            "the window exits SimpleTool.",
         "crash_title": "Something went wrong",
         "crash_intro": "SimpleTool hit an unexpected error and keeps working. If something looks wrong, restart it. "
-                       "The details are saved in the error log:",
-        "start_failed": "SimpleTool could not start: {error}\n\nThe details are saved in {path}",
+                       "The details are saved in the error log, "
+                       "please send it to {email}:",
+        "start_failed": "SimpleTool could not start: {error}\n\nThe details are saved in {path}. Please send "
+                        "this file to {email}.",
         "other_account_title": "SimpleTool runs as another account",
         "other_account_text": "SimpleTool was started as {account}, but Windows is signed in as {user}. Settings of "
                               "the current user (File Explorer, the context menu, privacy settings of the account) "
@@ -56,7 +111,8 @@ TEXTS = {
         "details_hide": "Hide details",
         "what_changes": "What changes",
         "backup_saved": "Original values are saved. Revert restores exactly them.",
-        "backup_none": "No backup yet: the first Apply saves the current values. Without a backup, Revert sets the Windows defaults.",
+        "backup_none": "No backup yet: the first Apply saves the current values. Without a backup, Revert sets the "
+                       "Windows defaults.",
         "op_value": "{path} → {name} = {data}",
         "op_default_name": "(Default)",
         "op_label": "menu text",
@@ -108,10 +164,12 @@ TEXTS = {
                       "tasks, context menu items and shortcuts. SimpleTool takes one automatically before every Apply, "
                       "Revert and restore, and keeps the very first one as the original state. Restoring a snapshot "
                       "returns all of these settings to how they were at that moment.",
-        "snap_rp_hint": "A Windows restore point goes further: Windows saves the whole registry and system files, and you "
-                        "can return to it through System Restore (Control Panel → Recovery), or from the Windows recovery "
-                        "environment if Windows does not start. It needs "
-                        "administrator rights and System Protection turned on; by default Windows allows one per day.",
+        "snap_rp_hint": "A Windows restore point goes further: Windows saves the whole registry and system files, "
+                        "and you can return to it through System Restore (Control Panel → Recovery), or from the "
+                        "Windows recovery environment if Windows does not start. It needs administrator rights; if "
+                        "System Protection is off for the Windows drive, SimpleTool turns it on. By default Windows "
+                        "allows one per day. Before Apply SimpleTool asks for a restore point when there is none "
+                        "from the last 24 hours.",
         "snap_create": "Take snapshot",
         "snap_restore_point": "Create Windows restore point",
         "snap_folder": "Open snapshots folder",

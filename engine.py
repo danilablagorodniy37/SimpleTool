@@ -6,8 +6,10 @@ import os
 import platform
 import subprocess
 import winreg
+from ctypes import wintypes
 
 CREATE_NO_WINDOW = 0x08000000
+RUN_TIMEOUT = 300  # seconds: a console program that hangs must not keep SimpleTool busy forever
 HIVES = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}
 WOW64 = winreg.KEY_WOW64_64KEY
 
@@ -78,18 +80,65 @@ def clean_env():
     return env
 
 
-def run(args):
+def run(args, timeout=RUN_TIMEOUT):
     """Runs a console program without a window. On failure raises RuntimeError with its output."""
-    result = subprocess.run(args, capture_output=True, encoding="oem", errors="replace",
-                            creationflags=CREATE_NO_WINDOW, env=clean_env())
+    try:
+        result = subprocess.run(args, capture_output=True, encoding="oem", errors="replace",
+                                creationflags=CREATE_NO_WINDOW, env=clean_env(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{os.path.basename(args[0])} did not finish in {timeout} s") from None
     if result.returncode != 0:
         output = (result.stderr or result.stdout).strip()
         raise RuntimeError(output or f"{args[0]}: exit code {result.returncode}")
     return result.stdout
 
 
-def powershell(script):
-    return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script])
+def powershell(script, timeout=RUN_TIMEOUT):
+    return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout)
+
+
+# --- Services ---
+
+SERVICE_CHANGE_CONFIG = 0x0002
+SERVICE_NO_CHANGE = 0xFFFFFFFF
+
+
+def set_start_type(name, start):
+    """Changes a service's startup type through the service manager. Returns False if Windows refuses.
+
+    The service manager reads the Start value from the registry only at boot. A value written straight to the
+    registry is not seen until then, so a service started by a trigger (dmwappushservice) could start again
+    while SimpleTool already shows it as disabled. The service manager applies the change at once and writes
+    the same Start value itself. Only the startup type changes: "delayed start" is a separate setting.
+    """
+    try:
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        advapi.OpenSCManagerW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        advapi.OpenSCManagerW.restype = wintypes.HANDLE
+        advapi.OpenServiceW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD]
+        advapi.OpenServiceW.restype = wintypes.HANDLE
+        advapi.ChangeServiceConfigW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                                wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+                                                wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                                wintypes.LPCWSTR]
+        advapi.ChangeServiceConfigW.restype = wintypes.BOOL
+        advapi.CloseServiceHandle.argtypes = [wintypes.HANDLE]
+    except (AttributeError, OSError):
+        return False
+    scm = advapi.OpenSCManagerW(None, None, 0x0001)  # SC_MANAGER_CONNECT
+    if not scm:
+        return False
+    try:
+        service = advapi.OpenServiceW(scm, name, SERVICE_CHANGE_CONFIG)
+        if not service:
+            return False  # no such service, or Windows protects its configuration
+        try:
+            return bool(advapi.ChangeServiceConfigW(service, SERVICE_NO_CHANGE, start, SERVICE_NO_CHANGE,
+                                                    None, None, None, None, None, None, None))
+        finally:
+            advapi.CloseServiceHandle(service)
+    finally:
+        advapi.CloseServiceHandle(scm)
 
 
 # --- Registry ---
@@ -367,8 +416,14 @@ class Service:
         found = read_value(self.path, "Start")
         return found[0] if found else None
 
+    def set_start(self, start):
+        # Some services refuse configuration changes even to administrators: for them only the registry
+        # value can be changed, and it takes effect after a restart
+        if not set_start_type(self.name, start):
+            write_value(self.path, "Start", start, winreg.REG_DWORD)
+
     def apply(self, lang):
-        write_value(self.path, "Start", 4, winreg.REG_DWORD)
+        self.set_start(4)
         try:
             run(["sc.exe", "stop", self.name])
         except RuntimeError:
@@ -377,10 +432,10 @@ class Service:
 
     def restore(self, start):
         if start is not None:
-            write_value(self.path, "Start", start, winreg.REG_DWORD)
+            self.set_start(start)
 
     def reset(self):
-        write_value(self.path, "Start", self.default_start, winreg.REG_DWORD)
+        self.set_start(self.default_start)
 
 
 class Task:
@@ -725,6 +780,17 @@ def restore_snapshot(tweaks, data, ctx):
     return errors
 
 
+# The volumes System Protection is on for, one "\\?\Volume{...}\:(C%3A)" line each
+PROTECTED_VOLUMES = (r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SPP\Clients",
+                     "{09F7EDC5-294E-4180-AF6A-FB0E6A0E9513}")
+RESTORE_POINT_AGE = datetime.timedelta(hours=24)  # Windows itself allows one restore point a day by default
+RESTORE_POINT_TIMEOUT = 900  # creating a restore point on a slow disk can take several minutes
+
+LAST_RESTORE_POINT_SCRIPT = (
+    "$point = @(Get-ComputerRestorePoint -ErrorAction Stop) | Sort-Object SequenceNumber | Select-Object -Last 1; "
+    "if ($point) { [Management.ManagementDateTimeConverter]::ToDateTime($point.CreationTime).ToUniversalTime()"
+    ".ToString('yyyy-MM-ddTHH:mm:ss') } else { 'NONE' }")
+
 RESTORE_POINT_SCRIPT = (
     "$before = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count; "
     "Checkpoint-Computer -Description 'SimpleTool' -RestorePointType MODIFY_SETTINGS "
@@ -732,14 +798,56 @@ RESTORE_POINT_SCRIPT = (
     "$after = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count; "
     "if ($after -gt $before) { 'CREATED' } else { 'NOT CREATED: ' + ($warn -join ' ') }")
 
+# Without System Protection on the Windows drive, Windows creates no restore points at all
+ENABLE_PROTECTION_SCRIPT = "Enable-ComputerRestore -Drive ($env:SystemDrive + '\\') -ErrorAction Stop; "
+
+
+def system_protection_on():
+    """Whether System Protection is on for the Windows drive; None if that cannot be read."""
+    try:
+        found = read_value(*PROTECTED_VOLUMES)
+    except OSError:
+        return None
+    volumes = found[0] if found and isinstance(found[0], list) else []
+    drive = (os.environ.get("SystemDrive") or "C:").rstrip("\\").upper().replace(":", "%3A")
+    return any(f"({drive})" in str(volume).upper() for volume in volumes)
+
+
+def last_restore_point():
+    """When the newest Windows restore point was created (UTC), or None if there is none.
+
+    Needs administrator rights. Raises RuntimeError if Windows cannot list restore points.
+    """
+    output = powershell(LAST_RESTORE_POINT_SCRIPT).strip()
+    last = output.splitlines()[-1].strip() if output else ""
+    if last == "NONE":
+        return None
+    try:
+        return datetime.datetime.strptime(last, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise RuntimeError(output or "Get-ComputerRestorePoint returned nothing") from None
+
+
+def recent_restore_point(now=None):
+    """The newest restore point if it is less than a day old, otherwise None (raises like last_restore_point)."""
+    created = last_restore_point()
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return created if created and now - created < RESTORE_POINT_AGE else None
+
 
 def create_restore_point():
-    """A Windows restore point (the whole registry and system files). Returns (success, Windows message)."""
+    """A Windows restore point (the whole registry and system files).
+
+    If System Protection is off for the Windows drive it is turned on first: the dialog that asks for the
+    restore point says so. Returns (success, Windows message, whether System Protection was turned on).
+    """
+    enable = system_protection_on() is False
     try:
-        output = powershell(RESTORE_POINT_SCRIPT).strip()
+        output = powershell((ENABLE_PROTECTION_SCRIPT if enable else "") + RESTORE_POINT_SCRIPT,
+                            RESTORE_POINT_TIMEOUT).strip()
     except RuntimeError as exc:
-        return False, str(exc)
+        return False, str(exc), enable
     last = output.splitlines()[-1] if output else ""
     if last == "CREATED":
-        return True, ""
-    return False, last.replace("NOT CREATED:", "").strip()
+        return True, "", enable
+    return False, last.replace("NOT CREATED:", "").strip(), enable

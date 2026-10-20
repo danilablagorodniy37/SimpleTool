@@ -2,7 +2,8 @@
 
 * Every registry path is redirected to HKCU\\Software\\SimpleToolTest\\<id>\\<HKLM|HKCU>\\...
 * Opening, creating or deleting any registry key outside the sandbox fails the test (tripwire).
-* sc.exe and schtasks.exe are replaced: services and tasks are not touched, the calls are recorded.
+* sc.exe, schtasks.exe and the service manager are replaced: services and tasks are not touched, the calls
+  are recorded.
 * Shortcuts, snapshots and backups go to a temporary folder; other external commands are forbidden.
 """
 import os
@@ -66,6 +67,8 @@ class Sandbox:
         self.tmp = tempfile.mkdtemp(prefix="simpletool-test-")
         self.tasks = {}       # lowercase task path -> whether it is disabled
         self.commands = []    # every sc.exe / schtasks.exe call
+        self.start_types = []  # (service, startup type) set through the service manager
+        self.scm_refuses = False  # True: the service manager refuses, as it does for protected services
         self._saved = []
         self.ctx = FakeContext(self)
 
@@ -86,6 +89,7 @@ class Sandbox:
         self._patch(engine, "_split", lambda path: (winreg.HKEY_CURRENT_USER, self.subkey(path)))
         self._patch(engine, "winreg", GuardedWinreg(self.root))
         self._patch(engine, "run", self.fake_run)
+        self._patch(engine, "set_start_type", self.fake_start_type)
         self._patch(engine, "powershell", self.forbidden)
         self._patch(engine, "data_dir", lambda: self.tmp)
         self._patch(engine, "desktop_dir", lambda: self.tmp)
@@ -126,6 +130,16 @@ class Sandbox:
             self.tasks[key] = args[4] == "/disable"
             return ""
         raise SandboxEscape(f"unexpected command: {args}")
+
+    def fake_start_type(self, name, start):
+        """The service manager: like Windows, it writes the Start value of the service itself."""
+        if self.scm_refuses:
+            return False
+        self.start_types.append((name, start))
+        path = self.subkey(rf"HKLM\SYSTEM\CurrentControlSet\Services\{name}")
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_WRITE) as key:
+            winreg.SetValueEx(key, "Start", 0, winreg.REG_DWORD, start)
+        return True
 
     def fake_shortcut(self, lnk, target, args, icon):
         with open(lnk, "w", encoding="utf-8") as f:
