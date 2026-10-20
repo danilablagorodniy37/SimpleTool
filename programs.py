@@ -29,6 +29,17 @@ UNINSTALL = [(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVer
 PACKAGES = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages"
 
 
+def _string_at(data, offset, unicode):
+    """The zero-terminated string at offset, or None if the data ends before the terminator (a damaged file)."""
+    if not unicode:
+        end = data.find(b"\0", offset)
+        return data[offset:end].decode("mbcs") if end >= 0 else None
+    end = data.find(b"\0\0", offset)
+    while end >= 0 and (end - offset) % 2:  # the terminator is a whole character, not the middle of two
+        end = data.find(b"\0\0", end + 1)
+    return data[offset:end].decode("utf-16-le") if end >= 0 else None
+
+
 def shortcut_target(data):
     """The path a .lnk shortcut points to and its arguments (MS-SHLLINK format). (None, None) if there is no path."""
     if len(data) < 0x4C or struct.unpack_from("<I", data, 0)[0] != 0x4C:
@@ -42,13 +53,9 @@ def shortcut_target(data):
         size, header, info_flags, _, base = struct.unpack_from("<IIIII", data, pos)
         if info_flags & 1:
             if header >= 0x24:  # Unicode path
-                offset = start + struct.unpack_from("<I", data, pos + 0x1C)[0]
-                end = offset
-                while data[end:end + 2] != b"\0\0":
-                    end += 2
-                target = data[offset:end].decode("utf-16-le")
+                target = _string_at(data, start + struct.unpack_from("<I", data, pos + 0x1C)[0], True)
             else:
-                target = data[start + base:data.index(b"\0", start + base)].decode("mbcs")
+                target = _string_at(data, start + base, False)
         pos = start + size
     unicode = flags & 0x80
     for bit in (0x4, 0x8, 0x10, 0x20):  # name, relative path, working directory, arguments
@@ -107,6 +114,19 @@ def _values(key, *names):
     return values
 
 
+def _subkeys(key):
+    """Names of the key's subkeys. A program installed or removed while the list is read skips only itself."""
+    try:
+        count = winreg.QueryInfoKey(key)[0]
+    except OSError:
+        return
+    for i in range(count):
+        try:
+            yield winreg.EnumKey(key, i)
+        except OSError:
+            continue
+
+
 def _uninstall_entries():
     for hive, path in UNINSTALL:
         try:
@@ -114,16 +134,17 @@ def _uninstall_entries():
         except OSError:
             continue
         with root:
-            for i in range(winreg.QueryInfoKey(root)[0]):
+            for subkey in _subkeys(root):
                 try:
-                    with winreg.OpenKey(root, winreg.EnumKey(root, i)) as key:
+                    with winreg.OpenKey(root, subkey) as key:
                         title, icon, system, parent = _values(key, "DisplayName", "DisplayIcon", "SystemComponent",
                                                               "ParentKeyName")
                 except OSError:
                     continue
-                if not title or system == 1 or parent or not isinstance(icon, str):
-                    continue  # components, updates and entries without a program icon
-                yield title, icon.split(",")[0].strip().strip('"'), None
+                if not isinstance(title, str) or not title.strip() or system == 1 or parent \
+                        or not isinstance(icon, str):
+                    continue  # components, updates, entries without a program icon and damaged entries
+                yield title.strip(), icon.split(",")[0].strip().strip('"'), None
 
 
 def _store_apps():
@@ -132,8 +153,7 @@ def _store_apps():
     except OSError:
         return
     with key:
-        for i in range(winreg.QueryInfoKey(key)[0]):
-            package = winreg.EnumKey(key, i)
+        for package in _subkeys(key):
             for prefix, (name, title) in STORE.items():
                 if package.startswith(prefix):
                     yield name, title

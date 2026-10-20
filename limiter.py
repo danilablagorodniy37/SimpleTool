@@ -6,11 +6,14 @@ Two modes for each program:
   and Windows brings the trimmed pages back when they are needed;
 * hard: a Windows cap on every process of the program (SetProcessWorkingSetSizeEx with a hard maximum).
   The caps last as long as the process and are removed when the limiter is turned off or SimpleTool exits.
+  The capped processes are also listed on disk, so caps left by a SimpleTool that was killed or crashed
+  are removed at the next start.
 
 The limiter runs in a background thread while SimpleTool is open, including when it is hidden to the tray.
 """
 import ctypes
 import json
+import math
 import os
 import threading
 import time
@@ -60,7 +63,14 @@ def default_limit(name):
     return DEFAULT_LIMITS.get(normalize(name), CUSTOM_LIMIT)
 
 
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def clamp_limit(mb):
+    """The limit within the allowed range; ValueError if mb is not a finite number."""
+    if not (_is_int(mb) or isinstance(mb, float) and math.isfinite(mb)):
+        raise ValueError(f"not a memory limit: {mb!r}")
     return max(MIN_LIMIT_MB, min(MAX_LIMIT_MB, int(mb)))
 
 
@@ -101,6 +111,9 @@ class WindowsApi:
         k.SetProcessWorkingSetSizeEx.argtypes = [wintypes.HANDLE, ctypes.c_size_t, ctypes.c_size_t, wintypes.DWORD]
         k.GetProcessWorkingSetSizeEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
                                                  ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(wintypes.DWORD)]
+        k.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                 ctypes.POINTER(wintypes.DWORD)]
         self.k = k
 
     def processes(self):
@@ -151,24 +164,46 @@ class WindowsApi:
             return None
         return low.value, high.value, flags.value
 
-    def set_hard_limit(self, pid, limit_bytes):
+    def _created(self, handle):
+        """When the process started (FILETIME as a number). With the ID it identifies the process: IDs are reused."""
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not self.k.GetProcessTimes(handle, *[ctypes.byref(t) for t in times]):
+            return None
+        return times[0].dwHighDateTime << 32 | times[0].dwLowDateTime
+
+    def _name(self, handle):
+        """Process name from the path of its .exe, as processes() gives it."""
+        size = wintypes.DWORD(32768)
+        path = ctypes.create_unicode_buffer(size.value)
+        if not self.k.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):
+            return None
+        return normalize(path.value)
+
+    def set_hard_limit(self, pid, limit_bytes, name=None):
+        """Caps the process and returns its creation time, or None if it was not capped. With name, only if
+        the process is still that program: since the list was read, its ID may have gone to another one."""
         handle = self._open(pid, self.QUERY | self.SET_QUOTA)
         if not handle:
-            return False
+            return None
         try:
-            quota = self._quota(handle)
-            if quota is None:
-                return False
+            created, quota = self._created(handle), self._quota(handle)
+            if created is None or quota is None or name is not None and self._name(handle) != normalize(name):
+                return None
             low = min(quota[0], limit_bytes // 2)
-            return bool(self.k.SetProcessWorkingSetSizeEx(handle, low, limit_bytes, self.MAX_ENABLE | self.MIN_DISABLE))
+            if self.k.SetProcessWorkingSetSizeEx(handle, low, limit_bytes, self.MAX_ENABLE | self.MIN_DISABLE):
+                return created
+            return None
         finally:
             self.k.CloseHandle(handle)
 
-    def clear_hard_limit(self, pid):
+    def clear_hard_limit(self, pid, created=None):
+        """Removes the cap. With created, only if the ID still belongs to the process that was capped."""
         handle = self._open(pid, self.QUERY | self.SET_QUOTA)
         if not handle:
             return False  # the process has already exited, and its cap went with it
         try:
+            if created is not None and self._created(handle) != created:
+                return False  # that process has exited, and its ID now belongs to another one
             quota = self._quota(handle)
             if quota is None:
                 return False
@@ -183,31 +218,58 @@ def config_path():
     return os.path.join(engine.data_dir(), "limiter.json")
 
 
+def caps_path():
+    return os.path.join(engine.data_dir(), "limiter_caps.json")
+
+
 def default_config():
     return {"enabled": False, "interval": DEFAULT_INTERVAL, "rules": []}
 
 
-def load_config():
+def _read_json(path):
+    """The file's data, or None if it is missing or not JSON."""
     try:
-        with open(config_path(), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return default_config()
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def _write_json(path, data):
+    """Writes the file atomically: after a crash or power loss it holds the old data or the new, never part of it."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def load_config():
+    """Settings from limiter.json. A missing or wrong value falls back to its default, a broken rule is dropped."""
     config = default_config()
-    config["enabled"] = bool(data.get("enabled", False))
-    config["interval"] = data.get("interval") if data.get("interval") in INTERVALS else DEFAULT_INTERVAL
+    data = _read_json(config_path())
+    if not isinstance(data, dict):
+        return config
+    config["enabled"] = data.get("enabled") is True
+    if _is_int(data.get("interval")) and data["interval"] in INTERVALS:
+        config["interval"] = data["interval"]
+    rules = data.get("rules")
     seen = set()
-    for rule in data.get("rules", []):
-        try:
-            name = normalize(str(rule["name"]))
-            limit = clamp_limit(rule["limit_mb"])
-        except (KeyError, TypeError, ValueError):
+    for rule in rules if isinstance(rules, list) else []:
+        if not isinstance(rule, dict) or not isinstance(rule.get("name"), str):
             continue
+        try:
+            limit = clamp_limit(rule.get("limit_mb"))
+        except ValueError:
+            continue
+        name = normalize(rule["name"])
         if not name or name in seen or is_protected(name):
             continue  # a damaged or malicious settings file must not limit a system process
         seen.add(name)
+        enabled = rule.get("enabled", True)
         entry = {"name": name, "limit_mb": limit, "mode": "hard" if rule.get("mode") == "hard" else "soft",
-                 "enabled": bool(rule.get("enabled", True))}
+                 "enabled": enabled if isinstance(enabled, bool) else True}
         if isinstance(rule.get("title"), str) and rule["title"].strip():
             entry["title"] = rule["title"].strip()[:80]  # program name for the card
         config["rules"].append(entry)
@@ -215,10 +277,7 @@ def load_config():
 
 
 def save_config(config):
-    tmp = config_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, config_path())
+    _write_json(config_path(), config)
 
 
 # --- Limiter ---
@@ -231,7 +290,8 @@ class Limiter:
         self.config = config if config is not None else load_config()
         self.lock = threading.Lock()
         self.stats = {}     # name -> {"count", "bytes", "denied", "largest", "freed", "trims"}
-        self.capped = {}    # pid -> (name, limit in bytes): processes SimpleTool has given a hard cap
+        self.capped = {}    # pid -> (name, limit in bytes, creation time): processes SimpleTool has given a hard cap
+        self._saved_caps = []  # the list in limiter_caps.json
         self.freed_total = 0
         self.checked_at = None
         self.own_pid = os.getpid()
@@ -266,6 +326,7 @@ class Limiter:
     def start(self):
         if self._thread and self._thread.is_alive():
             return
+        self.clear_stale_caps()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="memory-limiter", daemon=True)
         self._thread.start()
@@ -277,6 +338,33 @@ class Limiter:
         if self._thread:
             self._thread.join(timeout=5)
         self.release(list(self.capped))
+        self._save_caps()
+
+    # Caps on disk: if SimpleTool is killed or crashes, stop() does not run and the processes would keep their caps
+
+    def _save_caps(self):
+        """Writes the capped processes (ID and creation time) to limiter_caps.json when they change."""
+        caps = [{"pid": pid, "created": created} for pid, (_, _, created) in sorted(self.capped.items())]
+        if caps != self._saved_caps:
+            try:
+                _write_json(caps_path(), {"caps": caps})
+                self._saved_caps = caps
+            except OSError:
+                pass  # tried again after the next cycle
+
+    def clear_stale_caps(self):
+        """Removes the caps a SimpleTool that was killed or crashed left behind, then empties the list.
+        A cap is removed only if its process ID still belongs to the same process (same creation time)."""
+        if not os.path.exists(caps_path()):
+            return  # SimpleTool has never capped a process here
+        data = _read_json(caps_path())
+        caps = data.get("caps") if isinstance(data, dict) else None
+        for cap in caps if isinstance(caps, list) else []:
+            if isinstance(cap, dict) and _is_int(cap.get("pid")) and _is_int(cap.get("created")) \
+                    and 4 < cap["pid"] < 2 ** 32 and cap["pid"] not in self.capped:
+                self.api.clear_hard_limit(cap["pid"], cap["created"])
+        self._saved_caps = None  # write the list even if it looks unchanged
+        self._save_caps()
 
     def _run(self):
         while not self._stop.is_set():
@@ -292,7 +380,7 @@ class Limiter:
     def release(self, pids):
         for pid in pids:
             if pid in self.capped:
-                self.api.clear_hard_limit(pid)
+                self.api.clear_hard_limit(pid, self.capped[pid][2])
                 del self.capped[pid]
 
     def cycle(self):
@@ -339,13 +427,16 @@ class Limiter:
                 stat["largest"] = max(readable.values(), default=0)
             elif on and rule["mode"] == "hard":
                 for pid in readable:
-                    if self.capped.get(pid, (None, None))[1] != limit and self.api.set_hard_limit(pid, limit):
-                        self.capped[pid] = (name, limit)
+                    if self.capped.get(pid, (None, None, None))[1] != limit:
+                        created = self.api.set_hard_limit(pid, limit, name)
+                        if created is not None:
+                            self.capped[pid] = (name, limit, created)
             freed += stat["freed"]
             stats[name] = stat
         # Programs removed from the list must not keep a cap
         names = {rule["name"] for rule in rules}
-        self.release([pid for pid, (name, _) in list(self.capped.items()) if name not in names])
+        self.release([pid for pid, (name, _, _) in list(self.capped.items()) if name not in names])
+        self._save_caps()
         with self.lock:
             self.stats = stats
             self.freed_total += freed
