@@ -2,6 +2,7 @@
 import collections
 import ctypes
 import datetime
+import gc
 import json
 import os
 import queue
@@ -15,17 +16,20 @@ from tkinter import ttk
 
 import engine
 import i18n
+import limiter
 import services
 import theme
+import tray
 import tweaks
 from theme import C, CATEGORY_COLORS, lerp, mix
-from widgets import (Animator, Card, CheckBox, GradientButton, Pill, ScanRings, Spinner, Toast, descendants,
-                     ease_in_out, fade_in)
+from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
+                     Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.4"
+VERSION = "0.5"
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
-PAGES = ["overview"] + tweaks.CATEGORIES + ["snapshots"]
+PAGES = ["overview"] + tweaks.CATEGORIES + ["memory", "snapshots"]
+TRAY_OPEN, TRAY_LIMITER, TRAY_EXIT = 1, 2, 3  # пункты меню значка в трее
 SELECTABLE = ("applied", "partial", "not_applied", "unknown")
 REVERTIBLE = ("applied", "partial", "unknown")
 SCAN_STEPS = ["services", "tasks", "registry"]
@@ -42,7 +46,8 @@ ICONS = {"overview": "", "privacy": "", "system": "", "explorer": ""
          "telemetry": "", "location": "", "performance": "", "gaming": "", "security": "",
          "globe": "", "palette": "", "shield": "", "down": "", "up": "",
          "warning": "", "check": "", "circle": "", "unknown": "", "dash": "",
-         "info": "", "refresh": "", "dots": "", "snapshots": "", "folder": ""}
+         "info": "", "refresh": "", "dots": "", "snapshots": "", "folder": "", "memory": "",
+         "add": "", "apps": ""}
 
 
 def status_color(state):
@@ -93,8 +98,9 @@ def collect_scan(report=lambda step: None):
 
 
 class App:
-    def __init__(self, root):
+    def __init__(self, root, instance=None):
         self.root = root
+        self.instance = instance  # tray.SingleInstance: повторный запуск SimpleTool показывает это окно
         self.admin = engine.is_admin()
         self.settings = load_settings()
         lang = self.settings.get("lang")
@@ -117,11 +123,25 @@ class App:
         self.snapshots = engine.list_snapshots()
         self.content_width = self.px(700)
         self.jobs = queue.Queue()
+        self.acting = False       # идёт применение, откат или восстановление: выходить нельзя
+        self.hidden = False       # окно спрятано в трей
+        self.tray = None
+        self.mem = {}
+        # Объекты Tk можно удалять только из потока окна, а сборщик циклического мусора срабатывает в том потоке,
+        # который сейчас выделяет память, например в потоке ограничителя. Поэтому мусор собирает только poll()
+        gc.disable()
+        self.limiter = limiter.Limiter()
+        self.limiter.start()
         self.setup_fonts()
         self.build()
         self.start_scan()
         self.poll()
+        self.memory_tick()
+        self.update_tray()
+        if instance:
+            instance.listen(lambda: self.post(self.show_window))
         root.bind("<Destroy>", self.on_destroy, add="+")
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
         if not self.admin:
             root.after(600, self.show_admin_dialog)
 
@@ -445,11 +465,17 @@ class App:
         self.update_nav_counts()
 
     def update_nav_counts(self):
+        # У ограничителя памяти вместо счётчика — число программ, которые он сейчас держит в лимите
+        active = [r for r in self.limiter.snapshot()["config"]["rules"] if r["enabled"]] if self.limiter.active() else []
+        self.nav["memory"]["count"].configure(text=str(len(active)) if active else "", fg=C["side_muted"])
         if not self.scan:
-            for widgets in self.nav.values():
-                widgets["count"].configure(text="")
+            for page, widgets in self.nav.items():
+                if page != "memory":
+                    widgets["count"].configure(text="")
             return
         for page, widgets in self.nav.items():
+            if page == "memory":
+                continue
             if page == "overview":
                 problems = sum(self.unknown_reasons().values())
                 widgets["count"].configure(text="!" if problems else "", fg=C["warn"] if C["name"] != "light" else "#F0B783")
@@ -498,6 +524,8 @@ class App:
             self.link(self.links, self.t("rescan"), self.rescan).pack(side="left")
         elif page == "snapshots":
             self.link(self.links, self.t("snap_folder"), lambda: os.startfile(engine.snapshots_dir())).pack(side="left")
+        elif page == "memory":
+            self.link(self.links, self.t("mem_pick"), self.pick_running).pack(side="left")
         else:
             for key, action in (("select_all", self.select_all), ("clear", self.clear_selection)):
                 self.link(self.links, self.t(key), action).pack(side="left", padx=(self.px(16), 0))
@@ -510,10 +538,13 @@ class App:
             widget.destroy()
         self.cards, self.service_cards, self.page_cards, self.wraps = {}, {}, [], []
         self.action_buttons = []
+        self.mem = {}
         if page == "overview":
             self.build_overview()
         elif page == "snapshots":
             self.build_snapshots_page()
+        elif page == "memory":
+            self.build_memory_page()
         else:
             self.build_tweak_page(page)
         tk.Frame(self.list_frame, bg=C["bg"], height=self.px(12)).pack()
@@ -541,14 +572,18 @@ class App:
         self.build_summary()
         self.build_callout()
         for group in services.GROUPS:
-            head = tk.Frame(self.list_frame, bg=C["bg"])
-            head.pack(fill="x", padx=(self.px(18), 0), pady=(self.px(18), self.px(8)))
-            tk.Label(head, text=ICONS[group], font=self.fonts["icon_small"], fg=C["accent"], bg=C["bg"]).pack(side="left")
-            tk.Label(head, text=self.text("groups", group), font=self.fonts["small_bold"], fg=C["muted"],
-                     bg=C["bg"]).pack(side="left", padx=(self.px(8), 0))
+            self.section_head(ICONS[group], self.text("groups", group))
             for svc_group, name, tweak_id in services.SERVICES:
                 if svc_group == group:
                     self.service_cards[name] = self.build_service_card(name, tweak_id)
+
+    def section_head(self, icon, text):
+        """Подзаголовок группы карточек."""
+        head = tk.Frame(self.list_frame, bg=C["bg"])
+        head.pack(fill="x", padx=(self.px(18), 0), pady=(self.px(18), self.px(8)))
+        tk.Label(head, text=icon, font=self.fonts["icon_small"], fg=C["accent"], bg=C["bg"]).pack(side="left")
+        tk.Label(head, text=text, font=self.fonts["small_bold"], fg=C["muted"], bg=C["bg"]).pack(
+            side="left", padx=(self.px(8), 0))
 
     def build_scan_panel(self):
         px = self.px
@@ -921,6 +956,395 @@ class App:
         self.snapshots = engine.list_snapshots()
         self.refresh_view()
 
+    # --- Ограничение памяти ---
+
+    def size_text(self, size, digits=1):
+        """Объём для людей: «640 МБ», «1,4 ГБ»."""
+        mb = size / limiter.MB
+        if mb < 1000:
+            return self.t("mem_size_mb", n=round(mb))
+        gb = f"{mb / 1024:.{digits}f}".rstrip("0").rstrip(".")
+        return self.t("mem_size_gb", n=gb if self.lang == "en" else gb.replace(".", ","))
+
+    def limit_text(self, mb):
+        return self.size_text(mb * limiter.MB, digits=2)
+
+    def build_memory_page(self):
+        px = self.px
+        config = self.limiter.snapshot()["config"]
+        color = CATEGORY_COLORS["memory"]
+        # Главный переключатель, частота проверки и сколько памяти уже освобождено
+        card = Card(self.list_frame, self.scale, radius=14, pad=6)
+        card.pack(fill="x", pady=(0, px(10)))
+        body = card.body
+        body.columnconfigure(1, weight=1)
+        badge = Card(body, self.scale, fill=mix(color, card.fill, 0.14), border=mix(color, card.fill, 0.35), radius=12,
+                     pad=3)
+        badge.grid(row=0, column=0, rowspan=2, sticky="nw", padx=px(12), pady=(px(12), 0))
+        tk.Label(badge.body, text=ICONS["memory"], font=self.fonts["icon"], fg=color, bg=badge.fill).pack(
+            padx=px(7), pady=px(5))
+        title = tk.Label(body, font=self.fonts["h2"], fg=C["text"], bg=card.fill, anchor="w")
+        title.grid(row=0, column=1, sticky="ew", pady=(px(12), 0))
+        text = tk.Label(body, font=self.fonts["small"], fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+        text.grid(row=1, column=1, sticky="ew", pady=(px(2), 0))
+        self.wrap(text, px(150))
+        toggle = Toggle(body, self.scale, self.animator, on=config["enabled"], command=self.set_limiter_enabled)
+        toggle.grid(row=0, column=2, sticky="ne", padx=px(14), pady=(px(14), 0))
+        tk.Frame(body, bg=C["border"], height=1).grid(row=2, column=1, columnspan=2, sticky="ew", padx=(0, px(14)),
+                                                     pady=px(12))
+        row = tk.Frame(body, bg=card.fill)
+        row.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(0, px(14)), pady=(0, px(12)))
+        tk.Label(row, text=self.t("mem_interval"), font=self.fonts["small"], fg=C["muted"], bg=card.fill).pack(
+            side="left")
+        Segmented(row, [(n, self.t("mem_seconds", n=n)) for n in limiter.INTERVALS], config["interval"],
+                  self.fonts["small_bold"], self.scale, self.animator, command=self.set_limiter_interval).pack(
+            side="left", padx=(px(10), 0))
+        freed = tk.Label(row, font=self.fonts["small_bold"], fg=C["ok"], bg=card.fill)
+        freed.pack(side="right")
+        tk.Label(row, text=self.t("mem_freed"), font=self.fonts["small"], fg=C["muted"], bg=card.fill).pack(
+            side="right", padx=(0, px(8)))
+        self.mem = {"title": title, "text": text, "toggle": toggle, "freed": freed, "rules": {}}
+        self.page_cards.append(card)
+
+        # Как это работает
+        how = Card(self.list_frame, self.scale)
+        how.pack(fill="x")
+        head = tk.Frame(how.body, bg=how.fill)
+        head.grid(row=0, column=0, sticky="w", padx=px(12), pady=(px(9), 0))
+        tk.Label(head, text=ICONS["info"], font=self.fonts["icon_small"], fg=C["accent"], bg=how.fill).pack(side="left")
+        tk.Label(head, text=self.t("mem_how_title"), font=self.fonts["h2"], fg=C["text"], bg=how.fill).pack(
+            side="left", padx=(px(8), 0))
+        how.body.columnconfigure(0, weight=1)
+        self.mem["how"] = {"card": how}
+        self.details_toggle(how.body, self.mem["how"], ("m", "how"), self.build_memory_how, indent=12)
+        self.page_cards.append(how)
+
+        # Программы под ограничением
+        self.section_head(ICONS["apps"], self.t("mem_apps"))
+        if not config["rules"]:
+            empty = tk.Label(self.list_frame, text=self.t("mem_empty"), font=self.fonts["body"], fg=C["muted"],
+                             bg=C["bg"], anchor="w", justify="left")
+            empty.pack(fill="x", padx=px(18), pady=(0, px(4)))
+            self.wrap(empty, px(36))
+        for rule in config["rules"]:
+            self.mem["rules"][rule["name"]] = self.build_rule_card(rule)
+
+        # Добавить: известные программы и выбор из запущенных
+        self.section_head(ICONS["add"], self.t("mem_add"))
+        added = {rule["name"] for rule in config["rules"]}
+        flow = Flow(self.list_frame, px(8), px(8))
+        flow.pack(fill="x")
+        for name, label, limit in limiter.PRESETS:
+            if name not in added:
+                flow.add(self.chip(flow, label, lambda n=name, l=limit: self.add_rule(n, l), ICONS["add"]))
+        flow.add(self.chip(flow, self.t("mem_pick"), self.pick_running, ICONS["apps"], accent=True))
+        self.update_memory_view(animate=False)
+
+    def build_memory_how(self, holder):
+        px = self.px
+        bg = holder.cget("bg")
+        inner = tk.Frame(holder, bg=bg)
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill="x", padx=px(12), pady=(0, px(10)))
+        text = tk.Label(inner, text=self.t("mem_how"), font=self.fonts["body"], fg=C["text"], bg=bg, anchor="w",
+                        justify="left")
+        text.pack(fill="x", padx=(px(12), px(16)))
+        self.wrap(text, px(62))
+        tk.Frame(inner, bg=bg, height=px(12)).pack()
+        return inner
+
+    def chip(self, parent, text, command, icon, accent=False):
+        """Небольшая кнопка-плашка со значком."""
+        px = self.px
+        color = C["accent"] if accent else C["muted"]
+        card = Card(parent, self.scale, fill=C["surface"], border=mix(C["accent"], C["surface"], 0.5) if accent else
+                    C["border"], radius=10, pad=3)
+        parts = [tk.Label(card.body, text=icon, font=self.fonts["icon_tiny"], fg=color, bg=card.fill),
+                 tk.Label(card.body, text=text, font=self.fonts["small_bold"], fg=C["accent"] if accent else C["text"],
+                          bg=card.fill)]
+        parts[0].pack(side="left", padx=(px(10), px(6)), pady=px(5))
+        parts[1].pack(side="left", padx=(0, px(12)))
+        rest = card.border
+
+        def border(target):
+            self.animator.color(("chip", id(card)), card.set_border, card.border, target, 0.18)
+
+        for widget in [card, card.body] + parts:
+            widget.configure(cursor="hand2")
+            widget.bind("<Button-1>", lambda e: command())
+            widget.bind("<Enter>", lambda e: border(C["accent"]))
+            widget.bind("<Leave>", lambda e: None if self.pointer_inside(card) else border(rest))
+        return card
+
+    def build_rule_card(self, rule):
+        px = self.px
+        name = rule["name"]
+        card = Card(self.list_frame, self.scale)
+        card.pack(fill="x", pady=(0, px(10)))
+        body = card.body
+        body.columnconfigure(0, weight=1)
+        head = tk.Frame(body, bg=card.fill)
+        head.grid(row=0, column=0, sticky="ew", padx=px(12), pady=(px(9), 0))
+        title = limiter.PRESET_NAMES.get(name)
+        tk.Label(head, text=title or name + ".exe", font=self.fonts["h2"], fg=C["text"], bg=card.fill).pack(side="left")
+        if title:
+            tk.Label(head, text=name + ".exe", font=self.fonts["mono"], fg=C["dim"], bg=card.fill).pack(
+                side="left", padx=(px(10), 0), pady=(px(2), 0))
+        toggle = Toggle(body, self.scale, self.animator, on=rule["enabled"],
+                        command=lambda on: self.change_rule(name, enabled=on))
+        toggle.grid(row=0, column=1, sticky="ne", padx=px(14), pady=(px(11), 0))
+        status = tk.Label(body, font=self.fonts["small"], fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+        status.grid(row=1, column=0, columnspan=2, sticky="ew", padx=px(12), pady=(px(2), px(8)))
+        meter = Meter(body, self.scale, self.animator)
+        meter.grid(row=2, column=0, columnspan=2, sticky="ew", padx=px(12))
+        controls = tk.Frame(body, bg=card.fill)
+        controls.grid(row=3, column=0, columnspan=2, sticky="ew", padx=px(12), pady=(px(12), 0))
+        tk.Label(controls, text=self.t("mem_limit"), font=self.fonts["small"], fg=C["muted"], bg=card.fill).pack(
+            side="left")
+        Stepper(controls, rule["limit_mb"], limiter.LIMIT_STEPS, self.limit_text, self.fonts["small_bold"], self.scale,
+                command=lambda mb: self.change_rule(name, limit_mb=mb)).pack(side="left", padx=(px(10), px(20)))
+        Segmented(controls, [("soft", self.t("mem_soft")), ("hard", self.t("mem_hard"))], rule["mode"],
+                  self.fonts["small_bold"], self.scale, self.animator,
+                  command=lambda mode: self.change_rule(name, mode=mode)).pack(side="left")
+        self.link(controls, self.t("mem_remove"), lambda: self.remove_rule(name), font="small", color=C["dim"]).pack(
+            side="right")
+        hint = tk.Label(body, font=self.fonts["small"], fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+        hint.grid(row=4, column=0, columnspan=2, sticky="ew", padx=px(12), pady=(px(10), 0))
+        self.wrap(hint, px(62))
+        denied = tk.Label(body, font=self.fonts["small_bold"], fg=C["warn"], bg=card.fill, anchor="w", justify="left")
+        denied.grid(row=5, column=0, columnspan=2, sticky="ew", padx=px(12), pady=(px(6), 0))
+        denied.grid_remove()
+        self.wrap(denied, px(62))
+        tk.Frame(body, bg=card.fill, height=px(10)).grid(row=6, column=0)
+        self.page_cards.append(card)
+        return {"card": card, "status": status, "meter": meter, "hint": hint, "denied": denied, "toggle": toggle}
+
+    def update_memory_view(self, animate=True):
+        """Обновляет страницу ограничителя по последним замерам, не перестраивая её."""
+        if not self.mem:
+            return
+        snap = self.limiter.snapshot()
+        config, stats = snap["config"], snap["stats"]
+        on = config["enabled"]
+        self.mem["title"].configure(text=self.t("mem_on" if on else "mem_off"))
+        self.mem["text"].configure(text=self.t("mem_on_text", seconds=config["interval"]) if on else
+                                   self.t("mem_off_text"))
+        self.mem["freed"].configure(text=self.size_text(snap["freed"]))
+        if self.mem["toggle"].on != on:  # переключили из меню в трее
+            self.mem["toggle"].set(on)
+        for rule in config["rules"]:
+            widgets = self.mem["rules"].get(rule["name"])
+            if not widgets:
+                continue
+            stat, hard = stats.get(rule["name"]), rule["mode"] == "hard"
+            limit = rule["limit_mb"] * limiter.MB
+            if not stat:
+                text, ratio = "", 0.0
+            elif not stat["count"]:
+                text, ratio = self.t("mem_idle"), 0.0
+            else:
+                text = self.t("mem_now", size=self.size_text(stat["bytes"]), count=stat["count"])
+                if hard:
+                    text += "  ·  " + self.t("mem_largest", size=self.size_text(stat["largest"]))
+                ratio = (stat["largest"] if hard else stat["bytes"]) / limit
+            working = on and rule["enabled"]
+            widgets["status"].configure(text=text, fg=C["muted"] if working else C["dim"])
+            if abs(widgets["meter"].ratio - ratio) > 0.001 or not animate:
+                widgets["meter"].set(ratio, animate)
+            widgets["hint"].configure(text=self.t("mem_hard_hint" if hard else "mem_soft_hint"))
+            if stat and stat["denied"]:
+                widgets["denied"].configure(text=self.t("mem_denied", count=stat["denied"]))
+                widgets["denied"].grid()
+            else:
+                widgets["denied"].grid_remove()
+
+    def memory_tick(self):
+        """Раз в секунду показывает свежие замеры ограничителя (сам он проверяет программы в своём потоке)."""
+        if self.page == "memory" and not self.hidden:
+            self.update_memory_view()
+        self.memory_job = self.root.after(1000, self.memory_tick)
+
+    def limiter_changed(self):
+        self.update_memory_view()
+        self.update_nav_counts()
+        self.update_footer()
+        self.update_tray()
+
+    def set_limiter_enabled(self, on):
+        self.limiter.update(lambda config: config.update(enabled=on))
+        self.limiter_changed()
+
+    def set_limiter_interval(self, seconds):
+        self.limiter.update(lambda config: config.update(interval=seconds))
+        self.limiter_changed()
+
+    def change_rule(self, name, **changes):
+        def change(config):
+            for rule in config["rules"]:
+                if rule["name"] == name:
+                    rule.update(changes)
+
+        self.limiter.update(change)
+        self.limiter_changed()
+
+    def add_rule(self, name, limit_mb):
+        name = limiter.normalize(name)
+        if not name or limiter.is_protected(name):
+            return
+
+        def change(config):
+            if all(rule["name"] != name for rule in config["rules"]):
+                config["rules"].append({"name": name, "limit_mb": limiter.clamp_limit(limit_mb), "mode": "soft",
+                                        "enabled": True})
+
+        self.limiter.update(change)
+        self.rebuild_memory(focus=name)
+        self.limiter_changed()
+
+    def remove_rule(self, name):
+        self.limiter.update(lambda config: config.update(rules=[r for r in config["rules"] if r["name"] != name]))
+        self.rebuild_memory()
+        self.limiter_changed()
+
+    def rebuild_memory(self, focus=None):
+        """Перестраивает страницу после добавления или удаления программы, сохраняя прокрутку."""
+        top = self.canvas.yview()[0]
+        self.show_page("memory", animate=False)
+
+        def restore():
+            card = self.mem.get("rules", {}).get(focus, {}).get("card")
+            total = self.list_frame.winfo_height()
+            if card and total > 0:  # новая карточка — в поле зрения и подсвечена
+                view = self.canvas.winfo_height()
+                bottom = (card.winfo_y() + card.winfo_height() + self.px(8) - view) / total
+                self.canvas.yview_moveto(max(top, bottom, 0.0))
+                self.animator.color(("flash", focus), card.set_border, C["accent"], C["border"], 1.2, delay=0.2)
+            else:
+                self.canvas.yview_moveto(top)
+
+        self.root.after(60, restore)
+
+    def pick_running(self):
+        """Окно со списком запущенных программ: щелчок добавляет программу под ограничение."""
+        px = self.px
+        programs = limiter.running_programs()
+        added = {rule["name"] for rule in self.limiter.snapshot()["config"]["rules"]}
+        win, content = self.dialog(self.t("mem_pick_title"), ICONS["memory"], CATEGORY_COLORS["memory"],
+                                   self.t("mem_pick_title"), self.t("mem_pick_text"))
+        frame = tk.Frame(content, bg=C["bg"])
+        frame.pack(fill="x")
+        canvas = tk.Canvas(frame, bg=C["bg"], highlightthickness=0, bd=0, width=px(480), height=px(320),
+                           yscrollincrement=px(20))
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview, style="Brand.Vertical.TScrollbar")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y", pady=px(2))
+        canvas.pack(side="left", fill="both", expand=True)
+        rows = tk.Frame(canvas, bg=C["bg"])
+        window = canvas.create_window(0, 0, window=rows, anchor="nw")
+        rows.bind("<Configure>", lambda e: canvas.configure(scrollregion=(0, 0, e.width, e.height)))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        win.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-3 * round(e.delta / 120), "units"))
+
+        def choose(name):
+            win.destroy()
+            self.add_rule(name, limiter.PRESET_LIMITS.get(name, limiter.CUSTOM_LIMIT))
+
+        if not programs:
+            tk.Label(rows, text=self.t("mem_pick_empty"), font=self.fonts["body"], fg=C["muted"], bg=C["bg"]).pack(
+                anchor="w", padx=px(12), pady=px(10))
+        for name, count, size in programs:
+            row = tk.Frame(rows, bg=C["bg"])
+            row.pack(fill="x")
+            is_added = name in added
+            title = limiter.PRESET_NAMES.get(name)
+            label = tk.Label(row, text=title or name + ".exe", font=self.fonts["body"],
+                             fg=C["dim"] if is_added else C["text"], bg=C["bg"], anchor="w")
+            label.pack(side="left", padx=(px(12), 0), pady=px(6))
+            info = tk.Label(row, text=self.t("mem_added") if is_added else
+                            f"{self.size_text(size)}  ·  {self.t('mem_procs', n=count)}",
+                            font=self.fonts["small"], fg=C["dim"] if is_added else C["muted"], bg=C["bg"])
+            info.pack(side="right", padx=px(12))
+            if is_added:
+                continue
+            parts = (row, label, info)
+
+            def paint(color, parts=parts):
+                for widget in parts:
+                    widget.configure(bg=color)
+
+            for widget in parts:
+                widget.configure(cursor="hand2")
+                widget.bind("<Button-1>", lambda e, n=name: choose(n))
+                widget.bind("<Enter>", lambda e, p=paint: p(C["raised"]))
+                widget.bind("<Leave>", lambda e, p=paint, r=row: None if self.pointer_inside(r) else p(C["bg"]))
+        GradientButton(content, self.t("cancel"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", pady=(px(16), 0))
+        self.present(win)
+
+    # --- Трей ---
+
+    def update_tray(self):
+        """Значок в трее виден, пока ограничитель работает или окно спрятано."""
+        active = self.limiter.active()
+        if self.hidden or active:
+            tip = self.t("tray_tip_on" if active else "tray_tip_off")
+            if self.tray is None:
+                self.tray = tray.TrayIcon(ICON_PATH, tip, self.tray_menu, self.on_tray_command, self.show_window,
+                                          self.post)
+            if self.tray.visible():
+                self.tray.set_tooltip(tip)
+            else:
+                self.tray.tooltip = tip
+                self.tray.show()
+        elif self.tray and self.tray.visible():
+            self.tray.hide()
+
+    def tray_menu(self):
+        # Вызывается из потока значка: только читает настройки
+        return [(TRAY_OPEN, self.t("tray_open"), False),
+                (TRAY_LIMITER, self.t("tray_limiter"), self.limiter.snapshot()["config"]["enabled"]),
+                None, (TRAY_EXIT, self.t("tray_exit"), False)]
+
+    def on_tray_command(self, command):
+        if command == TRAY_OPEN:
+            self.show_window()
+        elif command == TRAY_LIMITER:
+            self.set_limiter_enabled(not self.limiter.snapshot()["config"]["enabled"])
+        elif command == TRAY_EXIT:
+            self.quit()
+
+    def show_window(self):
+        self.hidden = False
+        self.root.deiconify()
+        if self.root.state() == "iconic":
+            self.root.state("normal")
+        self.root.lift()
+        self.root.focus_force()
+        self.update_memory_view()
+        self.update_tray()
+
+    def hide_to_tray(self):
+        self.hidden = True
+        self.root.withdraw()
+        self.update_tray()
+        if not self.settings.get("tray_hint_shown"):  # подсказка о трее — только в первый раз
+            self.tray.balloon(self.t("tray_hidden_title"), self.t("tray_hidden_text"))
+            self.settings["tray_hint_shown"] = True
+            save_settings(self.settings)
+
+    def on_close(self):
+        """Крестик окна: при работающем ограничителе SimpleTool уходит в трей, иначе закрывается."""
+        if self.limiter.active() and not self.acting:
+            self.hide_to_tray()
+        else:
+            self.quit()
+
+    def quit(self):
+        if self.acting:  # прерванное применение твиков оставило бы систему наполовину изменённой
+            self.show_window()
+            self.notify(self.t("busy_wait"), C["warn"], ICONS["warning"])
+            return
+        self.root.destroy()
+
     # --- Страницы твиков ---
 
     def build_tweak_page(self, page):
@@ -1161,6 +1585,8 @@ class App:
             text = self.t(key, **kw)
         elif self.selected:
             text = self.t("selected", n=len(self.selected))
+        elif self.page == "memory":
+            text = self.t("mem_on" if self.limiter.active() else "mem_off")
         else:
             text = self.t("hint_select")
         self.message_label.configure(text=text)
@@ -1185,6 +1611,10 @@ class App:
         if self.page in ("overview", "snapshots"):
             self.show_page(self.page)
             return
+        if self.page == "memory":
+            self.update_nav_counts()
+            self.update_footer()
+            return
         for tweak_id, widgets in self.cards.items():
             self.paint_card(self.tweak_by_id[tweak_id])
             if widgets["inner"] is not None:  # подробности зависят от результатов сканирования
@@ -1203,6 +1633,7 @@ class App:
             self.settings["lang"] = lang
             save_settings(self.settings)
             self.build()
+            self.update_tray()
 
     def set_theme(self, name):
         if name != C["name"]:
@@ -1315,14 +1746,14 @@ class App:
 
     def run_action(self, working_key, work, on_done):
         """Долгое действие в фоне: окно занято, в подвале крутится индикатор."""
-        self.busy = True
+        self.busy = self.acting = True
         self.message = (working_key, {})
         for tweak_id in self.cards:
             self.paint_card(self.tweak_by_id[tweak_id])
         self.update_footer()
 
         def done(result):
-            self.busy = False
+            self.busy = self.acting = False
             on_done(result)
 
         self.run_job(work, done)
@@ -1372,6 +1803,10 @@ class App:
 
         threading.Thread(target=target, daemon=True).start()
 
+    def post(self, callback):
+        """Вызвать callback в потоке окна: другие потоки (трей, ограничитель) не трогают Tk сами."""
+        self.jobs.put((lambda _: callback(), None))
+
     def poll(self):
         while True:
             try:
@@ -1379,14 +1814,28 @@ class App:
             except queue.Empty:
                 break
             callback(payload)
+        # Те же пороги, что у автоматической сборки мусора, но в потоке окна
+        counts, thresholds = gc.get_count(), gc.get_threshold()
+        for generation in (2, 1, 0):
+            if thresholds[generation] and counts[generation] > thresholds[generation]:
+                gc.collect(generation)
+                break
         self.poll_job = self.root.after(40, self.poll)
 
     def on_destroy(self, event):
         # Окно закрыто: отменяем опрос очереди, иначе Tk вызовет его уже после закрытия
         if event.widget is self.root:
             self.animator.stop()
-            if getattr(self, "poll_job", None):
-                self.root.after_cancel(self.poll_job)
+            for job in (getattr(self, "poll_job", None), getattr(self, "memory_job", None)):
+                if job:
+                    self.root.after_cancel(job)
+            # Ограничитель снимает свои жёсткие потолки, значок уходит из трея
+            self.limiter.stop()
+            if self.tray:
+                self.tray.hide()
+            if self.instance:
+                self.instance.release()
+            gc.enable()  # фоновые потоки остановлены — мусор снова можно собирать где угодно
 
     # --- Диалоги ---
 
@@ -1426,10 +1875,18 @@ class App:
         win.focus_set()
 
     def restart_as_admin(self, error_label=None):
+        if self.acting:
+            return
+        # Новая копия не должна принять эту за уже запущенную и закрыться
+        if self.instance:
+            self.instance.release()
         code = relaunch_as_admin()
         if code > 32:
             self.root.destroy()
-        elif code != 5 and error_label is not None:  # 5 — пользователь отменил запрос UAC
+            return
+        if self.instance and self.instance.acquire():
+            self.instance.listen(lambda: self.post(self.show_window))
+        if code != 5 and error_label is not None:  # 5 — пользователь отменил запрос UAC
             error_label.configure(text=self.t("admin_failed"))
 
     def show_admin_dialog(self):
@@ -1459,6 +1916,9 @@ class App:
 
 
 def main():
+    instance = tray.SingleInstance()
+    if not instance.acquire():
+        return  # SimpleTool уже запущен: его окно покажется само
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
@@ -1473,7 +1933,7 @@ def main():
         root.iconbitmap(default=ICON_PATH)
     except tk.TclError:
         pass
-    app = App(root)
+    app = App(root, instance)
     width = min(app.px(1080), root.winfo_screenwidth() - app.px(40))
     height = min(app.px(740), root.winfo_screenheight() - app.px(80))
     root.minsize(app.px(900), app.px(580))

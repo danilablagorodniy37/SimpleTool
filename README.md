@@ -1,7 +1,8 @@
 # SimpleTool
 
-A Windows 10 and 11 tweaker for privacy, system features and File Explorer. Tick the tweaks you
-want, press **Apply**, and press **Revert** to put the original values back.
+A Windows 10 and 11 tweaker for privacy, system features and File Explorer, with a memory limiter
+for programs such as Chrome and Discord. Tick the tweaks you want, press **Apply**, and press
+**Revert** to put the original values back.
 
 > **Beta.** This is a test version and it is not stable yet. Use it at your own risk.
 
@@ -27,6 +28,29 @@ changes and their current state.
 
 Every tweak shows its current state: **Applied**, **Partly**, **Not applied**, or **Not found**
 when the service or task it targets is not on this PC.
+
+## Memory limiter
+
+The **Memory limiter** page keeps chosen programs within a RAM limit. Pick a program from the list
+(Chrome, Edge, Firefox, Brave, Opera, Discord, Telegram, Steam, Spotify and others) or choose any
+running program, set the limit and the mode:
+
+- **Soft** (default). The limit is for the whole program, all of its processes together. When it is
+  exceeded, SimpleTool trims the working sets of the largest processes first until the program is
+  back under the limit, and leaves the program alone while it stays within it.
+- **Hard.** Windows caps the RAM of every process of the program (a hard working-set maximum). It
+  holds the limit firmly, but a program that really needs more memory can slow down. SimpleTool
+  removes the caps when you turn the limiter off, switch the program to soft mode, remove it or exit.
+
+Neither mode takes memory away from a program or closes it: pages it is not using right now move out
+of RAM to the standby list or the page file, and Windows brings them back when they are needed, which
+can cause a short pause. System processes (Explorer, svchost, csrss and others) cannot be added.
+
+The limiter checks the programs every 2–30 seconds while SimpleTool is open. When it is on, closing
+the window hides SimpleTool to the notification area; open it again or exit from the tray icon.
+Starting SimpleTool a second time shows the running copy instead of starting another one. The list is
+saved in `%LOCALAPPDATA%\SimpleTool\limiter.json`. Programs that run as administrator can only be
+limited when SimpleTool also runs as administrator.
 
 ## Run it
 
@@ -92,7 +116,9 @@ The tests cannot change your system. Registry access is redirected to a sandbox 
 are replaced with fakes. Inside the sandbox every tweak is applied and reverted, alone and all at
 once, and the result must match the original state exactly. A catalog audit checks that no tweak
 touches UAC, Defender, Winlogon, startup entries, the boot configuration, critical services or
-Windows Update tasks. GitHub Actions runs the tests on Windows for every push.
+Windows Update tasks. The memory limiter is tested on fake processes and, with real Windows calls,
+only on a copy of Python that the test starts under its own unique name, so no other program is
+trimmed or capped. GitHub Actions runs the tests on Windows for every push.
 
 ## License and trademarks
 

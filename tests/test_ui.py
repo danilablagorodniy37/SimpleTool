@@ -1,7 +1,8 @@
 """Окно SimpleTool: все разделы, подробности, языки и темы открываются без ошибок, колонка выровнена.
 
-Сканирование читает настоящую систему (только чтение). Применение, откат, восстановление снимков и
-точки восстановления на время теста заблокированы растяжкой: окно не может ничего изменить.
+Сканирование читает настоящую систему (только чтение). Применение, откат, восстановление снимков,
+точки восстановления и любые изменения памяти процессов на время теста заблокированы растяжкой:
+окно не может ничего изменить.
 """
 import shutil
 import tempfile
@@ -12,6 +13,7 @@ from unittest import mock
 
 import engine
 import i18n
+import limiter
 import main
 import theme
 import tweaks
@@ -24,7 +26,7 @@ def forbidden(*args, **kwargs):
 class UiSmoke(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="simpletool-ui-test-")
-        self.settings = {"lang": "en", "theme": "navy"}
+        self.settings = {"lang": "en", "theme": "navy", "tray_hint_shown": True}  # без всплывающих уведомлений
         self.patches = [
             mock.patch.object(engine, "data_dir", lambda: self.tmp),
             mock.patch.object(engine, "apply", forbidden),
@@ -32,6 +34,9 @@ class UiSmoke(unittest.TestCase):
             mock.patch.object(engine, "restore_snapshot", forbidden),
             mock.patch.object(engine, "create_restore_point", forbidden),
             mock.patch.object(main, "relaunch_as_admin", forbidden),
+            mock.patch.object(limiter.WindowsApi, "trim", forbidden),
+            mock.patch.object(limiter.WindowsApi, "set_hard_limit", forbidden),
+            mock.patch.object(limiter.WindowsApi, "clear_hard_limit", forbidden),
             mock.patch.object(main, "load_settings", lambda: dict(self.settings)),
             mock.patch.object(main, "save_settings", lambda s: self.settings.update(s)),
         ]
@@ -42,6 +47,7 @@ class UiSmoke(unittest.TestCase):
         for patch in reversed(self.patches):
             patch.stop()
         theme.use("navy")
+        theme.clear_cache()  # картинки принадлежат закрытому окну Tk, следующему тесту нужны свои
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def pump(self, root, seconds):
@@ -118,6 +124,55 @@ class UiSmoke(unittest.TestCase):
             self.assertEqual(errors, [])
         finally:
             root.destroy()
+
+    def test_memory_limiter_and_tray(self):
+        root, app, errors = self.open_app(admin=True)
+        destroyed = False
+        try:
+            for dialog in self.dialogs(root):
+                dialog.destroy()
+            app.show_page("memory")
+            self.pump(root, 0.3)
+            self.assertFalse(app.limiter.active())
+            self.assertIsNone(app.tray, "no tray icon while the limiter is off")
+            # Программа с именем, которого нет ни у одного процесса: ограничителю нечего менять
+            app.add_rule("simpletool-test-absent.exe", 700)
+            app.add_rule("explorer.exe", 700)  # системный процесс добавить нельзя
+            rules = app.limiter.snapshot()["config"]["rules"]
+            self.assertEqual([r["name"] for r in rules], ["simpletool-test-absent"])
+            self.pump(root, 0.3)
+            app.mem["toggle"]._click(None)
+            self.pump(root, 0.3)
+            self.assertTrue(app.limiter.active())
+            self.assertTrue(app.tray.visible(), "the tray icon shows while the limiter works")
+            self.assertEqual(app.nav["memory"]["count"].cget("text"), "1")
+            # Крестик прячет окно в трей, «Открыть» в меню значка возвращает его
+            app.on_close()
+            self.pump(root, 0.2)
+            self.assertTrue(app.hidden)
+            self.assertEqual(root.state(), "withdrawn")
+            app.on_tray_command(main.TRAY_OPEN)
+            self.pump(root, 0.2)
+            self.assertFalse(app.hidden)
+            self.assertEqual(root.state(), "normal")
+            # Пока применяются твики, выйти нельзя
+            app.acting = True
+            app.on_tray_command(main.TRAY_EXIT)
+            self.pump(root, 0.2)
+            self.assertTrue(root.winfo_exists())
+            app.acting = False
+            for lang, _ in i18n.LANGUAGES:
+                app.set_language(lang)
+                self.pump(root, 0.2)
+            self.assertEqual(errors, [])
+            tray_icon, worker = app.tray, app.limiter._thread
+            app.on_tray_command(main.TRAY_EXIT)
+            destroyed = True
+            self.assertFalse(tray_icon.visible())
+            self.assertFalse(worker.is_alive(), "the limiter stops with the window")
+        finally:
+            if not destroyed:
+                root.destroy()
 
 
 if __name__ == "__main__":

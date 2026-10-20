@@ -377,3 +377,203 @@ class Toast:
         end = start + card.winfo_height() + round(140 * self.scale)
         self.animator.animate(("toast", id(card)), 0.35, lambda t: card.place_configure(y=start + (end - start) * t),
                               done=card.destroy)
+
+
+class Toggle(tk.Canvas):
+    """Переключатель: бегунок переезжает с анимацией. command(включён) вызывается после щелчка."""
+
+    def __init__(self, parent, scale, animator, on=False, command=None):
+        self.bg = parent.cget("bg")
+        self.w, self.h = round(40 * scale), round(22 * scale)
+        super().__init__(parent, width=self.w, height=self.h, bg=self.bg, highlightthickness=0, cursor="hand2")
+        self.animator, self.command = animator, command
+        self.on, self.pos = on, 1.0 if on else 0.0
+        self.track = self.create_polygon(0, 0, 0, 0, smooth=True)
+        self.knob = self.create_oval(0, 0, 0, 0, outline="")
+        self.bind("<Button-1>", self._click)
+        self._draw()
+
+    def _draw(self):
+        off = mix(C["dim"], self.bg, 0.55)
+        self.itemconfigure(self.track, fill=lerp(off, C["primary"], self.pos))
+        self.coords(self.track, *round_points(1, 1, self.w - 1, self.h - 1, self.h / 2))
+        pad = round(self.h * 0.18)
+        size = self.h - 2 * pad
+        x = pad + self.pos * (self.w - self.h)
+        self.coords(self.knob, x, pad, x + size, pad + size)
+        self.itemconfigure(self.knob, fill="#FFFFFF")
+
+    def set(self, on, animate=True):
+        self.on = on
+        start, end = self.pos, 1.0 if on else 0.0
+
+        def step(t):
+            self.pos = start + (end - start) * t
+            self._draw()
+
+        if animate:
+            self.animator.animate(("toggle", id(self)), 0.22, step)
+        else:
+            step(1.0)
+
+    def _click(self, event):
+        self.set(not self.on)
+        if self.command:
+            self.command(self.on)
+
+
+class Segmented(tk.Canvas):
+    """Выбор одного варианта из нескольких; подсветка выбранного переезжает с анимацией."""
+
+    def __init__(self, parent, options, value, font, scale, animator, command=None):
+        self.bg = parent.cget("bg")
+        measure = tkfont.Font(font=font)
+        pad_x, pad_y = round(12 * scale), round(4 * scale)
+        self.options = options
+        self.widths = [measure.measure(label) + 2 * pad_x for _, label in options]
+        self.h = measure.metrics("linespace") + 2 * pad_y
+        super().__init__(parent, width=sum(self.widths) + 4, height=self.h + 4, bg=self.bg, highlightthickness=0,
+                         cursor="hand2")
+        self.animator, self.command = animator, command
+        self.shape = self.create_polygon(*round_points(1, 1, sum(self.widths) + 3, self.h + 3, (self.h + 2) / 2),
+                                         smooth=True, fill=mix(C["raised"], self.bg, 0.8), outline=C["border"])
+        self.thumb = self.create_polygon(0, 0, 0, 0, smooth=True, fill=C["primary"], outline="")
+        self.labels = []
+        x = 2
+        for width, (_, label) in zip(self.widths, options):
+            self.labels.append(self.create_text(x + width / 2, 2 + self.h / 2, text=label, font=font))
+            x += width
+        self.index = next((i for i, (v, _) in enumerate(options) if v == value), 0)
+        self.pos = float(self.index)
+        self.bind("<Button-1>", self._click)
+        self._draw()
+
+    def _span(self, pos):
+        """Левый край и ширина подсветки для дробной позиции между вариантами."""
+        lefts = [2 + sum(self.widths[:i]) for i in range(len(self.widths))]
+        i = min(int(pos), len(self.widths) - 1)
+        j, frac = min(i + 1, len(self.widths) - 1), pos - i
+        return lefts[i] + (lefts[j] - lefts[i]) * frac, self.widths[i] + (self.widths[j] - self.widths[i]) * frac
+
+    def _draw(self):
+        left, width = self._span(self.pos)
+        self.coords(self.thumb, *round_points(left + 1, 3, left + width - 1, self.h + 1, (self.h - 2) / 2))
+        for i, label in enumerate(self.labels):
+            self.itemconfigure(label, fill=C["on_primary"] if abs(self.pos - i) < 0.5 else C["muted"])
+
+    def _click(self, event):
+        x, index = 2, 0
+        for i, width in enumerate(self.widths):
+            if event.x < x + width:
+                index = i
+                break
+            x += width
+        else:
+            index = len(self.widths) - 1
+        if index == self.index:
+            return
+        start, self.index = self.pos, index
+
+        def step(t):
+            self.pos = start + (index - start) * t
+            self._draw()
+
+        self.animator.animate(("segment", id(self)), 0.24, step)
+        if self.command:
+            self.command(self.options[index][0])
+
+
+class Meter(tk.Canvas):
+    """Полоска «занято / лимит»: бирюзовая в норме, оранжевая у предела, красная сверх лимита."""
+
+    def __init__(self, parent, scale, animator):
+        self.bg = parent.cget("bg")
+        self.h = max(4, round(6 * scale))
+        super().__init__(parent, height=self.h, bg=self.bg, highlightthickness=0)
+        self.animator, self.ratio, self.shown = animator, 0.0, 0.0
+        self.track = self.create_polygon(0, 0, 0, 0, smooth=True, fill=mix(C["raised"], self.bg, 0.9))
+        self.fill = self.create_polygon(0, 0, 0, 0, smooth=True)
+        self.bind("<Configure>", lambda e: self._draw())
+
+    def _draw(self):
+        w = self.winfo_width()
+        if w <= 1:
+            return
+        self.coords(self.track, *round_points(0, 0, w, self.h, self.h / 2))
+        ratio = min(self.shown, 1.0)
+        color = C["ok"] if self.ratio < 0.85 else C["warn"] if self.ratio <= 1.0 else C["bad"]
+        self.itemconfigure(self.fill, fill=color, state="normal" if ratio > 0 else "hidden")
+        self.coords(self.fill, *round_points(0, 0, max(self.h, w * ratio), self.h, self.h / 2))
+
+    def set(self, ratio, animate=True):
+        start, self.ratio = self.shown, max(0.0, ratio)
+
+        def step(t):
+            self.shown = start + (self.ratio - start) * t
+            self._draw()
+
+        if animate:
+            self.animator.animate(("meter", id(self)), 0.5, step)
+        else:
+            step(1.0)
+
+
+class Stepper(tk.Frame):
+    """Значение с кнопками «−» и «+», которые переключают его по лестнице values."""
+
+    def __init__(self, parent, value, values, fmt, font, scale, command=None):
+        super().__init__(parent, bg=parent.cget("bg"))
+        self.value, self.values, self.fmt, self.command = value, values, fmt, command
+        px = lambda n: round(n * scale)
+        self.buttons = []
+        for text, sign in (("−", -1), ("+", 1)):
+            button = tk.Label(self, text=text, font=font, fg=C["text"], bg=C["raised"], width=2, cursor="hand2")
+            button.bind("<Button-1>", lambda e, s=sign: self.change(s))
+            button.bind("<Enter>", lambda e, b=button: b.configure(bg=mix(C["accent"], C["raised"], 0.3)))
+            button.bind("<Leave>", lambda e, b=button: b.configure(bg=C["raised"]))
+            self.buttons.append(button)
+        self.label = tk.Label(self, text=fmt(value), font=font, fg=C["text"], bg=parent.cget("bg"), width=8)
+        self.buttons[0].pack(side="left", ipady=px(1))
+        self.label.pack(side="left", padx=px(4))
+        self.buttons[1].pack(side="left", ipady=px(1))
+
+    def change(self, sign):
+        if sign > 0:
+            value = next((v for v in self.values if v > self.value), self.value)
+        else:
+            value = next((v for v in reversed(self.values) if v < self.value), self.value)
+        if value != self.value:
+            self.value = value
+            self.label.configure(text=self.fmt(value))
+            if self.command:
+                self.command(value)
+
+
+class Flow(tk.Frame):
+    """Раскладывает дочерние элементы строками слева направо и переносит то, что не помещается."""
+
+    def __init__(self, parent, gap_x, gap_y):
+        super().__init__(parent, bg=parent.cget("bg"), height=1)
+        self.gap_x, self.gap_y = gap_x, gap_y
+        self.items = []
+        self.bind("<Configure>", lambda e: self.arrange())
+
+    def add(self, widget):
+        self.items.append(widget)
+        self.after_idle(self.arrange)
+
+    def arrange(self):
+        width = self.winfo_width()
+        if width <= 1:
+            return
+        x = y = row = 0
+        for widget in self.items:
+            w, h = widget.winfo_reqwidth(), widget.winfo_reqheight()
+            if x and x + w > width:
+                x, y, row = 0, y + row + self.gap_y, 0
+            widget.place(x=x, y=y)
+            x += w + self.gap_x
+            row = max(row, h)
+        height = y + row
+        if height and int(self.cget("height")) != height:
+            self.configure(height=height)
