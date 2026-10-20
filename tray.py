@@ -1,7 +1,7 @@
-"""Значок SimpleTool в трее (Win32 Shell_NotifyIcon через ctypes, без сторонних библиотек).
+"""SimpleTool tray icon (Win32 Shell_NotifyIcon via ctypes, no third-party libraries).
 
-Значок живёт в собственном потоке со своим скрытым окном и циклом сообщений. Команды меню передаются в окно
-SimpleTool через post(функция): Tk нельзя трогать из другого потока.
+The icon lives in its own thread with its own hidden window and message loop. Menu commands go to the
+SimpleTool window through post(function): Tk must not be touched from another thread.
 """
 import ctypes
 import threading
@@ -66,8 +66,8 @@ _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 
 
 class TrayIcon:
-    """menu() возвращает пункты [(id, подпись, отмечен ли) или None для разделителя];
-    on_command(id) и on_open() вызываются в потоке окна через post."""
+    """menu() returns the items [(id, label, checked) or None for a separator];
+    on_command(id) and on_open() are called on the window thread via post."""
 
     def __init__(self, icon_path, tooltip, menu, on_command, on_open, post):
         self.icon_path, self.tooltip = icon_path, tooltip
@@ -76,7 +76,7 @@ class TrayIcon:
         self._ready = threading.Event()
         self._thread = None
         self._class = f"SimpleToolTray{id(self)}"
-        self._proc = WNDPROC(self._wndproc)  # ссылка обязательна: иначе сборщик мусора удалит обработчик
+        self._proc = WNDPROC(self._wndproc)  # keep a reference, or the GC deletes the handler
 
     def show(self):
         if self._thread and self._thread.is_alive():
@@ -108,7 +108,7 @@ class TrayIcon:
             data.szInfoTitle, data.szInfo = title[:63], text[:255]
             _shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(data))
 
-    # --- поток значка ---
+    # --- tray thread ---
 
     def _data(self, flags):
         data = NOTIFYICONDATAW()
@@ -126,9 +126,9 @@ class TrayIcon:
         window_class = WNDCLASSW(lpfnWndProc=self._proc, hInstance=instance, lpszClassName=self._class)
         _user32.RegisterClassW(ctypes.byref(window_class))
         self._taskbar_created = _user32.RegisterWindowMessageW("TaskbarCreated")
-        size = _user32.GetSystemMetrics(49)  # SM_CXSMICON — значок нужного размера для текущего DPI
+        size = _user32.GetSystemMetrics(49)  # SM_CXSMICON: an icon of the right size for the current DPI
         self._icon = _user32.LoadImageW(None, self.icon_path, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
-        # Обычное скрытое окно, а не message-only: только оно получает TaskbarCreated после перезапуска Проводника
+        # A regular hidden window, not message-only: only it receives TaskbarCreated after Explorer restarts
         self.hwnd = _user32.CreateWindowExW(0, self._class, "SimpleTool tray", 0, 0, 0, 0, 0, None, None, instance, None)
         self._add()
         self._ready.set()
@@ -150,7 +150,7 @@ class TrayIcon:
                 _user32.AppendMenuW(menu, MF_STRING | (MF_CHECKED if checked else 0), command, label)
         point = wintypes.POINT()
         _user32.GetCursorPos(ctypes.byref(point))
-        _user32.SetForegroundWindow(hwnd)  # иначе меню не закроется щелчком мимо
+        _user32.SetForegroundWindow(hwnd)  # otherwise the menu does not close when clicking elsewhere
         command = _user32.TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, point.x, point.y, 0, hwnd, None)
         _user32.PostMessageW(hwnd, WM_NULL, 0, 0)
         _user32.DestroyMenu(menu)
@@ -164,7 +164,7 @@ class TrayIcon:
             elif lparam == WM_RBUTTONUP:
                 self._show_menu(hwnd)
             return 0
-        if message == self._taskbar_created:  # Проводник перезапустился — значок нужно добавить заново
+        if message == self._taskbar_created:  # Explorer restarted: the icon has to be added again
             self._add()
             return 0
         if message == WM_CLOSE:
@@ -188,15 +188,15 @@ ERROR_ALREADY_EXISTS = 183
 
 
 class SingleInstance:
-    """Одна копия SimpleTool на сеанс: иначе два ограничителя памяти мешали бы друг другу.
-    Повторный запуск будит первую копию (она показывает окно, даже спрятанное в трей) и завершается."""
+    """One copy of SimpleTool per session: otherwise two memory limiters would get in each other's way.
+    A second launch wakes the first copy (it shows its window, even from the tray) and exits."""
 
     def __init__(self, name="Local\blagotech.SimpleTool.show"):
         self.name = name
         self.handle = None
 
     def acquire(self):
-        """True — это первая копия. False — SimpleTool уже запущен, и его попросили показать окно."""
+        """True: this is the first copy. False: SimpleTool is already running and was asked to show its window."""
         handle = _kernel32.CreateEventW(None, False, False, self.name)
         exists = ctypes.get_last_error() == ERROR_ALREADY_EXISTS
         if handle and not exists:
@@ -206,10 +206,10 @@ class SingleInstance:
             _kernel32.SetEvent(handle)
             _kernel32.CloseHandle(handle)
             return False
-        return True  # к событию нет доступа (его создала копия с другими правами) — работаем как обычно
+        return True  # no access to the event (a copy with different rights created it): run as usual
 
     def listen(self, on_signal):
-        """on_signal() вызывается из фонового потока, когда SimpleTool запускают ещё раз."""
+        """on_signal() is called from a background thread when SimpleTool is started again."""
         handle = self.handle
 
         def wait():
@@ -222,10 +222,10 @@ class SingleInstance:
             self._thread.start()
 
     def release(self):
-        """Освобождает имя: следующий запуск SimpleTool станет первой копией."""
+        """Releases the name: the next SimpleTool launch becomes the first copy."""
         handle, self.handle = self.handle, None
         thread = getattr(self, "_thread", None)
         if thread and thread is not threading.current_thread():
-            thread.join(timeout=2)  # дескриптор нельзя закрывать, пока поток его ждёт
+            thread.join(timeout=2)  # the handle must not be closed while the thread is waiting on it
         if handle:
             _kernel32.CloseHandle(handle)

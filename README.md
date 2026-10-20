@@ -31,9 +31,10 @@ when the service or task it targets is not on this PC.
 
 ## Memory limiter
 
-The **Memory limiter** page keeps chosen programs within a RAM limit. Pick a program from the list
-(Chrome, Edge, Firefox, Brave, Opera, Discord, Telegram, Steam, Spotify and others) or choose any
-running program, set the limit and the mode:
+The **Memory limiter** page keeps chosen programs within a RAM limit. SimpleTool lists the programs
+installed on this PC (from Start menu shortcuts, the installed programs list and known Microsoft Store
+apps), with the ones running now first and the memory they use. Pick one, or choose any running
+program, then set the limit and the mode:
 
 - **Soft** (default). The limit is for the whole program, all of its processes together. When it is
   exceeded, SimpleTool trims the working sets of the largest processes first until the program is

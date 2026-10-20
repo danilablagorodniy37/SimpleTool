@@ -1,4 +1,4 @@
-"""Тексты интерфейса на английском, русском и украинском (сами строки — в locales/)."""
+"""UI texts in English, Russian and Ukrainian (the strings themselves are in locales/)."""
 import ctypes
 
 from locales import en, ru, uk
@@ -8,7 +8,7 @@ TEXTS = {"en": en.TEXTS, "ru": ru.TEXTS, "uk": uk.TEXTS}
 
 
 def detect_language():
-    """Язык интерфейса Windows: русский, украинский, иначе английский."""
+    """The Windows display language: Russian, Ukrainian, otherwise English."""
     try:
         primary = ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF
     except (AttributeError, OSError):
@@ -17,5 +17,5 @@ def detect_language():
 
 
 def menu_label(key, *args):
-    """Подпись для реестра на выбранном при применении языке."""
+    """A registry label in the language chosen when applying."""
     return lambda lang: TEXTS[lang]["menu"][key].format(*args)

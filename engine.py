@@ -1,4 +1,4 @@
-"""Движок твиков: реестр, службы, задачи планировщика, ярлыки, резервные копии и снимки системы."""
+"""Tweak engine: registry, services, scheduled tasks, shortcuts, backups and system snapshots."""
 import ctypes
 import datetime
 import json
@@ -11,7 +11,7 @@ CREATE_NO_WINDOW = 0x08000000
 HIVES = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}
 WOW64 = winreg.KEY_WOW64_64KEY
 
-# Маркер «значения нет» для стандартных значений
+# Marker for "no value" in default values
 ABSENT = object()
 
 
@@ -23,18 +23,18 @@ def is_admin():
 
 
 def data_dir():
-    """Папка для настроек и резервных копий: %LOCALAPPDATA%\\SimpleTool."""
+    """Folder for settings and backups: %LOCALAPPDATA%\\SimpleTool."""
     path = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "SimpleTool")
     os.makedirs(path, exist_ok=True)
     return path
 
 
 def clean_env():
-    """Окружение для дочерних программ со стандартными путями модулей Windows PowerShell 5.1.
+    """Environment for child programs with the default Windows PowerShell 5.1 module paths.
 
-    Если SimpleTool запущен из PowerShell 7 или в системе прописаны его пути к модулям, Windows PowerShell
-    загружает несовместимые модули PowerShell 7 и теряет встроенные командлеты (Get-FileHash,
-    Checkpoint-Computer). SimpleTool пользуется только встроенными модулями, поэтому пути задаются явно.
+    If SimpleTool is started from PowerShell 7 or the system has its module paths set, Windows PowerShell
+    loads incompatible PowerShell 7 modules and loses built-in cmdlets (Get-FileHash,
+    Checkpoint-Computer). SimpleTool uses built-in modules only, so the paths are set explicitly.
     """
     env = dict(os.environ)
     env["PSModulePath"] = os.pathsep.join([
@@ -45,7 +45,7 @@ def clean_env():
 
 
 def run(args):
-    """Запускает консольную программу без окна. При ошибке бросает RuntimeError с её выводом."""
+    """Runs a console program without a window. On failure raises RuntimeError with its output."""
     result = subprocess.run(args, capture_output=True, encoding="oem", errors="replace",
                             creationflags=CREATE_NO_WINDOW, env=clean_env())
     if result.returncode != 0:
@@ -58,7 +58,7 @@ def powershell(script):
     return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script])
 
 
-# --- Реестр ---
+# --- Registry ---
 
 def _split(path):
     hive, _, sub = path.partition("\\")
@@ -66,7 +66,7 @@ def _split(path):
 
 
 def read_value(path, name):
-    """Возвращает (данные, тип) или None, если значения нет."""
+    """Returns (data, type) or None if the value does not exist."""
     hive, sub = _split(path)
     try:
         with winreg.OpenKey(hive, sub, 0, winreg.KEY_READ | WOW64) as key:
@@ -83,11 +83,11 @@ def key_exists(path):
     except FileNotFoundError:
         return False
     except PermissionError:
-        return True  # ключ есть, но читать его могут только администраторы
+        return True  # the key exists, but only administrators can read it
 
 
 def create_key(path):
-    """Создаёт ключ вместе с недостающими родителями и возвращает список созданных ключей."""
+    """Creates a key together with missing parents and returns the list of created keys."""
     hive_name, _, sub = path.partition("\\")
     parts = sub.split("\\")
     created = []
@@ -146,7 +146,7 @@ def delete_tree(path):
 
 
 def prune_empty_parents(path):
-    """Удаляет опустевшие родительские ключи, но не выше ...\\Classes."""
+    """Deletes empty parent keys, but not above ...\\Classes."""
     if "\\classes\\" not in path.lower():
         return
     parent = path.rpartition("\\")[0]
@@ -156,7 +156,7 @@ def prune_empty_parents(path):
 
 
 def _pack(found):
-    """Данные реестра в виде, пригодном для JSON."""
+    """Registry data in a JSON-friendly form."""
     if found is None:
         return None
     data, kind = found
@@ -172,14 +172,14 @@ def _unpack(packed):
     return data, kind
 
 
-# --- Задачи планировщика, ярлыки ---
+# --- Scheduled tasks, shortcuts ---
 
 TASKS_SCRIPT = ("[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false; "
                 "Get-ScheduledTask | ForEach-Object { '{0}{1}|{2}' -f $_.TaskPath, $_.TaskName, [int]$_.State }")
 
 
 def load_tasks():
-    """Словарь «путь задачи в нижнем регистре -> отключена ли она». None, если список получить не удалось."""
+    """Dict "lowercase task path -> whether it is disabled". None if the list could not be read."""
     try:
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", TASKS_SCRIPT],
                                 capture_output=True, encoding="utf-8", errors="replace",
@@ -205,8 +205,8 @@ def desktop_dir():
 def create_shortcut(lnk, target, args, icon):
     def quote(text):
         return "'" + text.replace("'", "''") + "'"
-    # WScript.Shell портит символы вне кодовой страницы системы (кириллица в английской Windows),
-    # поэтому ярлык сохраняется под латинским именем и переименовывается уже из Python
+    # WScript.Shell mangles characters outside the system code page (Cyrillic on English Windows),
+    # so the shortcut is saved under a Latin name and renamed from Python afterwards
     tmp = os.path.join(os.path.dirname(lnk), "SimpleTool-shortcut.tmp.lnk")
     powershell(f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({quote(tmp)}); "
                f"$s.TargetPath = {quote(target)}; $s.Arguments = {quote(args)}; "
@@ -215,26 +215,26 @@ def create_shortcut(lnk, target, args, icon):
 
 
 def notify_shell():
-    """Сообщает Проводнику, что ассоциации и контекстные меню изменились."""
+    """Tells Explorer that file associations and context menus have changed."""
     try:
         ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED
     except (AttributeError, OSError):
         pass
 
 
-# --- Операции твиков ---
-# У каждой операции: admin, id, available(ctx), applied(ctx) -> True/False/None (None = не влияет на статус),
-# snapshot(ctx) -> состояние до применения, apply(lang) -> список созданных ключей, restore(снимок), reset().
+# --- Tweak operations ---
+# Every operation has: admin, id, available(ctx), applied(ctx) -> True/False/None (None = does not affect the status),
+# snapshot(ctx) -> state before applying, apply(lang) -> list of created keys, restore(snapshot), reset().
 
 class Unknown(Exception):
-    """Состояние операции узнать не удалось; reason — ключ причины для подсказки в интерфейсе."""
+    """The state of an operation could not be read; reason is the key of the explanation in the UI."""
 
     def __init__(self, reason):
         super().__init__(reason)
         self.reason = reason
 
 class Value:
-    """Значение реестра. data может быть функцией от языка (подписи пунктов меню)."""
+    """A registry value. data can be a function of the language (menu item labels)."""
 
     def __init__(self, path, name, data, kind=winreg.REG_DWORD, default=ABSENT, check=True):
         self.path, self.name, self.data, self.kind = path, name, data, kind
@@ -277,7 +277,7 @@ class Value:
 
 
 class OwnedKey:
-    """Ключ, который создаёт твик (пункт контекстного меню). При откате удаляется целиком."""
+    """A key that a tweak creates (a context menu item). It is deleted entirely on revert."""
 
     def __init__(self, path):
         self.path = path
@@ -311,7 +311,7 @@ class OwnedKey:
 
 
 class Service:
-    """Служба Windows: отключение автозапуска (Start = 4) и остановка."""
+    """A Windows service: disable automatic start (Start = 4) and stop it."""
 
     def __init__(self, name, default_start):
         self.name, self.default_start = name, default_start
@@ -338,7 +338,7 @@ class Service:
         try:
             run(["sc.exe", "stop", self.name])
         except RuntimeError:
-            pass  # служба уже остановлена
+            pass  # the service is already stopped
         return []
 
     def restore(self, start):
@@ -350,7 +350,7 @@ class Service:
 
 
 class Task:
-    """Задача планировщика: отключение."""
+    """A scheduled task: disable it."""
 
     def __init__(self, path):
         self.path = path
@@ -369,7 +369,7 @@ class Task:
         return ctx.tasks.get(self.path.lower())
 
     def snapshot(self, ctx):
-        # True = задача была включена
+        # True = the task was enabled
         return ctx.tasks is None or not ctx.tasks.get(self.path.lower(), False)
 
     def apply(self, lang):
@@ -384,7 +384,7 @@ class Task:
 
 
 class Shortcut:
-    """Ярлык на Рабочем столе. names — имя ярлыка на каждом языке."""
+    """A desktop shortcut. names is the shortcut name in each language."""
 
     def __init__(self, names, target, args, icon):
         self.names = names
@@ -435,14 +435,14 @@ class Tweak:
 
 
 class Context:
-    """Общие для проверки всех твиков данные: состояние задач планировщика."""
+    """Data shared by the checks of all tweaks: the state of scheduled tasks."""
 
     def __init__(self):
         self.tasks = load_tasks()
 
 
 def _try(check, ctx, default=None):
-    """Проверка, которой может не хватить прав на чтение (без прав администратора) — тогда default."""
+    """A check that may lack read access (without administrator rights); then default."""
     try:
         return check(ctx)
     except OSError:
@@ -450,10 +450,10 @@ def _try(check, ctx, default=None):
 
 
 def check(tweak, ctx):
-    """Состояние твика и каждой его операции.
+    """The state of a tweak and of each of its operations.
 
-    Возвращает (status, rows): status — applied / partial / not_applied / unknown / unavailable,
-    rows — список (операция, применена ли: True/False/None, причина: None / "missing" / ключ из reasons).
+    Returns (status, rows): status is applied / partial / not_applied / unknown / unavailable,
+    rows is a list of (operation, applied: True/False/None, reason: None / "missing" / a key from reasons).
     """
     if tweak.requires and not tweak.requires():
         return "unavailable", []
@@ -478,7 +478,7 @@ def check(tweak, ctx):
     if any(known) and not all(known):
         status = "partial"
     elif known and not any(known):
-        status = "not_applied"  # хотя бы одна часть точно не применена
+        status = "not_applied"  # at least one part is definitely not applied
     elif unknown or not known:
         status = "unknown"
     else:
@@ -490,7 +490,7 @@ def status(tweak, ctx):
     return check(tweak, ctx)[0]
 
 
-# --- Применение и откат с резервной копией ---
+# --- Apply and revert with a backup ---
 
 def backup_path():
     return os.path.join(data_dir(), "backup.json")
@@ -512,7 +512,7 @@ def save_backup(backup):
 
 
 def apply(tweak, lang, ctx):
-    """Применяет твик. Перед первым применением запоминает исходное состояние. Возвращает список ошибок."""
+    """Applies a tweak. Before the first apply, remembers the original state. Returns a list of errors."""
     errors = []
     backup = load_backup()
     ops = tweak.available_ops(ctx)
@@ -524,7 +524,7 @@ def apply(tweak, lang, ctx):
                 entry["ops"][op.id] = op.snapshot(ctx)
             except OSError as exc:
                 errors.append(f"{op}: {exc}")
-        # Операцию без сохранённого исходного состояния не применяем: её нельзя было бы откатить
+        # An operation whose original state was not saved is not applied: it could not be reverted
         ops = [op for op in ops if op.id in entry["ops"]]
     for op in ops:
         try:
@@ -537,7 +537,7 @@ def apply(tweak, lang, ctx):
 
 
 def revert(tweak, ctx):
-    """Возвращает исходное состояние из резервной копии, а без неё — стандартные значения Windows."""
+    """Restores the original state from the backup, or the Windows defaults without one."""
     errors = []
     backup = load_backup()
     entry = backup.pop(tweak.id, None)
@@ -550,7 +550,7 @@ def revert(tweak, ctx):
         except (OSError, RuntimeError) as exc:
             errors.append(f"{op}: {exc}")
     if entry is not None:
-        # Ключи, созданные при применении, удаляем, если они опустели (сначала самые глубокие)
+        # Keys created while applying are deleted if they are left empty (deepest first)
         for path in sorted(set(entry["created"]), key=lambda p: p.count("\\"), reverse=True):
             try:
                 if is_empty_key(path):
@@ -564,16 +564,16 @@ def revert(tweak, ctx):
 
 
 def forget_backups(keep):
-    """Удаляет резервные копии твиков, которых нет в keep: после восстановления снимка они устарели."""
+    """Deletes backups of tweaks not in keep: after a snapshot restore they are out of date."""
     backup = load_backup()
     for tweak_id in [i for i in backup if i not in keep]:
         del backup[tweak_id]
     save_backup(backup)
 
 
-# --- Снимки системы: состояние всего, что меняет SimpleTool, на определённый момент ---
+# --- System snapshots: the state of everything SimpleTool changes at a given moment ---
 
-AUTO_SNAPSHOTS_KEPT = 20  # исходный снимок и снимки, сделанные вручную, не удаляются
+AUTO_SNAPSHOTS_KEPT = 20  # the original snapshot and manual snapshots are never deleted
 
 
 def snapshots_dir():
@@ -583,7 +583,7 @@ def snapshots_dir():
 
 
 def take_snapshot(tweaks, ctx, kind, statuses, app_version):
-    """Сохраняет текущее состояние каждой операции каждого твика. Возвращает путь к файлу снимка."""
+    """Saves the current state of every operation of every tweak. Returns the path to the snapshot file."""
     now = datetime.datetime.now()
     data = {"format": 1, "app": app_version, "windows": platform.version(),
             "created": now.isoformat(timespec="seconds"), "kind": kind, "tweaks": {}, "keys": {}}
@@ -593,9 +593,9 @@ def take_snapshot(tweaks, ctx, kind, statuses, app_version):
             try:
                 ops[op.id] = op.snapshot(ctx)
             except OSError:
-                continue  # без прав администратора часть параметров не прочитать
+                continue  # without administrator rights some values cannot be read
             if isinstance(op, (Value, OwnedKey)):
-                # Какие разделы реестра существовали: созданные позже удаляются при восстановлении
+                # Which registry keys existed: keys created later are deleted on restore
                 parts = op.path.split("\\")
                 for i in range(2, len(parts) + 1):
                     path = "\\".join(parts[:i])
@@ -616,7 +616,7 @@ def take_snapshot(tweaks, ctx, kind, statuses, app_version):
 
 
 def list_snapshots():
-    """Снимки от новых к старым: список (путь, данные)."""
+    """Snapshots from newest to oldest: a list of (path, data)."""
     items = []
     for name in os.listdir(snapshots_dir()):
         if name.endswith(".json"):
@@ -640,7 +640,7 @@ def prune_snapshots():
 
 
 def restore_snapshot(tweaks, data, ctx):
-    """Возвращает каждую сохранённую в снимке операцию к её состоянию на момент снимка. Возвращает ошибки."""
+    """Returns every operation saved in the snapshot to its state at that moment. Returns errors."""
     errors = []
     for tweak in tweaks:
         entry = data.get("tweaks", {}).get(tweak.id)
@@ -671,7 +671,7 @@ RESTORE_POINT_SCRIPT = (
 
 
 def create_restore_point():
-    """Точка восстановления Windows (весь реестр и системные файлы). Возвращает (успех, сообщение Windows)."""
+    """A Windows restore point (the whole registry and system files). Returns (success, Windows message)."""
     try:
         output = powershell(RESTORE_POINT_SCRIPT).strip()
     except RuntimeError as exc:

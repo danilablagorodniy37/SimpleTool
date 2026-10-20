@@ -1,10 +1,10 @@
-"""Палитры blagotech, цветовые утилиты и картинки, которые Tk не умеет рисовать сам: градиенты и свечение."""
+"""blagotech palettes, color utilities and images Tk cannot draw itself: gradients and glow."""
 import ctypes
 import math
 import tkinter as tk
 
-# Цвета фирменного стиля blagotech: тёмно-синий #0A1B33, синий #2F8CF5 / #5FB4FF, бирюзовый #34D8A8,
-# плашки #12294A / #16345C, светло-серый #E3E9F1. Градиент акцента — от синего к бирюзовому.
+# blagotech brand colors: navy #0A1B33, blue #2F8CF5 / #5FB4FF, teal #34D8A8,
+# plates #12294A / #16345C, light grey #E3E9F1. The accent gradient goes from blue to teal.
 _SIDEBAR = {
     "side": "#081628", "side_hover": "#0F2341", "side_active": "#16345C", "side_border": "#1A2F50",
     "side_text": "#E8EEFC", "side_muted": "#9FB0D6", "side_dim": "#6F7FA6",
@@ -30,11 +30,11 @@ PALETTES = {
 }
 THEMES = list(PALETTES)
 
-# Цвет каждого раздела: значок в меню, свечение в шапке
+# Color of each section: menu icon, header glow
 CATEGORY_COLORS = {"overview": "#5FB4FF", "privacy": "#34D8A8", "system": "#7C9CFF",
                    "explorer": "#86D9BD", "context": "#F0B783", "snapshots": "#4AC6D4", "memory": "#A48BFF"}
 
-# Текущая палитра; use() подменяет её содержимое, и все модули видят новые цвета
+# Current palette; use() replaces its contents, and every module sees the new colors
 C = dict(PALETTES["navy"])
 
 
@@ -53,17 +53,17 @@ def hex_color(r, g, b):
 
 
 def mix(color, background, alpha):
-    """Цвет color с непрозрачностью alpha поверх background."""
+    """color with opacity alpha over background."""
     return hex_color(*(c * alpha + b * (1 - alpha) for c, b in zip(rgb(color), rgb(background))))
 
 
 def lerp(start, end, t):
-    """Цвет на отрезке от start до end."""
+    """A color on the line from start to end."""
     return mix(end, start, t)
 
 
 def style_title_bar(window, caption=None):
-    """Тёмный заголовок окна в цвет боковой панели (Windows 10 1809+, цвет — Windows 11)."""
+    """A dark window title bar matching the sidebar (Windows 10 1809+, the color needs Windows 11)."""
     try:
         window.update_idletasks()
         hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
@@ -77,10 +77,10 @@ def style_title_bar(window, caption=None):
 
 
 def set_window_icon(window, path):
-    """Даёт окну иконки ровно тех размеров, которые Windows просит для текущего DPI.
+    """Gives the window icons of exactly the sizes Windows asks for at the current DPI.
 
-    Tk ставит только иконку класса окна, и панель задач растягивает её маленький кадр — значок
-    выходит размытым. Иконки окна (WM_SETICON) нужного размера Windows берёт из .ico без масштабирования.
+    Tk sets only the window class icon, and the taskbar stretches its small frame, so the icon
+    looks blurry. Window icons (WM_SETICON) of the right size are taken from the .ico without scaling.
     """
     try:
         user32 = ctypes.windll.user32
@@ -94,9 +94,9 @@ def set_window_icon(window, path):
         try:
             dpi = user32.GetDpiForWindow(hwnd) or 96
             sizes = {1: user32.GetSystemMetricsForDpi(11, dpi), 0: user32.GetSystemMetricsForDpi(49, dpi)}
-        except AttributeError:  # Windows 10 до 1607
+        except AttributeError:  # Windows 10 before 1607
             sizes = {1: user32.GetSystemMetrics(11), 0: user32.GetSystemMetrics(49)}
-        for kind, size in sizes.items():  # 1 — ICON_BIG (панель задач, Alt+Tab), 0 — ICON_SMALL (заголовок)
+        for kind, size in sizes.items():  # 1 is ICON_BIG (taskbar, Alt+Tab), 0 is ICON_SMALL (title bar)
             icon = user32.LoadImageW(None, path, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
             if icon:
                 user32.SendMessageW(hwnd, 0x80, kind, icon)  # WM_SETICON
@@ -104,13 +104,13 @@ def set_window_icon(window, path):
         pass
 
 
-# --- Картинки ---
+# --- Images ---
 
 _cache = {}
 
 
 def _image(key, width, height, pixel):
-    """PhotoImage, где цвет каждой точки даёт pixel(x, y). Результат кэшируется по key."""
+    """A PhotoImage where pixel(x, y) gives the color of each point. The result is cached by key."""
     if key not in _cache:
         image = tk.PhotoImage(width=width, height=height)
         rows = ("{" + " ".join(pixel(x, y) for x in range(width)) + "}" for y in range(height))
@@ -120,7 +120,7 @@ def _image(key, width, height, pixel):
 
 
 def _coverage(x, y, width, height, radius):
-    """Насколько точка покрыта прямоугольником со скруглёнными углами (0–1, со сглаживанием края)."""
+    """How much a point is covered by a rounded rectangle (0-1, with an antialiased edge)."""
     cx = min(max(x + 0.5, radius), width - radius)
     cy = min(max(y + 0.5, radius), height - radius)
     distance = math.hypot(x + 0.5 - cx, y + 0.5 - cy)
@@ -128,7 +128,7 @@ def _coverage(x, y, width, height, radius):
 
 
 def gradient_pill(width, height, radius, start, end, background, glow=0.0):
-    """Скруглённая плашка с горизонтальным градиентом; glow осветляет её при наведении."""
+    """A rounded plate with a horizontal gradient; glow brightens it on hover."""
     width, height = max(int(width), 2), max(int(height), 2)
     lighter = [mix("#FFFFFF", c, glow) for c in (start, end)]
     columns = [lerp(lighter[0], lighter[1], x / max(width - 1, 1)) for x in range(width)]
@@ -141,9 +141,9 @@ def gradient_pill(width, height, radius, start, end, background, glow=0.0):
 
 
 def glow(width, height, color, background, strength=0.22):
-    """Мягкое эллиптическое пятно цвета, как подсветка на сайте blagotech: ярче всего вверху посередине
-    и затухает ко всем краям, поэтому картинку можно ставить где угодно без видимых границ.
-    Рисуется вдвое мельче и растягивается."""
+    """A soft elliptical color spot like the glow on the blagotech website: brightest at the top center
+    and fading to every edge, so the image can go anywhere without visible borders.
+    Drawn at half size and scaled up."""
     small_w, small_h = max(width // 2, 1), max(height // 2, 1)
 
     def pixel(x, y):

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Проверка на секреты и личные данные перед каждым коммитом.
-# Включение в клоне репозитория: git config core.hooksPath .githooks
+# Check for secrets and personal data before every commit.
+# Turn it on in a clone of the repository: git config core.hooksPath .githooks
 PY=python
 command -v python >/dev/null 2>&1 || PY=python3
 exec "$PY" tools/check_secrets.py --staged

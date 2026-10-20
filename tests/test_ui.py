@@ -1,8 +1,7 @@
-"""Окно SimpleTool: все разделы, подробности, языки и темы открываются без ошибок, колонка выровнена.
+"""The SimpleTool window: every page, details, language and theme opens without errors, the column is aligned.
 
-Сканирование читает настоящую систему (только чтение). Применение, откат, восстановление снимков,
-точки восстановления и любые изменения памяти процессов на время теста заблокированы растяжкой:
-окно не может ничего изменить.
+The scan reads the real system (read-only). Apply, revert, snapshot restore, restore points and
+any change to process memory are blocked by a tripwire during the test: the window cannot change anything.
 """
 import shutil
 import tempfile
@@ -26,7 +25,7 @@ def forbidden(*args, **kwargs):
 class UiSmoke(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="simpletool-ui-test-")
-        self.settings = {"lang": "en", "theme": "navy", "tray_hint_shown": True}  # без всплывающих уведомлений
+        self.settings = {"lang": "en", "theme": "navy", "tray_hint_shown": True}  # no pop-up notifications
         self.patches = [
             mock.patch.object(engine, "data_dir", lambda: self.tmp),
             mock.patch.object(engine, "apply", forbidden),
@@ -47,7 +46,7 @@ class UiSmoke(unittest.TestCase):
         for patch in reversed(self.patches):
             patch.stop()
         theme.use("navy")
-        theme.clear_cache()  # картинки принадлежат закрытому окну Tk, следующему тесту нужны свои
+        theme.clear_cache()  # the images belong to a closed Tk window, the next test needs its own
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def pump(self, root, seconds):
@@ -88,7 +87,7 @@ class UiSmoke(unittest.TestCase):
             self.assertEqual(self.dialogs(root), [], "no dialog expected when running as administrator")
             self.assertEqual(set(app.scan["checks"]), {t.id for t in tweaks.TWEAKS})
             self.check_every_page(root, app)
-            # колонка: правые края кнопок шапки, первой карточки и кнопки «Применить» совпадают
+            # column: the right edges of the header buttons, the first card and the Apply button match
             app.show_page("privacy", animate=False)
             self.pump(root, 0.3)
             x0 = root.winfo_rootx()
@@ -97,7 +96,7 @@ class UiSmoke(unittest.TestCase):
                      card.winfo_rootx() + card.winfo_width() - x0,
                      app.apply_button.winfo_rootx() + app.apply_button.winfo_width() - x0}
             self.assertLessEqual(max(edges) - min(edges), 1, f"right edges differ: {edges}")
-            # выбор твика включает кнопки, но нажатий нет: растяжка не даст ничего применить
+            # selecting a tweak enables the buttons, but nothing is pressed: the tripwire would block any apply
             app.toggle_select(tweaks.TWEAKS[0])
             self.assertTrue(app.apply_button.enabled)
             for lang, _ in i18n.LANGUAGES:
@@ -132,21 +131,31 @@ class UiSmoke(unittest.TestCase):
             for dialog in self.dialogs(root):
                 dialog.destroy()
             app.show_page("memory")
+            deadline = time.time() + 30
+            while app.installed is None and time.time() < deadline:  # programs are found in the background
+                self.pump(root, 0.1)
+            self.assertIsInstance(app.installed, list)
             self.pump(root, 0.3)
+            if len(app.installed) > main.INSTALLED_VISIBLE:
+                app.toggle_installed()
+                self.pump(root, 0.3)
             self.assertFalse(app.limiter.active())
             self.assertIsNone(app.tray, "no tray icon while the limiter is off")
-            # Программа с именем, которого нет ни у одного процесса: ограничителю нечего менять
+            # A program name no process has: the limiter has nothing to change
             app.add_rule("simpletool-test-absent.exe", 700)
-            app.add_rule("explorer.exe", 700)  # системный процесс добавить нельзя
+            app.add_rule("explorer.exe", 700)  # a system process cannot be added
             rules = app.limiter.snapshot()["config"]["rules"]
             self.assertEqual([r["name"] for r in rules], ["simpletool-test-absent"])
+            app.change_rule("simpletool-test-absent", title="Test program")
+            app.rebuild_memory()
+            self.pump(root, 0.3)
             self.pump(root, 0.3)
             app.mem["toggle"]._click(None)
             self.pump(root, 0.3)
             self.assertTrue(app.limiter.active())
             self.assertTrue(app.tray.visible(), "the tray icon shows while the limiter works")
             self.assertEqual(app.nav["memory"]["count"].cget("text"), "1")
-            # Крестик прячет окно в трей, «Открыть» в меню значка возвращает его
+            # The close button hides the window to the tray, Open in the icon menu brings it back
             app.on_close()
             self.pump(root, 0.2)
             self.assertTrue(app.hidden)
@@ -155,7 +164,7 @@ class UiSmoke(unittest.TestCase):
             self.pump(root, 0.2)
             self.assertFalse(app.hidden)
             self.assertEqual(root.state(), "normal")
-            # Пока применяются твики, выйти нельзя
+            # Exiting is not allowed while tweaks are being applied
             app.acting = True
             app.on_tray_command(main.TRAY_EXIT)
             self.pump(root, 0.2)

@@ -1,4 +1,4 @@
-"""SimpleTool — твики Windows: обзор системы, конфиденциальность, система, Проводник, контекстное меню."""
+"""SimpleTool: Windows tweaks. System overview, privacy, system, File Explorer, context menu."""
 import collections
 import ctypes
 import datetime
@@ -17,6 +17,7 @@ from tkinter import ttk
 import engine
 import i18n
 import limiter
+import programs
 import services
 import theme
 import tray
@@ -29,19 +30,20 @@ VERSION = "0.5"
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
 PAGES = ["overview"] + tweaks.CATEGORIES + ["memory", "snapshots"]
-TRAY_OPEN, TRAY_LIMITER, TRAY_EXIT = 1, 2, 3  # пункты меню значка в трее
+TRAY_OPEN, TRAY_LIMITER, TRAY_EXIT = 1, 2, 3  # tray icon menu items
 SELECTABLE = ("applied", "partial", "not_applied", "unknown")
 REVERTIBLE = ("applied", "partial", "unknown")
 SCAN_STEPS = ["services", "tasks", "registry"]
-MIN_SCAN_SECONDS = 1.0  # экран сканирования не мелькает, даже если всё прочиталось мгновенно
-# Колонка содержимого: шапка, список и подвал выровнены по одним границам; на широком окне колонка по центру
+MIN_SCAN_SECONDS = 1.0  # the scan screen does not flash even if everything is read instantly
+# Content column: header, list and footer share the same edges; in a wide window the column is centered
 CONTENT_MAX = 1000
 GUTTER = 32
-MISSING_SUMMARY = 3  # с этого количества отсутствующие на ПК элементы сворачиваются в одну строку
+MISSING_SUMMARY = 3  # from this many items missing on the PC they collapse into one line
 GLOW_WIDTH = 900
 LANGUAGE_CODES = {"en": "EN", "ru": "RU", "uk": "UA"}
+INSTALLED_VISIBLE = 15  # this many installed programs are shown at once, the rest behind the "Show all" button
 
-# Значки из шрифта Segoe Fluent Icons / Segoe MDL2 Assets
+# Icons from the Segoe Fluent Icons / Segoe MDL2 Assets font
 ICONS = {"overview": "", "privacy": "", "system": "", "explorer": "", "context": "",
          "telemetry": "", "location": "", "performance": "", "gaming": "", "security": "",
          "globe": "", "palette": "", "shield": "", "down": "", "up": "",
@@ -76,7 +78,7 @@ def save_settings(settings):
 
 
 def relaunch_as_admin():
-    """Перезапускает программу от имени администратора. Возвращает код ShellExecute (больше 32 — успех)."""
+    """Restarts the program as administrator. Returns the ShellExecute code (above 32 means success)."""
     if getattr(sys, "frozen", False):
         exe, args = sys.executable, sys.argv[1:]
     else:
@@ -87,7 +89,7 @@ def relaunch_as_admin():
 
 
 def collect_scan(report=lambda step: None):
-    """Читает состояние системы. report(шаг) вызывается после каждого шага для экрана сканирования."""
+    """Reads the system state. report(step) is called after each step for the scan screen."""
     result = {"services": services.scan()}
     report("services")
     result["ctx"] = engine.Context()
@@ -100,7 +102,7 @@ def collect_scan(report=lambda step: None):
 class App:
     def __init__(self, root, instance=None):
         self.root = root
-        self.instance = instance  # tray.SingleInstance: повторный запуск SimpleTool показывает это окно
+        self.instance = instance  # tray.SingleInstance: starting SimpleTool again shows this window
         self.admin = engine.is_admin()
         self.settings = load_settings()
         lang = self.settings.get("lang")
@@ -112,23 +114,26 @@ class App:
         self.page = "overview"
         self.selected = set()
         self.expanded = set()
-        self.scan = None          # результат последнего сканирования (collect_scan)
+        self.scan = None          # result of the last scan (collect_scan)
         self.scan_done = set()
         self.scan_started = 0.0
         self.busy = True
         self.message = ("checking", {})
         self.hovered = None
         self.cards, self.service_cards, self.page_cards, self.wraps = {}, {}, [], []
-        self.action_buttons = []  # (кнопка, нужны ли права администратора) — блокируются, пока окно занято
+        self.action_buttons = []  # (button, needs administrator rights) — disabled while the window is busy
         self.snapshots = engine.list_snapshots()
         self.content_width = self.px(700)
         self.jobs = queue.Queue()
-        self.acting = False       # идёт применение, откат или восстановление: выходить нельзя
-        self.hidden = False       # окно спрятано в трей
+        self.acting = False       # applying, reverting or restoring is in progress: exiting is not allowed
+        self.hidden = False       # the window is hidden to the tray
         self.tray = None
         self.mem = {}
-        # Объекты Tk можно удалять только из потока окна, а сборщик циклического мусора срабатывает в том потоке,
-        # который сейчас выделяет память, например в потоке ограничителя. Поэтому мусор собирает только poll()
+        self.installed = None     # [(process, title)] of programs installed on the PC; found once in the background
+        self.installed_sizes = {}  # how much memory the running ones used at the time of the search
+        self.show_all_installed = False
+        # Tk objects may only be deleted from the window thread, but the cyclic garbage collector runs in whichever
+        # thread is allocating memory, such as the limiter thread. So only poll() collects garbage
         gc.disable()
         self.limiter = limiter.Limiter()
         self.limiter.start()
@@ -145,7 +150,7 @@ class App:
         if not self.admin:
             root.after(600, self.show_admin_dialog)
 
-    # --- Оформление ---
+    # --- Appearance ---
 
     def px(self, n):
         return int(round(n * self.scale))
@@ -188,12 +193,12 @@ class App:
         return False
 
     def wrap(self, label, offset):
-        """Перенос строк надписи по ширине колонки содержимого минус offset."""
+        """Wraps a label to the content column width minus offset."""
         self.wraps.append((label, offset))
         label.configure(wraplength=max(self.px(200), self.content_width - offset))
 
     def notify(self, text, color, icon):
-        """Уведомление у правого края колонки содержимого."""
+        """A notification at the right edge of the content column."""
         right = self.column()[1]
         self.toaster.show(text, color, icon, margin=self.root.winfo_width() - (self.main.winfo_x() + right))
 
@@ -207,7 +212,7 @@ class App:
                                                             label.cget("fg"), color, 0.2))
         return label
 
-    # --- Каркас окна ---
+    # --- Window layout ---
 
     def build(self):
         for widget in self.root.winfo_children():
@@ -248,13 +253,13 @@ class App:
             item.pack(fill="x", pady=px(2))
             icon = tk.Label(item, text=ICONS[page], font=self.fonts["icon"], bg=C["side"], width=2)
             icon.pack(side="left", padx=(px(12), px(6)), pady=px(9))
-            # Счётчик пакуется раньше названия, чтобы длинное название не наезжало на него
+            # The counter is packed before the name so a long name does not run into it
             count = tk.Label(item, text="", font=self.fonts["small"], fg=C["side_dim"], bg=C["side"])
             count.pack(side="right", padx=(px(6), px(12)))
             name = tk.Label(item, text=self.text("categories", page)[0], bg=C["side"], anchor="w")
             name.pack(side="left", fill="x", expand=True)
             parts = (item, icon, count, name)
-            # Пока окно не показано, высота пункта неизвестна: индикатор ставится, когда пункт получит размер
+            # Until the window is shown the item height is unknown: the indicator is placed once the item gets its size
             item.bind("<Configure>", lambda e, p=page: self.move_indicator(False) if p == self.page else None, add="+")
             for widget in parts:
                 widget.bind("<Button-1>", lambda e, p=page: self.show_page(p))
@@ -264,9 +269,9 @@ class App:
         self.indicator = tk.Frame(nav, bg=CATEGORY_COLORS[self.page], width=px(3))
 
         bottom = tk.Frame(side, bg=C["side"])
-        bottom.pack(side="bottom", fill="x", padx=px(20), pady=(0, px(20)))  # левый край — как у логотипа
+        bottom.pack(side="bottom", fill="x", padx=px(20), pady=(0, px(20)))  # left edge lines up with the logo
         color = C["ok"] if self.admin else C["warn"]
-        if C["name"] == "light":  # боковая панель тёмная во всех темах
+        if C["name"] == "light":  # the sidebar is dark in every theme
             color = "#34D8A8" if self.admin else "#F0B783"
         chip = Card(bottom, self.scale, fill=mix(color, C["side"], 0.14), border=mix(color, C["side"], 0.4), radius=10, pad=3)
         chip.pack(anchor="w")
@@ -279,7 +284,7 @@ class App:
             for widget in [chip, chip.body] + parts:
                 widget.configure(cursor="hand2")
                 widget.bind("<Button-1>", lambda e: self.show_admin_dialog())
-        # Версия с пометкой о тестовом статусе
+        # Version with a note about the test status
         version = tk.Frame(bottom, bg=C["side"])
         version.pack(anchor="w", pady=(px(12), 0))
         tk.Label(version, text="v" + VERSION, font=self.fonts["small"], fg=C["side_dim"], bg=C["side"]).pack(side="left")
@@ -297,7 +302,7 @@ class App:
         main.rowconfigure(1, weight=1)
         self.main = main
 
-        # Шапка: свечение цвета раздела, заголовок, акцентная полоса, описание, язык и тема
+        # Header: section color glow, title, accent bar, description, language and theme
         self.header = tk.Canvas(main, bg=C["bg"], height=px(120), highlightthickness=0, bd=0)
         self.header.grid(row=0, column=0, sticky="ew")
         self.h_glow = self.header.create_image(0, 0, anchor="nw")
@@ -306,7 +311,7 @@ class App:
                                               image=theme.gradient_line(px(44), px(3), C["grad_a"], C["grad_b"]))
         self.h_desc = self.header.create_text(px(GUTTER), px(80), anchor="nw", font=self.fonts["body"], fill=C["muted"])
         controls = tk.Frame(self.header, bg=C["bg"])
-        # Компактные кнопки: тема — только значок, язык — код; полные названия есть в самих меню
+        # Compact buttons: theme is an icon only, language is a code; the full names are in the menus
         self.drop_button(controls, ICONS["palette"], None, self.theme_menu).pack(side="left", padx=(0, px(8)))
         self.drop_button(controls, ICONS["globe"], LANGUAGE_CODES[self.lang], self.language_menu).pack(side="left")
         self.h_controls = self.header.create_window(0, 0, window=controls, anchor="e")
@@ -315,7 +320,7 @@ class App:
         self.h_links = self.header.create_window(0, 0, window=self.links, anchor="se")
         main.bind("<Configure>", self.layout)
 
-        # Список с прокруткой
+        # Scrolling list
         holder = tk.Frame(main, bg=C["bg"])
         holder.grid(row=1, column=0, sticky="nsew")
         self.canvas = tk.Canvas(holder, bg=C["bg"], highlightthickness=0, bd=0)
@@ -329,7 +334,7 @@ class App:
         self.canvas.bind("<Configure>", self.layout)
         self.root.bind_all("<MouseWheel>", self.on_wheel)
 
-        # Подвал: индикатор работы, сообщение, кнопки
+        # Footer: activity indicator, message, buttons
         footer = tk.Frame(main, bg=C["surface"])
         footer.grid(row=2, column=0, sticky="ew")
         tk.Frame(footer, bg=C["border"], height=1).pack(fill="x")
@@ -348,7 +353,7 @@ class App:
         self.message_label.pack(side="left", fill="x", expand=True)
 
     def drop_button(self, parent, icon, label, build_menu):
-        """Кнопка с выпадающим меню (тема, язык)."""
+        """A button with a drop-down menu (theme, language)."""
         px = self.px
         card = Card(parent, self.scale, fill=C["surface"], border=C["border"], radius=10, pad=3)
         parts = [tk.Label(card.body, text=icon, font=self.fonts["icon_small"], fg=C["accent"], bg=card.fill)]
@@ -382,7 +387,7 @@ class App:
         variable = tk.StringVar(menu, value=current)
         for value, label in items:
             menu.add_radiobutton(label=label, value=value, variable=variable, command=lambda v=value: command(v))
-        menu.variable = variable  # ссылка, чтобы переменную не собрал сборщик мусора
+        menu.variable = variable  # keep a reference so the garbage collector does not collect the variable
         return menu
 
     def language_menu(self):
@@ -393,7 +398,7 @@ class App:
         return self.popup_menu(self.t("theme"), items, C["name"], self.set_theme)
 
     def column(self):
-        """Левая и правая граница колонки содержимого в координатах основной области."""
+        """Left and right edges of the content column in main area coordinates."""
         width = self.main.winfo_width()
         gutter = self.px(GUTTER)
         content = max(self.px(320), min(width - 2 * gutter, self.px(CONTENT_MAX)))
@@ -401,11 +406,12 @@ class App:
         return left, left + content
 
     def update_scrollregion(self):
-        # Область прокрутки — от нуля, а не по рамке содержимого: иначе Tk сдвинет вид и съест отступ колонки
+        # The scroll region starts at zero, not at the content bbox: otherwise Tk shifts the view
+        # and eats the column margin
         self.canvas.configure(scrollregion=(0, 0, self.canvas.winfo_width(), self.list_frame.winfo_height()))
 
     def layout(self, event=None):
-        """Выравнивает шапку, список и подвал по колонке содержимого."""
+        """Aligns the header, list and footer to the content column."""
         width = self.main.winfo_width()
         if width <= 1:
             return
@@ -427,14 +433,14 @@ class App:
         if self.header.winfo_width() <= 1:
             return
         left, right = self.column()
-        self.header.coords(self.h_glow, left + px(140) - px(GLOW_WIDTH) // 2, 0)  # центр свечения — над заголовком
+        self.header.coords(self.h_glow, left + px(140) - px(GLOW_WIDTH) // 2, 0)  # glow center is above the title
         self.header.coords(self.h_title, left, px(22))
         title = self.header.bbox(self.h_title)
         self.header.coords(self.h_bar, left + 1, title[3] + px(6))
         self.header.coords(self.h_desc, left, title[3] + px(20))
-        # Кнопки темы и языка — по центру строки заголовка
+        # Theme and language buttons are centered on the title line
         self.header.coords(self.h_controls, right, (title[1] + title[3]) / 2)
-        # Описание стоит ниже кнопок, поэтому делит строку только со ссылками справа
+        # The description sits below the buttons, so it shares its line only with the links on the right
         links = self.links.winfo_reqwidth()
         self.header.itemconfigure(self.h_desc, width=max(px(240), right - left - links - px(24)))
         bottom = self.header.bbox(self.h_desc)[3]
@@ -443,7 +449,7 @@ class App:
         if int(float(self.header.cget("height"))) != height:
             self.header.configure(height=height)
 
-    # --- Навигация ---
+    # --- Navigation ---
 
     def hover_nav(self, page, inside):
         self.hovered_nav = page if inside else None
@@ -465,7 +471,7 @@ class App:
         self.update_nav_counts()
 
     def update_nav_counts(self):
-        # У ограничителя памяти вместо счётчика — число программ, которые он сейчас держит в лимите
+        # The memory limiter shows the number of programs it keeps within limits instead of a counter
         active = [r for r in self.limiter.snapshot()["config"]["rules"] if r["enabled"]] if self.limiter.active() else []
         self.nav["memory"]["count"].configure(text=str(len(active)) if active else "", fg=C["side_muted"])
         if not self.scan:
@@ -483,7 +489,7 @@ class App:
             if page == "snapshots":
                 widgets["count"].configure(text=str(len(self.snapshots)) if self.snapshots else "", fg=C["side_dim"])
                 continue
-            # Счётчик показывает реальное состояние системы, даже если без прав твик нельзя изменить
+            # The counter shows the real system state, even if a tweak cannot be changed without rights
             statuses = self.status_map()
             items = [t for t in tweaks.TWEAKS if t.category == page]
             applied = sum(statuses.get(t.id) == "applied" for t in items)
@@ -557,13 +563,13 @@ class App:
             self.reveal()
 
     def reveal(self):
-        """Карточки страницы проявляются по очереди."""
+        """The page cards fade in one after another."""
         for i, card in enumerate(self.page_cards):
             delay = min(i, 14) * 0.035
             fade_in(self.animator, ("fade", id(card)), descendants(card), delay=delay)
             self.animator.color(("cardborder", id(card)), card.set_border, C["bg"], card.border, 0.4, delay=delay)
 
-    # --- Обзор системы ---
+    # --- System overview ---
 
     def build_overview(self):
         if self.scan is None:
@@ -578,7 +584,7 @@ class App:
                     self.service_cards[name] = self.build_service_card(name, tweak_id)
 
     def section_head(self, icon, text):
-        """Подзаголовок группы карточек."""
+        """A heading for a group of cards."""
         head = tk.Frame(self.list_frame, bg=C["bg"])
         head.pack(fill="x", padx=(self.px(18), 0), pady=(self.px(18), self.px(8)))
         tk.Label(head, text=icon, font=self.fonts["icon_small"], fg=C["accent"], bg=C["bg"]).pack(side="left")
@@ -616,7 +622,7 @@ class App:
         px = self.px
         infos = list(self.scan["services"].values())
         counts = collections.Counter(info.state for info in infos)
-        unknown = sum(self.unknown_reasons().values())  # то же число, что в блоке с советами ниже
+        unknown = sum(self.unknown_reasons().values())  # the same number as in the tips block below
         applied = sum(status == "applied" for status in self.status_map().values())
         tiles = [("summary_on", counts["on"], None, C["accent"], ICONS["check"]),
                  ("summary_off", counts["off"], None, C["muted"], ICONS["circle"]),
@@ -626,8 +632,8 @@ class App:
         row = tk.Frame(self.list_frame, bg=C["bg"])
         row.pack(fill="x", pady=(0, px(4)))
         for i, (key, value, total, color, icon) in enumerate(tiles):
-            # Плитки в чётных столбцах одинаковой ширины, промежутки — отдельные узкие столбцы между ними:
-            # отступ внутри столбца сделал бы все плитки, кроме первой, уже
+            # Tiles sit in even columns of equal width, gaps are separate narrow columns between them:
+            # padding inside a column would make every tile except the first narrower
             row.columnconfigure(2 * i, weight=1, uniform="tile")
             if i:
                 row.columnconfigure(2 * i - 1, minsize=px(8))
@@ -640,14 +646,14 @@ class App:
             number.pack(side="left")
             glyph = tk.Label(top, text=icon, font=self.fonts["icon_small"], fg=mix(color, card.fill, 0.7), bg=card.fill)
             glyph.pack(side="right", anchor="n", pady=(px(6), 0))
-            # bd и padx — 0: тогда ширина переноса совпадает с шириной области текста и строка не обрезается
+            # bd and padx are 0: then the wrap width matches the text area width and the line is not clipped
             caption = tk.Label(body, text=self.t(key), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
                                anchor="w", justify="left", wraplength=px(110), bd=0, padx=0)
             caption.pack(fill="x", padx=px(12), pady=(0, px(10)))
 
             def fit_tile(event, caption=caption, glyph=glyph, number=number):
                 caption.configure(wraplength=max(px(60), event.width - px(24)))
-                # На узкой плитке значок прячется, чтобы не наезжать на число
+                # On a narrow tile the icon hides so it does not overlap the number
                 if event.width < px(118):
                     glyph.pack_forget()
                 elif not glyph.winfo_ismapped():
@@ -663,7 +669,7 @@ class App:
             self.page_cards.append(card)
 
     def unknown_reasons(self):
-        """Причины, по которым что-то не удалось проверить, и сколько раз каждая встретилась."""
+        """Reasons why something could not be checked, and how often each one occurred."""
         reasons = collections.Counter()
         if not self.scan:
             return reasons
@@ -734,7 +740,7 @@ class App:
                         anchor="w", justify="left")
         meta.grid(row=1, column=0, sticky="ew", padx=(px(12), 0), pady=(px(1), 0))
         pill = Pill(body, self.fonts["pill"], self.scale, self.animator)
-        pill.grid(row=0, column=1, sticky="ne", padx=px(12), pady=(px(8), 0))  # на линии заголовка
+        pill.grid(row=0, column=1, sticky="ne", padx=px(12), pady=(px(8), 0))  # on the title line
         pill.set(self.t("service_" + info.state), service_color(info.state), animate=False)
         self.wrap(title_label, px(172))
         self.wrap(meta, px(172))
@@ -768,7 +774,7 @@ class App:
         return inner
 
     def open_tweak(self, tweak_id):
-        """Переходит к твику и раскрывает его подробности."""
+        """Goes to a tweak and expands its details."""
         self.expanded.add(("t", tweak_id))
         self.show_page(self.tweak_by_id[tweak_id].category)
 
@@ -781,7 +787,7 @@ class App:
 
         self.root.after(80, scroll)
 
-    # --- Снимки системы ---
+    # --- System snapshots ---
 
     def format_date(self, iso):
         try:
@@ -925,7 +931,7 @@ class App:
             errors += engine.restore_snapshot(tweaks.TWEAKS, data, ctx)
             engine.notify_shell()
             scan = collect_scan()
-            # Резервные копии откаченных твиков больше не описывают их исходное состояние
+            # Backups of reverted tweaks no longer describe their original state
             engine.forget_backups({i for i, (status, _) in scan["checks"].items() if status in REVERTIBLE})
             return errors, scan
 
@@ -956,10 +962,10 @@ class App:
         self.snapshots = engine.list_snapshots()
         self.refresh_view()
 
-    # --- Ограничение памяти ---
+    # --- Memory limiter ---
 
     def size_text(self, size, digits=1):
-        """Объём для людей: «640 МБ», «1,4 ГБ»."""
+        """A size for people: "640 MB", "1.4 GB"."""
         mb = size / limiter.MB
         if mb < 1000:
             return self.t("mem_size_mb", n=round(mb))
@@ -973,7 +979,7 @@ class App:
         px = self.px
         config = self.limiter.snapshot()["config"]
         color = CATEGORY_COLORS["memory"]
-        # Главный переключатель, частота проверки и сколько памяти уже освобождено
+        # Main switch, check interval and how much memory has been freed
         card = Card(self.list_frame, self.scale, radius=14, pad=6)
         card.pack(fill="x", pady=(0, px(10)))
         body = card.body
@@ -1006,7 +1012,7 @@ class App:
         self.mem = {"title": title, "text": text, "toggle": toggle, "freed": freed, "rules": {}}
         self.page_cards.append(card)
 
-        # Как это работает
+        # How it works
         how = Card(self.list_frame, self.scale)
         how.pack(fill="x")
         head = tk.Frame(how.body, bg=how.fill)
@@ -1019,7 +1025,7 @@ class App:
         self.details_toggle(how.body, self.mem["how"], ("m", "how"), self.build_memory_how, indent=12)
         self.page_cards.append(how)
 
-        # Программы под ограничением
+        # Programs being limited
         self.section_head(ICONS["apps"], self.t("mem_apps"))
         if not config["rules"]:
             empty = tk.Label(self.list_frame, text=self.t("mem_empty"), font=self.fonts["body"], fg=C["muted"],
@@ -1029,16 +1035,59 @@ class App:
         for rule in config["rules"]:
             self.mem["rules"][rule["name"]] = self.build_rule_card(rule)
 
-        # Добавить: известные программы и выбор из запущенных
+        # Add: programs installed on this PC and a picker of running programs
         self.section_head(ICONS["add"], self.t("mem_add"))
         added = {rule["name"] for rule in config["rules"]}
+        choices = [item for item in self.installed or [] if item[0] not in added]
+        if self.installed is None:
+            key = "mem_installed_loading"
+            self.load_installed()
+        else:
+            key = "mem_installed_hint" if choices else "mem_installed_empty"
+        hint = tk.Label(self.list_frame, text=self.t(key), font=self.fonts["small"], fg=C["muted"], bg=C["bg"],
+                        anchor="w", justify="left")
+        hint.pack(fill="x", padx=px(18), pady=(0, px(10)))
+        self.wrap(hint, px(36))
         flow = Flow(self.list_frame, px(8), px(8))
         flow.pack(fill="x")
-        for name, label, limit in limiter.PRESETS:
-            if name not in added:
-                flow.add(self.chip(flow, label, lambda n=name, l=limit: self.add_rule(n, l), ICONS["add"]))
+        # Running ones first, heaviest at the front; the rest alphabetically
+        choices.sort(key=lambda item: (-self.installed_sizes.get(item[0], 0), item[1].lower()))
+        visible = choices if self.show_all_installed else choices[:INSTALLED_VISIBLE]
+        for name, title in visible:
+            size = self.installed_sizes.get(name)
+            flow.add(self.chip(flow, title if len(title) <= 34 else title[:33] + "…",
+                               lambda n=name, t=title: self.add_rule(n, limiter.default_limit(n), t), ICONS["add"],
+                               note=self.size_text(size) if size else None))
+        if len(choices) > INSTALLED_VISIBLE:
+            label = self.t("mem_show_less") if self.show_all_installed else self.t("mem_show_all", n=len(choices))
+            flow.add(self.chip(flow, label, self.toggle_installed, ICONS["up" if self.show_all_installed else "down"]))
         flow.add(self.chip(flow, self.t("mem_pick"), self.pick_running, ICONS["apps"], accent=True))
         self.update_memory_view(animate=False)
+
+    def load_installed(self):
+        """Finds installed programs in the background: on sleeping drives checking files can take seconds."""
+        if getattr(self, "installed_loading", False):
+            return
+        self.installed_loading = True
+
+        def work():
+            sizes = {name: size for name, _, size in limiter.running_programs()}
+            return programs.installed(), sizes
+
+        def done(result):
+            self.installed_loading = False
+            self.installed, self.installed_sizes = ([], {}) if isinstance(result, Exception) else result
+            if self.page == "memory":
+                self.rebuild_memory()
+
+        self.run_job(work, done)
+
+    def toggle_installed(self):
+        self.show_all_installed = not self.show_all_installed
+        self.rebuild_memory()
+
+    def program_title(self, name):
+        return dict(self.installed or []).get(name)
 
     def build_memory_how(self, holder):
         px = self.px
@@ -1052,8 +1101,8 @@ class App:
         tk.Frame(inner, bg=bg, height=px(12)).pack()
         return inner
 
-    def chip(self, parent, text, command, icon, accent=False):
-        """Небольшая кнопка-плашка со значком."""
+    def chip(self, parent, text, command, icon, accent=False, note=None):
+        """A small chip button with an icon and, if needed, a dimmed note on the right."""
         px = self.px
         color = C["accent"] if accent else C["muted"]
         card = Card(parent, self.scale, fill=C["surface"], border=mix(C["accent"], C["surface"], 0.5) if accent else
@@ -1063,6 +1112,10 @@ class App:
                           bg=card.fill)]
         parts[0].pack(side="left", padx=(px(10), px(6)), pady=px(5))
         parts[1].pack(side="left", padx=(0, px(12)))
+        if note:
+            parts.append(tk.Label(card.body, text=note, font=self.fonts["small"], fg=C["dim"], bg=card.fill))
+            parts[1].pack_configure(padx=(0, px(6)))
+            parts[2].pack(side="left", padx=(0, px(12)))
         rest = card.border
 
         def border(target):
@@ -1084,7 +1137,7 @@ class App:
         body.columnconfigure(0, weight=1)
         head = tk.Frame(body, bg=card.fill)
         head.grid(row=0, column=0, sticky="ew", padx=px(12), pady=(px(9), 0))
-        title = limiter.PRESET_NAMES.get(name)
+        title = rule.get("title")
         tk.Label(head, text=title or name + ".exe", font=self.fonts["h2"], fg=C["text"], bg=card.fill).pack(side="left")
         if title:
             tk.Label(head, text=name + ".exe", font=self.fonts["mono"], fg=C["dim"], bg=card.fill).pack(
@@ -1119,7 +1172,7 @@ class App:
         return {"card": card, "status": status, "meter": meter, "hint": hint, "denied": denied, "toggle": toggle}
 
     def update_memory_view(self, animate=True):
-        """Обновляет страницу ограничителя по последним замерам, не перестраивая её."""
+        """Updates the limiter page with the latest measurements without rebuilding it."""
         if not self.mem:
             return
         snap = self.limiter.snapshot()
@@ -1129,7 +1182,7 @@ class App:
         self.mem["text"].configure(text=self.t("mem_on_text", seconds=config["interval"]) if on else
                                    self.t("mem_off_text"))
         self.mem["freed"].configure(text=self.size_text(snap["freed"]))
-        if self.mem["toggle"].on != on:  # переключили из меню в трее
+        if self.mem["toggle"].on != on:  # switched from the tray menu
             self.mem["toggle"].set(on)
         for rule in config["rules"]:
             widgets = self.mem["rules"].get(rule["name"])
@@ -1158,7 +1211,7 @@ class App:
                 widgets["denied"].grid_remove()
 
     def memory_tick(self):
-        """Раз в секунду показывает свежие замеры ограничителя (сам он проверяет программы в своём потоке)."""
+        """Shows fresh limiter measurements every second (the limiter checks programs in its own thread)."""
         if self.page == "memory" and not self.hidden:
             self.update_memory_view()
         self.memory_job = self.root.after(1000, self.memory_tick)
@@ -1186,15 +1239,17 @@ class App:
         self.limiter.update(change)
         self.limiter_changed()
 
-    def add_rule(self, name, limit_mb):
+    def add_rule(self, name, limit_mb, title=None):
         name = limiter.normalize(name)
         if not name or limiter.is_protected(name):
             return
+        rule = {"name": name, "limit_mb": limiter.clamp_limit(limit_mb), "mode": "soft", "enabled": True}
+        if title:
+            rule["title"] = title
 
         def change(config):
-            if all(rule["name"] != name for rule in config["rules"]):
-                config["rules"].append({"name": name, "limit_mb": limiter.clamp_limit(limit_mb), "mode": "soft",
-                                        "enabled": True})
+            if all(r["name"] != name for r in config["rules"]):
+                config["rules"].append(rule)
 
         self.limiter.update(change)
         self.rebuild_memory(focus=name)
@@ -1206,14 +1261,14 @@ class App:
         self.limiter_changed()
 
     def rebuild_memory(self, focus=None):
-        """Перестраивает страницу после добавления или удаления программы, сохраняя прокрутку."""
+        """Rebuilds the page after a program is added or removed, keeping the scroll position."""
         top = self.canvas.yview()[0]
         self.show_page("memory", animate=False)
 
         def restore():
             card = self.mem.get("rules", {}).get(focus, {}).get("card")
             total = self.list_frame.winfo_height()
-            if card and total > 0:  # новая карточка — в поле зрения и подсвечена
+            if card and total > 0:  # the new card is scrolled into view and highlighted
                 view = self.canvas.winfo_height()
                 bottom = (card.winfo_y() + card.winfo_height() + self.px(8) - view) / total
                 self.canvas.yview_moveto(max(top, bottom, 0.0))
@@ -1224,7 +1279,7 @@ class App:
         self.root.after(60, restore)
 
     def pick_running(self):
-        """Окно со списком запущенных программ: щелчок добавляет программу под ограничение."""
+        """A window listing running programs: a click puts the program under a limit."""
         px = self.px
         programs = limiter.running_programs()
         added = {rule["name"] for rule in self.limiter.snapshot()["config"]["rules"]}
@@ -1246,7 +1301,7 @@ class App:
 
         def choose(name):
             win.destroy()
-            self.add_rule(name, limiter.PRESET_LIMITS.get(name, limiter.CUSTOM_LIMIT))
+            self.add_rule(name, limiter.default_limit(name), self.program_title(name))
 
         if not programs:
             tk.Label(rows, text=self.t("mem_pick_empty"), font=self.fonts["body"], fg=C["muted"], bg=C["bg"]).pack(
@@ -1255,7 +1310,7 @@ class App:
             row = tk.Frame(rows, bg=C["bg"])
             row.pack(fill="x")
             is_added = name in added
-            title = limiter.PRESET_NAMES.get(name)
+            title = self.program_title(name)
             label = tk.Label(row, text=title or name + ".exe", font=self.fonts["body"],
                              fg=C["dim"] if is_added else C["text"], bg=C["bg"], anchor="w")
             label.pack(side="left", padx=(px(12), 0), pady=px(6))
@@ -1280,10 +1335,10 @@ class App:
                        primary=False, pad=(18, 8)).pack(side="right", pady=(px(16), 0))
         self.present(win)
 
-    # --- Трей ---
+    # --- Tray ---
 
     def update_tray(self):
-        """Значок в трее виден, пока ограничитель работает или окно спрятано."""
+        """The tray icon is visible while the limiter works or the window is hidden."""
         active = self.limiter.active()
         if self.hidden or active:
             tip = self.t("tray_tip_on" if active else "tray_tip_off")
@@ -1299,7 +1354,7 @@ class App:
             self.tray.hide()
 
     def tray_menu(self):
-        # Вызывается из потока значка: только читает настройки
+        # Called from the tray thread: only reads the settings
         return [(TRAY_OPEN, self.t("tray_open"), False),
                 (TRAY_LIMITER, self.t("tray_limiter"), self.limiter.snapshot()["config"]["enabled"]),
                 None, (TRAY_EXIT, self.t("tray_exit"), False)]
@@ -1326,26 +1381,26 @@ class App:
         self.hidden = True
         self.root.withdraw()
         self.update_tray()
-        if not self.settings.get("tray_hint_shown"):  # подсказка о трее — только в первый раз
+        if not self.settings.get("tray_hint_shown"):  # the tray hint is shown only the first time
             self.tray.balloon(self.t("tray_hidden_title"), self.t("tray_hidden_text"))
             self.settings["tray_hint_shown"] = True
             save_settings(self.settings)
 
     def on_close(self):
-        """Крестик окна: при работающем ограничителе SimpleTool уходит в трей, иначе закрывается."""
+        """The window close button: with the limiter on, SimpleTool goes to the tray, otherwise it exits."""
         if self.limiter.active() and not self.acting:
             self.hide_to_tray()
         else:
             self.quit()
 
     def quit(self):
-        if self.acting:  # прерванное применение твиков оставило бы систему наполовину изменённой
+        if self.acting:  # an interrupted apply would leave the system half changed
             self.show_window()
             self.notify(self.t("busy_wait"), C["warn"], ICONS["warning"])
             return
         self.root.destroy()
 
-    # --- Страницы твиков ---
+    # --- Tweak pages ---
 
     def build_tweak_page(self, page):
         for tweak in tweaks.TWEAKS:
@@ -1367,7 +1422,7 @@ class App:
                                justify="left")
         short_label.grid(row=1, column=1, sticky="ew", pady=(px(2), 0))
         pill = Pill(body, self.fonts["pill"], self.scale, self.animator)
-        pill.grid(row=0, column=2, sticky="ne", padx=px(12), pady=(px(8), 0))  # на линии заголовка
+        pill.grid(row=0, column=2, sticky="ne", padx=px(12), pady=(px(8), 0))  # on the title line
         self.wrap(title, px(212))
         self.wrap(short_label, px(212))
         widgets = {"card": card, "check": check, "title": title, "pill": pill}
@@ -1383,7 +1438,7 @@ class App:
         return widgets
 
     def details_toggle(self, body, widgets, key, builder, column=0, indent=12):
-        """Ссылка «Подробнее» и раскрывающийся с анимацией блок под ней."""
+        """A "Details" link and an animated expanding block under it."""
         px = self.px
         bg = body.cget("bg")
         row = tk.Frame(body, bg=bg, cursor="hand2")
@@ -1467,16 +1522,16 @@ class App:
             fill="x", padx=indent, pady=(px(14), px(6)))
 
         rows = self.scan["checks"][tweak.id][1] if self.scan else [(op, None, None) for op in tweak.ops]
-        # Значения внутри собственных ключей (пунктов меню) не перечисляем: достаточно самого ключа
+        # Values inside owned keys (menu items) are not listed: the key itself is enough
         owned = [op.path + "\\" for op in tweak.ops if isinstance(op, engine.OwnedKey)]
         reasons = set()
         missing = sum(reason == "missing" for _, _, reason in rows)
-        summarize = missing >= MISSING_SUMMARY  # длинный список «нет на этом ПК» сворачивается в одну строку
+        summarize = missing >= MISSING_SUMMARY  # a long "not on this PC" list collapses into one line
         for op, state, reason in rows:
             if isinstance(op, engine.Value) and any((op.path + "\\").startswith(prefix) for prefix in owned):
                 continue
             if isinstance(op, engine.OwnedKey) and any(op.path.startswith(p) and op.path + "\\" != p for p in owned):
-                continue  # пункт вложенного подменю — достаточно показать само подменю
+                continue  # an item of a nested submenu: showing the submenu itself is enough
             if reason == "missing" and summarize:
                 continue
             if reason == "missing":
@@ -1520,7 +1575,7 @@ class App:
         tk.Frame(inner, bg=bg, height=px(12)).pack()
         return inner
 
-    # --- Состояние твиков ---
+    # --- Tweak state ---
 
     def card_state(self, tweak):
         if not self.scan or tweak.id not in self.scan["checks"]:
@@ -1607,7 +1662,7 @@ class App:
                 pass
 
     def refresh_view(self):
-        """Обновляет страницу после нового сканирования, не перестраивая её без нужды."""
+        """Updates the page after a new scan without rebuilding it unless needed."""
         if self.page in ("overview", "snapshots"):
             self.show_page(self.page)
             return
@@ -1617,7 +1672,7 @@ class App:
             return
         for tweak_id, widgets in self.cards.items():
             self.paint_card(self.tweak_by_id[tweak_id])
-            if widgets["inner"] is not None:  # подробности зависят от результатов сканирования
+            if widgets["inner"] is not None:  # the details depend on the scan results
                 widgets["inner"].destroy()
                 widgets["inner"] = None
                 if ("t", tweak_id) in self.expanded:
@@ -1625,7 +1680,7 @@ class App:
         self.update_nav_counts()
         self.update_footer()
 
-    # --- Настройки окна ---
+    # --- Window settings ---
 
     def set_language(self, lang):
         if lang != self.lang:
@@ -1645,7 +1700,7 @@ class App:
             self.build()
 
     def on_wheel(self, event):
-        """Плавная прокрутка колесом мыши."""
+        """Smooth mouse wheel scrolling."""
         try:
             if event.widget.winfo_toplevel() is not self.root:
                 return
@@ -1660,7 +1715,7 @@ class App:
         self.scroll_target = target
         self.animator.animate("scroll", 0.24, lambda t: self.canvas.yview_moveto(top + (target - top) * t))
 
-    # --- Сканирование, применение, откат ---
+    # --- Scan, apply, revert ---
 
     def start_scan(self):
         self.scan = None
@@ -1707,14 +1762,14 @@ class App:
             self.show_errors([str(result)])
         else:
             self.scan = result
-            # Без прав администратора часть параметров не прочитать, а исходный снимок хранится навсегда
+            # Without administrator rights some values cannot be read, and the original snapshot is kept forever
             if not self.snapshots and self.admin:
                 self.take_initial_snapshot()
         self.selected = {i for i in self.selected if self.selectable(self.tweak_by_id[i])}
         self.refresh_view()
 
     def take_initial_snapshot(self):
-        """Самый первый снимок — как было до SimpleTool. Делается в фоне сразу после первого сканирования."""
+        """The very first snapshot: how things were before SimpleTool. Taken in the background after the first scan."""
         ctx, statuses = self.scan["ctx"], self.status_map()
 
         def done(result):
@@ -1745,7 +1800,7 @@ class App:
         self.start_work(chosen, lambda t: engine.revert(t, ctx), "working_revert", "done_revert", "before_revert")
 
     def run_action(self, working_key, work, on_done):
-        """Долгое действие в фоне: окно занято, в подвале крутится индикатор."""
+        """A long action in the background: the window is busy, the footer shows a spinner."""
         self.busy = self.acting = True
         self.message = (working_key, {})
         for tweak_id in self.cards:
@@ -1759,7 +1814,7 @@ class App:
         self.run_job(work, done)
 
     def start_work(self, chosen, action, working_key, done_key, snapshot_kind):
-        """Делает снимок «до», применяет или откатывает твики в фоне, затем заново сканирует систему."""
+        """Takes a "before" snapshot, applies or reverts tweaks in the background, then scans the system again."""
         names = {t.id: self.text("tweaks", t.id)[0] for t in chosen}
         ctx, statuses, failed = self.scan["ctx"], self.status_map(), self.t("snap_failed")
 
@@ -1797,14 +1852,14 @@ class App:
         def target():
             try:
                 result = work()
-            except Exception as exc:  # ошибка в фоне не должна молча оставить окно в состоянии «занято»
+            except Exception as exc:  # an error in the background must not silently leave the window busy
                 result = exc
             self.jobs.put((done, result))
 
         threading.Thread(target=target, daemon=True).start()
 
     def post(self, callback):
-        """Вызвать callback в потоке окна: другие потоки (трей, ограничитель) не трогают Tk сами."""
+        """Runs callback on the window thread: other threads (tray, limiter) never touch Tk themselves."""
         self.jobs.put((lambda _: callback(), None))
 
     def poll(self):
@@ -1814,7 +1869,7 @@ class App:
             except queue.Empty:
                 break
             callback(payload)
-        # Те же пороги, что у автоматической сборки мусора, но в потоке окна
+        # Same thresholds as automatic garbage collection, but on the window thread
         counts, thresholds = gc.get_count(), gc.get_threshold()
         for generation in (2, 1, 0):
             if thresholds[generation] and counts[generation] > thresholds[generation]:
@@ -1823,24 +1878,24 @@ class App:
         self.poll_job = self.root.after(40, self.poll)
 
     def on_destroy(self, event):
-        # Окно закрыто: отменяем опрос очереди, иначе Tk вызовет его уже после закрытия
+        # The window is closed: cancel the queue polling, otherwise Tk calls it after the window is gone
         if event.widget is self.root:
             self.animator.stop()
             for job in (getattr(self, "poll_job", None), getattr(self, "memory_job", None)):
                 if job:
                     self.root.after_cancel(job)
-            # Ограничитель снимает свои жёсткие потолки, значок уходит из трея
+            # The limiter removes its hard caps, the icon leaves the tray
             self.limiter.stop()
             if self.tray:
                 self.tray.hide()
             if self.instance:
                 self.instance.release()
-            gc.enable()  # фоновые потоки остановлены — мусор снова можно собирать где угодно
+            gc.enable()  # background threads are stopped: garbage can be collected anywhere again
 
-    # --- Диалоги ---
+    # --- Dialogs ---
 
     def dialog(self, title, icon, color, heading, text):
-        """Окно в стиле blagotech: значок, заголовок, текст. Возвращает (окно, рамка для содержимого)."""
+        """A blagotech-style window: icon, heading, text. Returns (window, content frame)."""
         px = self.px
         win = tk.Toplevel(self.root, bg=C["surface"])
         win.withdraw()
@@ -1849,7 +1904,7 @@ class App:
         win.resizable(False, False)
         body = tk.Frame(win, bg=C["surface"])
         body.pack(padx=px(28), pady=(px(24), px(22)))
-        body.columnconfigure(1, weight=1)  # лишняя ширина достаётся тексту, а не колонке значка
+        body.columnconfigure(1, weight=1)  # extra width goes to the text, not to the icon column
         badge = Card(body, self.scale, fill=mix(color, C["surface"], 0.14), border=mix(color, C["surface"], 0.4),
                      radius=14, pad=4)
         badge.grid(row=0, column=0, rowspan=2, sticky="nw")
@@ -1877,7 +1932,7 @@ class App:
     def restart_as_admin(self, error_label=None):
         if self.acting:
             return
-        # Новая копия не должна принять эту за уже запущенную и закрыться
+        # The new copy must not mistake this one for an already running copy and exit
         if self.instance:
             self.instance.release()
         code = relaunch_as_admin()
@@ -1886,7 +1941,7 @@ class App:
             return
         if self.instance and self.instance.acquire():
             self.instance.listen(lambda: self.post(self.show_window))
-        if code != 5 and error_label is not None:  # 5 — пользователь отменил запрос UAC
+        if code != 5 and error_label is not None:  # 5 means the user cancelled the UAC prompt
             error_label.configure(text=self.t("admin_failed"))
 
     def show_admin_dialog(self):
@@ -1918,7 +1973,7 @@ class App:
 def main():
     instance = tray.SingleInstance()
     if not instance.acquire():
-        return  # SimpleTool уже запущен: его окно покажется само
+        return  # SimpleTool is already running: its window shows itself
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):

@@ -1,10 +1,10 @@
-"""Обзор служб Windows: тип запуска из реестра и текущее состояние через диспетчер служб."""
+"""Windows services overview: startup type from the registry and current state from the service manager."""
 import ctypes
 from ctypes import wintypes
 
 from engine import read_value
 
-# (группа, имя службы, id твика, который её меняет)
+# (group, service name, id of the tweak that changes it)
 SERVICES = [
     ("telemetry", "DiagTrack", "telemetry"),
     ("telemetry", "dmwappushservice", "telemetry"),
@@ -57,7 +57,7 @@ _advapi.CloseServiceHandle.restype = wintypes.BOOL
 
 
 class ServiceState:
-    """state: on / off / missing / unknown; start: 0–4 или None; running: 1–7 или None; reason — почему неизвестно."""
+    """state: on / off / missing / unknown; start: 0-4 or None; running: 1-7 or None; reason: why it is unknown."""
 
     def __init__(self, name):
         self.name = name
@@ -111,14 +111,14 @@ def scan_service(scm, name):
     elif info.start is not None:
         info.state = "off" if info.start == 4 else "on"
     elif info.running not in (None, 1):
-        info.state = "on"  # тип запуска не прочитать, но служба работает — значит, включена
+        info.state = "on"  # the startup type cannot be read, but the service is running, so it is on
     elif info.reason is None and info.running is None:
-        info.state = "missing"  # нет ни раздела в реестре, ни службы
+        info.state = "missing"  # neither a registry key nor a service exists
     return info
 
 
 def scan():
-    """Словарь «имя службы -> ServiceState» для всех служб обзора."""
+    """Dict "service name -> ServiceState" for every service in the overview."""
     scm = _advapi.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
     try:
         return {name: scan_service(scm, name) for _, name, _ in SERVICES}

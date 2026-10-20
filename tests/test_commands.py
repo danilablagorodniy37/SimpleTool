@@ -1,7 +1,7 @@
-"""Команды пунктов контекстного меню проходят цепочку «реестр → PowerShell → cmd» без порчи кавычек.
+"""Context menu commands pass the "registry -> PowerShell -> cmd" chain without breaking quotes.
 
-Запуск с повышением прав (Start-Process ... -Verb RunAs) заменяется выводом аргументов, буфер обмена
-не трогается: тест ничего не меняет в системе.
+Elevated starts (Start-Process ... -Verb RunAs) are replaced with printing the arguments, the clipboard
+is not touched: the test changes nothing on the system.
 """
 import hashlib
 import os
@@ -32,9 +32,9 @@ def dry_run(command):
                    .replace("| Set-Clipboard", "")
                    .replace("[System.Windows.Clipboard]::SetImage(", "Write-Output ("))
     assert "Start-Process" not in safe and "Set-Clipboard" not in safe and "SetImage" not in safe
-    # PowerShell пишет в канал в кодировке OEM; для проверки кириллицы в путях переключаем вывод на UTF-8
+    # PowerShell writes to the pipe in the OEM code page; switch output to UTF-8 to check Cyrillic in paths
     safe = safe.replace('-Command "', '-Command "[Console]::OutputEncoding = [Text.Encoding]::UTF8; ', 1)
-    # Окружение обычного ПК: стандартные пути модулей Windows PowerShell (см. engine.clean_env)
+    # A regular PC environment: default Windows PowerShell module paths (see engine.clean_env)
     result = subprocess.run(safe, capture_output=True, encoding="utf-8", errors="replace", timeout=60,
                             env=engine.clean_env())
     return result.returncode, (result.stdout + result.stderr).strip()

@@ -1,12 +1,13 @@
 __pycache__/
 
-# Сборка портативной версии (python build.py)
+# Portable build output (python build.py)
 build/
 dist/
 .build-venv/
 
-# Настройки IDE: содержат локальные данные учётной записи
+# IDE settings: they contain local account data
 .idea/
 
-# Локальные материалы: база «ТВикинариум» — чужой контент, публиковать без согласия автора нельзя
+# Local materials: the Twikinarium knowledge base is third-party content,
+# it must not be published without the author's consent
 docs/
