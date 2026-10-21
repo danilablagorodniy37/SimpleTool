@@ -6,6 +6,23 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.6.4": {
+        "en": [
+            "Updating from inside SimpleTool now starts the new version cleanly: before, the previous version could "
+            "linger in the background and its file stayed next to the new one.",
+            "Restart as administrator starts SimpleTool cleanly in the same way.",
+        ],
+        "ru": [
+            "Обновление из SimpleTool теперь запускает новую версию начисто: раньше прежняя версия могла остаться "
+            "висеть в фоне, а её файл — лежать рядом с новым.",
+            "«Перезапустить от имени администратора» так же запускает SimpleTool начисто.",
+        ],
+        "uk": [
+            "Оновлення з SimpleTool тепер запускає нову версію начисто: раніше попередня версія могла залишатися у "
+            "фоні, а її файл — лежати поруч із новим.",
+            "«Перезапустити від імені адміністратора» так само запускає SimpleTool начисто.",
+        ],
+    },
     "0.6.3": {
         "en": [
             "Updates in one click: when a new version is out, SimpleTool downloads it, checks it against the "

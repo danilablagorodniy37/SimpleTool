@@ -2,6 +2,12 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.6.4
+
+- **Clean restart after an update.** The portable exe unpacks itself into a temporary folder, and a copy started with the running copy's environment ran from that copy's folder instead of its own: the previous version stayed in the background, SimpleTool.exe.old could not be deleted, and the folder the new version ran from was due to be deleted under it. SimpleTool now starts the new version with `PYINSTALLER_RESET_ENVIRONMENT`, so it unpacks itself anew.
+- An update installed by 0.6.3 still starts the new version the old way; 0.6.4 notices (its parent process runs Python, which the onefile launcher never does) and starts itself once more, cleanly.
+- **Restart as administrator** passes the same setting, for PCs where Windows elevates without asking (UAC off).
+
 ## 0.6.3
 
 **Updates in one click**
