@@ -102,5 +102,30 @@ class Updater(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.dir)), ["SimpleTool.exe"])
 
 
+class Restart(unittest.TestCase):
+    def test_a_new_copy_unpacks_itself_anew(self):
+        env = updater.fresh_environment({"_PYI_APPLICATION_HOME_DIR": "C:/Temp/_MEI1", "PATH": "x"})
+        self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+        self.assertEqual(env[updater.RESTARTED], "1")
+        self.assertEqual(env["PATH"], "x")
+        with mock.patch.object(updater.subprocess, "Popen") as popen:
+            updater.start("C:/Tools/SimpleTool.exe")
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(popen.call_args.args[0], ["C:/Tools/SimpleTool.exe"])
+        self.assertEqual(kwargs["cwd"], "C:/Tools")
+        self.assertEqual(kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    def test_a_copy_started_by_an_old_one_starts_once_more(self):
+        self.assertTrue(updater.needs_fresh_start(frozen=True, parent_python=True, environ={}))
+        self.assertFalse(updater.needs_fresh_start(frozen=True, parent_python=False, environ={}),
+                         "started normally: the parent is the launcher")
+        self.assertFalse(updater.needs_fresh_start(frozen=True, parent_python=True, environ={updater.RESTARTED: "1"}),
+                         "a copy SimpleTool started itself never asks again")
+        self.assertFalse(updater.needs_fresh_start(frozen=False, parent_python=True, environ={}), "source code")
+
+    def test_the_parent_is_seen(self):
+        self.assertFalse(updater.parent_runs_python(), "the test runner's parent is a shell, not Python")
+
+
 if __name__ == "__main__":
     unittest.main()

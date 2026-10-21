@@ -35,7 +35,7 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
                      Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.6.3"
+VERSION = "0.6.4"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -111,6 +111,9 @@ def relaunch_as_admin():
         exe, args = sys.executable, sys.argv[1:]
         # Not BASE_DIR: the new copy must not hold this copy's temporary folder, or it cannot be deleted on exit
         folder = os.path.dirname(sys.executable)
+        # The new copy gets this environment when Windows does not ask for consent (UAC off): it must unpack
+        # itself anew rather than take itself for part of this copy (see updater)
+        os.environ.update(updater.fresh_environment({}))
     else:
         pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
         exe = pythonw if os.path.exists(pythonw) else sys.executable
@@ -2616,6 +2619,13 @@ def main():
     # Errors in background threads (the limiter, the tray) go to error.log: a windowed exe has no console
     threading.excepthook = lambda args: log_error("".join(traceback.format_exception(
         args.exc_type, args.exc_value, args.exc_traceback)))
+    if updater.needs_fresh_start():
+        # Started by 0.6.3's update, inside its temporary folder: start once more on our own and step aside
+        try:
+            updater.start(updater.target())
+            return
+        except OSError:
+            log_error(traceback.format_exc())  # carry on as we are: it works, it only leaves the old exe behind
     instance = tray.SingleInstance()
     if not instance.acquire():
         return  # SimpleTool is already running: its window shows itself
