@@ -22,6 +22,7 @@ import main
 import terms
 import theme
 import tweaks
+import updater
 import updates
 from widgets import GradientButton
 
@@ -35,7 +36,8 @@ class UiSmoke(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="simpletool-ui-test-")
         # No pop-up notifications, the terms are already accepted
         self.settings = {"lang": "en", "theme": "navy", "tray_hint_shown": True, "terms": terms.VERSION,
-                         "seen_version": main.VERSION}
+                         "seen_version": main.VERSION,
+                         "update_checked": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         self.other_account = None
         self.opened = []  # addresses SimpleTool asked Windows to open: a website, an email
         self.patches = [
@@ -352,6 +354,70 @@ class UiSmoke(unittest.TestCase):
             self.assertEqual(errors, [])
         finally:
             root.destroy()
+
+    def test_daily_update_check(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        del self.settings["update_checked"]  # never checked: due now
+        newer = {"version": "9.9", "newer": True, "url": None, "page": None, "sha256": None, "size": None}
+        asked = []
+        root, app, errors = self.open_app(admin=True)
+        try:
+            with mock.patch.object(updates, "check", lambda current: asked.append(current) or newer):
+                app.daily_update_check()
+                self.wait(root, lambda: not app.checking_updates)
+                self.pump(root, 0.1)
+                self.assertEqual(asked, [main.VERSION])
+                self.assertEqual(app.help_badge.cget("text"), "●", "a dot on Help, no window")
+                self.assertEqual(self.dialogs(root), [])
+                self.assertIn("update_checked", self.settings)
+                menu = app.help_menu()
+                labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)
+                          if menu.type(i) != "separator"]
+                self.assertIn("● " + ui["update_install_menu"].format(version="9.9"), labels)
+                app.daily_update_check()  # checked a moment ago: not again today
+                self.pump(root, 0.2)
+                self.assertEqual(len(asked), 1)
+                app.set_daily_check(False)
+                del self.settings["update_checked"]
+                app.daily_update_check()
+                self.pump(root, 0.2)
+                self.assertEqual(len(asked), 1, "turned off in Help")
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_update_in_one_click(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        info = {"version": "9.9", "newer": True, "url": updater.RELEASES + "v9.9/SimpleTool.exe", "page": None,
+                "sha256": "a" * 64, "size": 10}
+        started = []
+        exe = "C:/Tools/SimpleTool.exe"
+        root, app, errors = self.open_app(admin=True)
+        try:
+            with mock.patch.object(updater, "can_install", lambda i: True), \
+                    mock.patch.object(updater, "install", lambda i, progress: (progress(5, 10), exe)[1]), \
+                    mock.patch.object(updater, "start", started.append):
+                # It fails first: the window says so, and the running version stays
+                with mock.patch.object(updater, "install", mock.Mock(side_effect=updater.UpdateFailed("no space"))):
+                    app.show_update(info)
+                    self.button(self.dialogs(root)[0], ui["update_install"])._click(None)
+                    self.wait(root, lambda: self.dialogs(root))
+                self.assertEqual(self.dialogs(root)[0].title(), ui["update_install_failed_title"])
+                self.assertEqual(started, [])
+                for dialog in self.dialogs(root):
+                    dialog.destroy()
+                app.show_update(info)
+                self.button(self.dialogs(root)[0], ui["update_install"])._click(None)
+                self.wait(root, lambda: started)
+                self.pump(root, 0.2)
+            self.assertEqual(started, [exe])
+            with self.assertRaises(tk.TclError):
+                root.winfo_exists()  # this copy exits for the new one
+        finally:
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
 
     def test_report_a_problem(self):
         ui = i18n.TEXTS["en"]["ui"]

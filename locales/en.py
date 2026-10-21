@@ -89,6 +89,20 @@ TEXTS = {
         "report_specs": "Your PC (added to the letter):",
         "report_copy_specs": "Copy",
         "report_copied_specs": "PC specifications copied.",
+        "update_install": "Update",
+        "update_text_install": "You have version {current}. SimpleTool downloads the new version, checks it and "
+                               "restarts; settings, backups and snapshots stay where they are.",
+        "update_preparing": "Preparing the update…",
+        "update_downloading": "Downloading the update… {percent}%",
+        "update_busy": "Wait until the current operation finishes.",
+        "update_install_failed_title": "The update was not installed",
+        "update_install_failed_text": "{error}\n\nThis version keeps working. You can download the new one by hand.",
+        "update_download_manual": "Download by hand",
+        "update_restart_failed": "The update is installed, but SimpleTool could not start again: {error}. Start "
+                                 "SimpleTool.exe yourself.",
+        "update_available_toast": "SimpleTool {version} is out: Help → Update",
+        "update_install_menu": "Update to {version}",
+        "update_daily": "Check for updates daily",
         "crash_title": "Something went wrong",
         "crash_intro": "SimpleTool hit an unexpected error and keeps working. If something looks wrong, restart it. "
                        "The details are saved in the error log, "

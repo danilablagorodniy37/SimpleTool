@@ -4,12 +4,12 @@ Change VERSION whenever the text changes: SimpleTool then shows the terms again 
 TERMS.md in the repository root is generated from this file: python tools/terms_md.py
 """
 
-VERSION = "2026-10-20.2"
+VERSION = "2026-10-21"
 
 TERMS = {
     "en": {
         "title": "Terms of use",
-        "updated": "Last updated: 20 October 2026",
+        "updated": "Last updated: 21 October 2026",
         "intro": "Please read these terms before you use SimpleTool. By pressing “I accept” you agree to them. If "
                  "you do not agree, press “Exit” and do not use SimpleTool.",
         "sections": [
@@ -45,12 +45,16 @@ TERMS = {
              "for fraud, or any other liability that the law does not allow to be excluded or limited. If you use "
              "SimpleTool as a consumer, these terms do not affect your statutory rights."),
             ("Your data",
-             "SimpleTool does not collect personal data. It connects to the internet only when you press “Check for "
-             "updates”: it then asks blagotech.uk for the number of the latest version. That request carries what "
-             "every web request does, such as your IP address, and nothing about your computer; blagotech.uk is "
-             "hosted by Cloudflare. If you write to us about a problem, your message and the files you attach are "
-             "used only to answer you. SimpleTool's settings, backups and snapshots stay on your computer in "
-             "%LOCALAPPDATA%\\SimpleTool; delete that folder to remove them."),
+             "SimpleTool does not collect personal data. It connects to the internet only for updates: once a day "
+             "when it starts (you can turn this off in the Help menu) and when you press “Check for updates”, it "
+             "asks blagotech.uk for the number of the latest version, and when you press “Update”, it downloads the "
+             "new version from SimpleTool's releases on GitHub and checks it against the published checksum before "
+             "it replaces itself. These requests carry what every web request does, such as your IP address, and "
+             "nothing about your computer; blagotech.uk is hosted by Cloudflare and counts update checks by date, "
+             "country and network without storing IP addresses. If you write to us about a problem, the letter "
+             "includes your computer's specifications, which SimpleTool shows you first, and your message and the "
+             "files you attach are used only to answer you. SimpleTool's settings, backups and snapshots stay on "
+             "your computer in %LOCALAPPDATA%\\SimpleTool; delete that folder to remove them."),
             ("Licence and trademarks",
              "The source code of SimpleTool is released under the MIT License, and nothing in these terms limits the "
              "rights that licence gives you. The blagotech name, the b!t mark and the logo are not covered by the "
@@ -68,7 +72,7 @@ TERMS = {
     },
     "ru": {
         "title": "Пользовательское соглашение",
-        "updated": "Последнее обновление: 20 октября 2026 г.",
+        "updated": "Последнее обновление: 21 октября 2026 г.",
         "intro": "Прочитайте это соглашение, прежде чем пользоваться SimpleTool. Нажимая «Принимаю», вы соглашаетесь "
                  "с его условиями. Если вы не согласны, нажмите «Выход» и не используйте SimpleTool.",
         "sections": [
@@ -108,12 +112,16 @@ TERMS = {
              "позволяет исключить или ограничить. Если вы используете SimpleTool как потребитель, это соглашение не "
              "затрагивает ваших прав, предусмотренных законом."),
             ("Ваши данные",
-             "SimpleTool не собирает персональные данные. В интернет он обращается, только когда вы нажимаете "
-             "«Проверить обновления»: тогда он запрашивает у blagotech.uk номер последней версии. Этот запрос "
-             "содержит то же, что и любой веб-запрос, например ваш IP-адрес, и ничего о вашем компьютере; сайт "
-             "blagotech.uk работает на Cloudflare. Если вы напишете нам о проблеме, ваше письмо и приложенные файлы "
-             "используются только для ответа вам. Настройки, резервные копии и снимки SimpleTool хранятся на вашем "
-             "компьютере в папке %LOCALAPPDATA%\\SimpleTool; чтобы удалить их, удалите эту папку."),
+             "SimpleTool не собирает персональные данные. В интернет он обращается только ради обновлений: раз в "
+             "день при запуске (это можно выключить в меню «Справка») и когда вы нажимаете «Проверить обновления», "
+             "он запрашивает у blagotech.uk номер последней версии, а когда вы нажимаете «Обновить», скачивает новую "
+             "версию со страницы релизов SimpleTool на GitHub и сверяет её с опубликованной контрольной суммой, "
+             "прежде чем заменить себя. Эти запросы содержат то же, что и любой веб-запрос, например ваш IP-адрес, и "
+             "ничего о вашем компьютере; сайт blagotech.uk работает на Cloudflare и подсчитывает проверки обновлений "
+             "по дате, стране и сети, не сохраняя IP-адреса. Если вы напишете нам о проблеме, в письме будут "
+             "характеристики вашего компьютера, которые SimpleTool сначала вам показывает, а ваше письмо и "
+             "приложенные файлы используются только для ответа вам. Настройки, резервные копии и снимки SimpleTool "
+             "хранятся на вашем компьютере в папке %LOCALAPPDATA%\\SimpleTool; чтобы удалить их, удалите эту папку."),
             ("Лицензия и товарные знаки",
              "Исходный код SimpleTool распространяется по лицензии MIT, и это соглашение не ограничивает права, "
              "которые она вам даёт. Название blagotech, знак b!t и логотип лицензией MIT не охватываются."),
@@ -130,7 +138,7 @@ TERMS = {
     },
     "uk": {
         "title": "Угода користувача",
-        "updated": "Останнє оновлення: 20 жовтня 2026 р.",
+        "updated": "Останнє оновлення: 21 жовтня 2026 р.",
         "intro": "Прочитайте цю угоду, перш ніж користуватися SimpleTool. Натискаючи «Приймаю», ви погоджуєтеся з її "
                  "умовами. Якщо ви не згодні, натисніть «Вихід» і не використовуйте SimpleTool.",
         "sections": [
@@ -168,10 +176,14 @@ TERMS = {
              "чи обмежити. Якщо ви використовуєте SimpleTool як споживач, ця угода не зачіпає ваших прав, "
              "передбачених законом."),
             ("Ваші дані",
-             "SimpleTool не збирає персональні дані. До інтернету він звертається, лише коли ви натискаєте "
-             "«Перевірити оновлення»: тоді він запитує в blagotech.uk номер останньої версії. Цей запит містить те "
-             "саме, що й будь-який веб-запит, наприклад вашу IP-адресу, і нічого про ваш комп'ютер; сайт "
-             "blagotech.uk працює на Cloudflare. Якщо ви напишете нам про проблему, ваш лист і додані файли "
+             "SimpleTool не збирає персональні дані. До інтернету він звертається лише заради оновлень: раз на день "
+             "під час запуску (це можна вимкнути в меню «Довідка») і коли ви натискаєте «Перевірити оновлення», він "
+             "запитує в blagotech.uk номер останньої версії, а коли ви натискаєте «Оновити», завантажує нову версію "
+             "зі сторінки релізів SimpleTool на GitHub і звіряє її з опублікованою контрольною сумою, перш ніж "
+             "замінити себе. Ці запити містять те саме, що й будь-який веб-запит, наприклад вашу IP-адресу, і нічого "
+             "про ваш комп'ютер; сайт blagotech.uk працює на Cloudflare і підраховує перевірки оновлень за датою, "
+             "країною та мережею, не зберігаючи IP-адреси. Якщо ви напишете нам про проблему, у листі будуть "
+             "характеристики вашого комп'ютера, які SimpleTool спершу вам показує, а ваш лист і додані файли "
              "використовуються лише для відповіді вам. Налаштування, резервні копії та знімки SimpleTool "
              "зберігаються на вашому комп'ютері в папці %LOCALAPPDATA%\\SimpleTool; щоб видалити їх, видаліть цю "
              "папку."),
