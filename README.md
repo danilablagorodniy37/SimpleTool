@@ -13,9 +13,10 @@ On the first run SimpleTool shows its [terms of use](TERMS.md) and works only af
 They are shown again if they change; the sidebar has a link to read them at any time. What changed
 in each version is in the [changelog](CHANGELOG.md).
 
-SimpleTool goes online only when you ask it to: the menu behind the ⓘ button at the top of the window
-has **Check for updates**, which asks blagotech.uk for the number of the latest version. The same
-menu has **Report a problem**: bug reports go to service@blagotech.uk.
+SimpleTool goes online only when you ask it to: the **Help** menu at the top of the window has
+**Check for updates**, which asks blagotech.uk for the number of the latest version. The same
+menu has **What's new** (also shown once after an update) and **Report a problem**: bug reports go to
+service@blagotech.uk with the PC's specifications filled in.
 
 The interface is in English, Russian and Ukrainian, with three colour themes (Navy, Midnight and
 Light). SimpleTool picks the language of Windows; switch language and theme in the top right corner.
@@ -81,7 +82,7 @@ another account's administrator password, Windows runs it as that other account:
 SimpleTool warns about it at startup.
 
 If something goes wrong, SimpleTool writes the details to `%LOCALAPPDATA%\SimpleTool\error.log`.
-Send that file to service@blagotech.uk when you report a problem (ⓘ → **Report a problem**).
+Send that file to service@blagotech.uk when you report a problem (**Help → Report a problem**).
 
 ## Portable version
 

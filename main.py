@@ -27,12 +27,14 @@ import terms
 import theme
 import tray
 import tweaks
+import sysinfo
 import updates
+import whatsnew
 from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
                      Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
@@ -56,7 +58,7 @@ ICONS = {"overview": "", "privacy": "", "system": "", "explorer": ""
          "globe": "", "palette": "", "shield": "", "down": "", "up": "",
          "warning": "", "check": "", "circle": "", "unknown": "", "dash": "",
          "info": "", "refresh": "", "dots": "", "snapshots": "", "folder": "", "memory": "",
-         "add": "", "apps": ""}
+         "add": "", "apps": "", "help": ""}
 
 
 def status_color(state):
@@ -178,6 +180,12 @@ class App:
             instance.listen(lambda: self.post(self.show_window))
         root.bind("<Destroy>", self.on_destroy, add="+")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # What's new: shown once after an update. A first run (no terms accepted yet) is not an update
+        seen = self.settings.get("seen_version")
+        self.whats_new = whatsnew.since(seen, VERSION) if seen != VERSION and (seen or self.settings.get("terms")) else []
+        if seen != VERSION:
+            self.settings["seen_version"] = VERSION
+            save_settings(self.settings)
         if self.settings.get("terms") != terms.VERSION:
             root.after(300, lambda: self.show_terms(first_run=True))
         else:
@@ -346,8 +354,8 @@ class App:
                                               image=theme.gradient_line(px(44), px(3), C["grad_a"], C["grad_b"]))
         self.h_desc = self.header.create_text(px(GUTTER), px(80), anchor="nw", font=self.fonts["body"], fill=C["muted"])
         controls = tk.Frame(self.header, bg=C["bg"])
-        # Compact buttons: help and theme are icons only, language is a code; the full names are in the menus
-        self.drop_button(controls, ICONS["info"], None, self.help_menu).pack(side="left", padx=(0, px(8)))
+        # Compact buttons: help has its name, theme is an icon only, language is a code; the rest is in the menus
+        self.drop_button(controls, ICONS["help"], self.t("help"), self.help_menu).pack(side="left", padx=(0, px(8)))
         self.drop_button(controls, ICONS["palette"], None, self.theme_menu).pack(side="left", padx=(0, px(8)))
         self.drop_button(controls, ICONS["globe"], LANGUAGE_CODES[self.lang], self.language_menu).pack(side="left")
         self.h_controls = self.header.create_window(0, 0, window=controls, anchor="e")
@@ -433,8 +441,8 @@ class App:
     def help_menu(self):
         menu = self.menu(f"SimpleTool {VERSION} {self.t('beta').lower()}")
         menu.add_separator()
-        for key, command in (("update_link", self.check_updates), ("report_link", self.show_report),
-                             ("terms_link", self.show_terms)):
+        for key, command in (("update_link", self.check_updates), ("whatsnew_link", self.show_whats_new),
+                             ("report_link", self.show_report), ("terms_link", self.show_terms)):
             menu.add_command(label=self.t(key), command=command)
         return menu
 
@@ -2092,11 +2100,44 @@ class App:
         self.present(win)
 
     def startup_dialogs(self):
-        """After the terms are accepted: a warning about another account, or the offer of administrator rights."""
+        """After the terms are accepted: what is new after an update, then a warning about another account or the
+        offer of administrator rights. One window at a time: the next opens when the previous one closes."""
+        if self.whats_new:
+            notes, self.whats_new = self.whats_new, []
+            self.show_whats_new(notes, then=self.startup_dialogs)
+            return
         if self.other_account:
             self.show_other_account_dialog()
         elif not self.admin:
             self.show_admin_dialog()
+
+    def show_whats_new(self, notes=None, then=None):
+        """The notes of the versions that came with an update, newest first; from Help, this version's."""
+        px = self.px
+        notes = notes or whatsnew.since(None, VERSION)
+        win, content = self.dialog(self.t("whatsnew_link"), ICONS["help"], C["accent"],
+                                   self.t("whatsnew_title", version=VERSION), self.t("whatsnew_intro"))
+        for version, texts in notes:
+            if len(notes) > 1:
+                tk.Label(content, text=version, font=self.fonts["small_bold"], fg=C["muted"], bg=C["surface"],
+                         anchor="w").pack(fill="x", pady=(px(6), px(2)))
+            for line in texts.get(self.lang, texts["en"]):
+                row = tk.Frame(content, bg=C["surface"])
+                row.pack(fill="x", pady=(0, px(6)))
+                tk.Label(row, text="•", font=self.fonts["body"], fg=C["accent"], bg=C["surface"]).pack(
+                    side="left", anchor="n", padx=(0, px(8)))
+                tk.Label(row, text=line, font=self.fonts["body"], fg=C["text"], bg=C["surface"], anchor="w",
+                         justify="left", wraplength=px(440)).pack(side="left", fill="x")
+        buttons = tk.Frame(content, bg=C["surface"])
+        buttons.pack(fill="x", pady=(px(12), 0))
+        page = f"https://github.com/danilablagorodniy37/SimpleTool/releases/tag/v{VERSION}"
+        self.link(buttons, self.t("whatsnew_all"), lambda: self.open_url(page), font="small").pack(side="left")
+        GradientButton(buttons, self.t("whatsnew_ok"), win.destroy, self.fonts["button"], self.scale,
+                       self.animator, pad=(18, 8)).pack(side="right")
+        if then:
+            # Whichever way the window closes (the button, Escape, the title bar), the next one follows
+            win.bind("<Destroy>", lambda e: self.root.after(150, then) if e.widget is win else None)
+        self.present(win)
 
     def show_other_account_dialog(self):
         running, signed_in = self.other_account
@@ -2350,6 +2391,19 @@ class App:
         address.configure(state="readonly")
         address.pack(side="left", ipady=px(6), ipadx=px(8))
         self.link(line, self.t("report_copy"), self.copy_address, font="small").pack(side="left", padx=(px(12), 0))
+        # What the letter will say about the PC, so nothing goes in it unseen
+        specs = "\n".join(self.system_summary())
+        head = tk.Frame(content, bg=C["surface"])
+        head.pack(fill="x", pady=(px(14), px(4)))
+        tk.Label(head, text=self.t("report_specs"), font=self.fonts["small_bold"], fg=C["muted"], bg=C["surface"],
+                 anchor="w").pack(side="left")
+        self.link(head, self.t("report_copy_specs"), lambda: self.copy_text(specs, self.t("report_copied_specs")),
+                  font="small").pack(side="left", padx=(px(12), 0))
+        box = tk.Text(content, font=self.fonts["mono"], fg=C["text"], bg=C["bg"], relief="flat", wrap="word",
+                      width=72, height=min(9, specs.count("\n") + 1), padx=px(10), pady=px(8), highlightthickness=0)
+        box.insert("1.0", specs)
+        box.configure(state="disabled")
+        box.pack(fill="x")
         buttons = tk.Frame(content, bg=C["surface"])
         buttons.pack(fill="x", pady=(px(18), 0))
 
@@ -2363,18 +2417,31 @@ class App:
                        self.animator, primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
         self.present(win)
 
+    def system_summary(self):
+        """SimpleTool's own state, then the PC's specifications (sysinfo)."""
+        app = (f"SimpleTool: {VERSION}, {'administrator' if self.admin else 'limited mode'}, "
+               f"scale {round(self.scale * 100)}%, language {self.lang}, theme {C['name']}")
+        try:
+            return sysinfo.summary(app)
+        except Exception:  # a report must open even if Windows answers something unexpected
+            log_error(traceback.format_exc())
+            return [app, f"Windows {platform.version()}"]
+
     def write_report(self):
         subject = self.t("report_subject", version=VERSION)
-        body = self.t("report_body", version=VERSION, windows=platform.version())
+        body = self.t("report_body", system="\n".join(self.system_summary()))
         url = f"mailto:{SUPPORT_EMAIL}?" + urllib.parse.urlencode({"subject": subject, "body": body},
                                                                   quote_via=urllib.parse.quote)
         if not self.open_url(url):  # no email program is set up: the address goes to the clipboard instead
             self.copy_address()
 
     def copy_address(self):
+        self.copy_text(SUPPORT_EMAIL, self.t("report_copied", email=SUPPORT_EMAIL))
+
+    def copy_text(self, text, message):
         self.root.clipboard_clear()
-        self.root.clipboard_append(SUPPORT_EMAIL)
-        self.notify(self.t("report_copied", email=SUPPORT_EMAIL), C["ok"], ICONS["check"])
+        self.root.clipboard_append(text)
+        self.notify(message, C["ok"], ICONS["check"])
 
     def open_error_log(self):
         """Shows error.log selected in File Explorer, or the data folder if there have been no errors."""

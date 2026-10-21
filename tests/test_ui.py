@@ -12,6 +12,7 @@ import tempfile
 import time
 import tkinter as tk
 import unittest
+import urllib.parse
 from unittest import mock
 
 import engine
@@ -33,7 +34,8 @@ class UiSmoke(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="simpletool-ui-test-")
         # No pop-up notifications, the terms are already accepted
-        self.settings = {"lang": "en", "theme": "navy", "tray_hint_shown": True, "terms": terms.VERSION}
+        self.settings = {"lang": "en", "theme": "navy", "tray_hint_shown": True, "terms": terms.VERSION,
+                         "seen_version": main.VERSION}
         self.other_account = None
         self.opened = []  # addresses SimpleTool asked Windows to open: a website, an email
         self.patches = [
@@ -193,6 +195,38 @@ class UiSmoke(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_whats_new_after_an_update(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        del self.settings["seen_version"]  # 0.6.1 did not record its version: an update from it
+        root, app, errors = self.open_app(admin=False)
+        try:
+            self.assertEqual([d.title() for d in self.dialogs(root)], [ui["whatsnew_link"]],
+                             "What's new first, alone")
+            self.assertEqual(self.settings["seen_version"], main.VERSION, "shown once")
+            self.button(self.dialogs(root)[0], ui["whatsnew_ok"])._click(None)
+            self.pump(root, 0.4)
+            self.assertEqual([d.title() for d in self.dialogs(root)], [ui["admin_title"]], "then the next window")
+            for dialog in self.dialogs(root):
+                dialog.destroy()
+            app.show_whats_new()  # Help → What's new
+            self.pump(root, 0.2)
+            self.assertEqual([d.title() for d in self.dialogs(root)], [ui["whatsnew_link"]])
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_no_whats_new_on_a_first_run(self):
+        del self.settings["seen_version"]
+        del self.settings["terms"]
+        root, app, errors = self.open_app(admin=True)
+        try:
+            app.accept_terms(self.dialogs(root)[0])
+            self.pump(root, 0.3)
+            self.assertEqual(self.dialogs(root), [], "a new user has nothing to compare with")
+            self.assertEqual(self.settings["seen_version"], main.VERSION)
+        finally:
+            root.destroy()
+
     def test_declining_the_terms_exits(self):
         del self.settings["terms"]
         root, app, errors = self.open_app(admin=True)
@@ -326,9 +360,13 @@ class UiSmoke(unittest.TestCase):
             app.show_report()
             dialog = self.dialogs(root)[0]
             self.assertEqual(dialog.title(), ui["report_title"])
+            shown = [w.get("1.0", "end").strip() for w in self.widgets(dialog) if isinstance(w, tk.Text)]
             self.button(dialog, ui["report_write"])._click(None)
             self.assertTrue(self.opened[-1].startswith(f"mailto:{main.SUPPORT_EMAIL}?subject=SimpleTool%20"))
             self.assertIn(main.VERSION, self.opened[-1])
+            # The letter carries the specifications the window showed
+            body = urllib.parse.unquote(self.opened[-1].split("body=", 1)[1])
+            self.assertTrue(shown and "Processor: " in shown[0] and shown[0] in body, body)
             self.assertEqual(errors, [])
         finally:
             root.destroy()
