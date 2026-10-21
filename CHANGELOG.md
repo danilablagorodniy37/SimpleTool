@@ -2,6 +2,12 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.6.2
+
+- **Help** button at the top of the window instead of an unnamed ⓘ icon: Check for updates, What's new, Report a problem and the terms of use.
+- **What's new** after an update: SimpleTool shows once what changed since the version that ran before. Help → What's new shows it again.
+- **Report a problem** adds the PC's specifications to the letter — processor, graphics card, memory, PC model, Windows edition and build, SimpleTool's version, rights and display scale — and shows them in the window before anything is sent. They are read from the registry; nothing goes online by itself.
+
 ## 0.6.1
 
 **A Windows restore point before every Apply**

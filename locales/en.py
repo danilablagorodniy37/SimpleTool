@@ -46,14 +46,14 @@ TEXTS = {
         "report_title": "Report a problem",
         "report_text": "Found a bug, or did something go wrong? Write to the address below: what you did, what you "
                        "expected and what happened. If SimpleTool saved an error log, attach it: “Open error log” "
-                       "shows the file.",
+                       "shows the file. The letter already has your PC's specifications, shown below: they help to "
+                       "find the cause.",
         "report_write": "Write an email",
         "report_log": "Open error log",
         "report_copy": "Copy address",
         "report_copied": "Address copied: {email}",
         "report_subject": "SimpleTool {version}: a problem",
-        "report_body": "SimpleTool {version}, Windows {windows}\n\nWhat I did:\n\n\nWhat happened:\n\n\n(Attach "
-                       "error.log if there is one.)\n",
+        "report_body": "{system}\n\nWhat I did:\n\n\nWhat happened:\n\n\n(Attach error.log if there is one.)\n",
         "rp_checking": "Checking Windows restore points…",
         "rp_gate_title": "First, a restore point",
         "rp_gate_text": "SimpleTool is about to change Windows settings. If something goes wrong, a Windows restore "
@@ -80,6 +80,15 @@ TEXTS = {
         "snap_delete_ok": "Delete",
         "mem_on_idle_text": "Nothing is being limited yet: add a program below or turn one on. Until then, closing "
                             "the window exits SimpleTool.",
+        "help": "Help",
+        "whatsnew_link": "What's new",
+        "whatsnew_title": "What's new in SimpleTool {version}",
+        "whatsnew_intro": "SimpleTool has been updated. Here is what changed:",
+        "whatsnew_all": "All changes on GitHub",
+        "whatsnew_ok": "Got it",
+        "report_specs": "Your PC (added to the letter):",
+        "report_copy_specs": "Copy",
+        "report_copied_specs": "PC specifications copied.",
         "crash_title": "Something went wrong",
         "crash_intro": "SimpleTool hit an unexpected error and keeps working. If something looks wrong, restart it. "
                        "The details are saved in the error log, "
