@@ -91,6 +91,20 @@ TEXTS = {
         "report_specs": "Ваш компьютер (будет в письме):",
         "report_copy_specs": "Скопировать",
         "report_copied_specs": "Характеристики компьютера скопированы.",
+        "update_install": "Обновить",
+        "update_text_install": "У вас версия {current}. SimpleTool скачает новую версию, проверит её и "
+                               "перезапустится; настройки, резервные копии и снимки останутся на месте.",
+        "update_preparing": "Готовлю обновление…",
+        "update_downloading": "Скачиваю обновление… {percent}%",
+        "update_busy": "Дождитесь окончания текущей операции.",
+        "update_install_failed_title": "Обновление не установилось",
+        "update_install_failed_text": "{error}\n\nТекущая версия продолжает работать. Новую можно скачать вручную.",
+        "update_download_manual": "Скачать вручную",
+        "update_restart_failed": "Обновление установлено, но SimpleTool не смог перезапуститься: {error}. Запустите "
+                                 "SimpleTool.exe сами.",
+        "update_available_toast": "Вышел SimpleTool {version}: Справка → Обновить",
+        "update_install_menu": "Обновить до {version}",
+        "update_daily": "Проверять обновления раз в день",
         "crash_title": "Что-то пошло не так",
         "crash_intro": "В SimpleTool произошла непредвиденная ошибка, но программа продолжает работать. Если что-то "
                        "выглядит неправильно, перезапустите её. Подробности сохранены в журнале ошибок, "

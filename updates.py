@@ -1,5 +1,5 @@
-"""Checking for a newer SimpleTool. Only when the user presses "Check for updates": SimpleTool never goes online
-by itself.
+"""Checking for a newer SimpleTool: when the user presses "Check for updates", and once a day at start unless the
+user turned that off in the Help menu.
 
 blagotech.uk/api/simpletool answers with the newest stable release on GitHub (the same one the website's
 download button gives). Nothing about the PC is sent: the request carries only what every web request does.
@@ -62,12 +62,18 @@ def read_latest(current):
 
 
 def check(current):
-    """{"version", "newer", "url", "page"}: the newest version, whether it is newer than current, the exe to
-    download and the release notes (None if unknown). Raises CheckFailed."""
+    """{"version", "newer", "url", "page", "sha256", "size"}: the newest version, whether it is newer than current,
+    the exe to download, the release notes, and the exe's checksum and size (each None if unknown).
+    Raises CheckFailed."""
     data = read_latest(current)
     latest = parse_version(data.get("version"))
     if latest is None:
         raise CheckFailed("the answer has no version number")
     mine = parse_version(current) or (0,)
+    sha256, size = data.get("sha256"), data.get("size")
+    if not (isinstance(sha256, str) and re.fullmatch(r"[0-9a-fA-F]{64}", sha256)):
+        sha256 = None
+    if not (isinstance(size, int) and 0 < size < 1 << 31):
+        size = None
     return {"version": data["version"], "newer": latest > mine, "url": trusted(data.get("url")),
-            "page": trusted(data.get("page"))}
+            "page": trusted(data.get("page")), "sha256": sha256 and sha256.lower(), "size": size}

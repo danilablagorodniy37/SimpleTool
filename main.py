@@ -28,14 +28,16 @@ import theme
 import tray
 import tweaks
 import sysinfo
+import updater
 import updates
 import whatsnew
 from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
                      Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.6.2"
+VERSION = "0.6.3"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
+UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
 PAGES = ["overview"] + tweaks.CATEGORIES + ["memory", "snapshots"]
@@ -136,6 +138,7 @@ class App:
         self.other_account = engine.other_account()  # started with another account's password: (it, signed in)
         self.error_shown = False  # an unexpected error is shown once per session, every one goes to error.log
         self.checking_updates = False
+        self.available_update = None  # what a check found: shown as a dot on Help and an Update item in its menu
         root.report_callback_exception = self.report_error
         self.settings = load_settings()
         lang = self.settings.get("lang")
@@ -190,6 +193,7 @@ class App:
             root.after(300, lambda: self.show_terms(first_run=True))
         else:
             root.after(600, self.startup_dialogs)
+        self.start_jobs = [root.after(1500, self.remove_previous_exe), root.after(4000, self.daily_update_check)]
 
     # --- Appearance ---
 
@@ -355,7 +359,10 @@ class App:
         self.h_desc = self.header.create_text(px(GUTTER), px(80), anchor="nw", font=self.fonts["body"], fill=C["muted"])
         controls = tk.Frame(self.header, bg=C["bg"])
         # Compact buttons: help has its name, theme is an icon only, language is a code; the rest is in the menus
-        self.drop_button(controls, ICONS["help"], self.t("help"), self.help_menu).pack(side="left", padx=(0, px(8)))
+        help_button = self.drop_button(controls, ICONS["help"], self.t("help"), self.help_menu, badge=True)
+        help_button.pack(side="left", padx=(0, px(8)))
+        self.help_badge = help_button.badge
+        self.paint_update_badge()
         self.drop_button(controls, ICONS["palette"], None, self.theme_menu).pack(side="left", padx=(0, px(8)))
         self.drop_button(controls, ICONS["globe"], LANGUAGE_CODES[self.lang], self.language_menu).pack(side="left")
         self.h_controls = self.header.create_window(0, 0, window=controls, anchor="e")
@@ -396,8 +403,9 @@ class App:
                                       justify="left")
         self.message_label.pack(side="left", fill="x", expand=True)
 
-    def drop_button(self, parent, icon, label, build_menu):
-        """A button with a drop-down menu (help, theme, language)."""
+    def drop_button(self, parent, icon, label, build_menu, badge=False):
+        """A button with a drop-down menu (help, theme, language). With badge, card.badge is a dot that is empty
+        until something in the menu wants attention."""
         px = self.px
         card = Card(parent, self.scale, fill=C["surface"], border=C["border"], radius=10, pad=3)
         parts = [tk.Label(card.body, text=icon, font=self.fonts["icon_small"], fg=C["accent"], bg=card.fill)]
@@ -405,6 +413,10 @@ class App:
         if label:
             parts.append(tk.Label(card.body, text=label, font=self.fonts["small_bold"], fg=C["text"], bg=card.fill))
             parts[-1].pack(side="left", padx=(0, px(2)))
+        if badge:
+            card.badge = tk.Label(card.body, text="", font=self.fonts["small_bold"], fg=C["ok"], bg=card.fill)
+            card.badge.pack(side="left", padx=(px(4), 0))
+            parts.append(card.badge)
         parts.append(tk.Label(card.body, text=ICONS["down"], font=self.fonts["icon_tiny"], fg=C["muted"], bg=card.fill))
         parts[-1].pack(side="left", padx=(px(4), px(10)))
 
@@ -441,9 +453,18 @@ class App:
     def help_menu(self):
         menu = self.menu(f"SimpleTool {VERSION} {self.t('beta').lower()}")
         menu.add_separator()
+        if self.available_update:
+            info = self.available_update
+            menu.add_command(label="● " + self.t("update_install_menu", version=info["version"]),
+                             command=lambda: self.show_update(info))
         for key, command in (("update_link", self.check_updates), ("whatsnew_link", self.show_whats_new),
                              ("report_link", self.show_report), ("terms_link", self.show_terms)):
             menu.add_command(label=self.t(key), command=command)
+        menu.add_separator()
+        daily = tk.BooleanVar(menu, value=self.settings.get("auto_update_check", True))
+        menu.add_checkbutton(label=self.t("update_daily"), variable=daily,
+                             command=lambda: self.set_daily_check(daily.get()))
+        menu.variable = daily  # keep a reference so the garbage collector does not collect the variable
         return menu
 
     def language_menu(self):
@@ -2024,7 +2045,7 @@ class App:
         # The window is closed: cancel the queue polling, otherwise Tk calls it after the window is gone
         if event.widget is self.root:
             self.animator.stop()
-            for job in (getattr(self, "poll_job", None), getattr(self, "memory_job", None)):
+            for job in [getattr(self, "poll_job", None), getattr(self, "memory_job", None)] + self.start_jobs:
                 if job:
                     self.root.after_cancel(job)
             # The limiter removes its hard caps, the icon leaves the tray
@@ -2320,7 +2341,7 @@ class App:
             return False
 
     def check_updates(self):
-        """Asks blagotech.uk for the newest version. Only on request: SimpleTool never goes online by itself."""
+        """Asks blagotech.uk for the newest version, when the user asks."""
         if self.checking_updates:
             return
         self.checking_updates = True
@@ -2337,30 +2358,146 @@ class App:
             if isinstance(result, Exception):
                 self.show_update_failed(str(result))
             elif result["newer"]:
+                self.set_available_update(result)
                 self.show_update(result)
             else:
                 self.notify(self.t("update_latest", version=VERSION), C["ok"], ICONS["check"])
 
         self.run_job(work, done)
 
+    def daily_update_check(self):
+        """Once a day at start, quietly: a newer version shows as a dot on Help and a notification, nothing more.
+        A failed check is tried again at the next start."""
+        if not self.settings.get("auto_update_check", True) or self.checking_updates:
+            return
+        now = datetime.datetime.now(datetime.timezone.utc)
+        try:
+            last = datetime.datetime.fromisoformat(self.settings.get("update_checked", ""))
+        except (TypeError, ValueError):
+            last = None
+        if last and last.tzinfo and now - last < UPDATE_CHECK_EVERY:
+            return
+        self.checking_updates = True
+
+        def work():
+            try:
+                return updates.check(VERSION)
+            except updates.CheckFailed as exc:
+                return exc
+
+        def done(result):
+            self.checking_updates = False
+            if isinstance(result, Exception):
+                return
+            self.settings["update_checked"] = now.isoformat(timespec="seconds")
+            save_settings(self.settings)
+            if result["newer"]:
+                self.set_available_update(result)
+                self.notify(self.t("update_available_toast", version=result["version"]), C["ok"], ICONS["refresh"])
+
+        self.run_job(work, done)
+
+    def set_daily_check(self, on):
+        self.settings["auto_update_check"] = bool(on)
+        save_settings(self.settings)
+
+    def set_available_update(self, info):
+        self.available_update = info
+        self.paint_update_badge()
+
+    def paint_update_badge(self):
+        try:
+            self.help_badge.configure(text="●" if self.available_update else "")
+        except (AttributeError, tk.TclError):
+            pass
+
     def show_update(self, info):
         px = self.px
+        installable = updater.can_install(info)
         win, content = self.dialog(self.t("update_title"), ICONS["refresh"], C["accent"],
                                    self.t("update_heading", version=info["version"]),
-                                   self.t("update_text", current=VERSION))
+                                   self.t("update_text_install" if installable else "update_text", current=VERSION))
         site = updates.PAGES.get(self.lang, updates.PAGES["en"])
 
-        def download():
+        def go():
             win.destroy()
-            self.open_url(info["url"] or site)
+            if installable:
+                self.install_update(info)
+            else:
+                self.open_url(info["url"] or site)
 
-        GradientButton(content, self.t("update_download"), download, self.fonts["button"], self.scale,
-                       self.animator, pad=(18, 8)).pack(side="right")
+        GradientButton(content, self.t("update_install" if installable else "update_download"), go,
+                       self.fonts["button"], self.scale, self.animator, pad=(18, 8)).pack(side="right")
         GradientButton(content, self.t("update_later"), win.destroy, self.fonts["button"], self.scale, self.animator,
                        primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
         self.link(content, self.t("update_notes"), lambda: self.open_url(info["page"] or site), font="small").pack(
             side="left")
         self.present(win)
+
+    def install_update(self, info):
+        """Downloads and checks the new exe, puts it in place of this one and restarts into it. "Acting" all the
+        way: closing SimpleTool halfway through the swap would leave no SimpleTool.exe in place."""
+        if self.busy:
+            self.notify(self.t("update_busy"), C["warn"], ICONS["warning"])
+            return
+        shown = [-1]
+
+        def progress(done, total):
+            percent = int(done * 100 / total) if total else 0
+            if percent != shown[0]:
+                shown[0] = percent
+                self.post(lambda: self.show_progress(percent))
+
+        def finished(result):
+            self.message = None
+            self.update_footer()
+            if isinstance(result, Exception):
+                self.show_install_failed(str(result), info)
+                return
+            if self.instance:  # the new copy must not take this one for an already running copy and exit
+                self.instance.release()
+            try:
+                updater.start(result)
+            except OSError as exc:
+                if self.instance and self.instance.acquire():
+                    self.instance.listen(lambda: self.post(self.show_window))
+                self.show_errors([self.t("update_restart_failed", error=exc)])
+                return
+            self.root.destroy()
+
+        def work():
+            try:
+                return updater.install(info, progress)
+            except updater.UpdateFailed as exc:
+                return exc
+
+        self.run_action("update_preparing", work, finished)
+
+    def show_progress(self, percent):
+        if self.acting:
+            self.message = ("update_downloading", {"percent": percent})
+            self.update_footer()
+
+    def show_install_failed(self, error, info):
+        px = self.px
+        win, content = self.dialog(self.t("update_install_failed_title"), ICONS["warning"], C["warn"],
+                                   self.t("update_install_failed_title"),
+                                   self.t("update_install_failed_text", error=error))
+
+        def manual():
+            win.destroy()
+            self.open_url(info.get("url") or updates.PAGES.get(self.lang, updates.PAGES["en"]))
+
+        GradientButton(content, self.t("update_download_manual"), manual, self.fonts["button"], self.scale,
+                       self.animator, pad=(18, 8)).pack(side="right")
+        GradientButton(content, self.t("close"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.present(win)
+
+    def remove_previous_exe(self, tries=6):
+        """After an update the previous exe is still exiting for a moment: its file goes once it is free."""
+        if not updater.cleanup() and tries > 1:
+            self.start_jobs.append(self.root.after(5000, lambda: self.remove_previous_exe(tries - 1)))
 
     def show_update_failed(self, error):
         px = self.px

@@ -2,6 +2,18 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.6.3
+
+**Updates in one click**
+- The update window has **Update**: SimpleTool downloads the new SimpleTool.exe from its GitHub releases, checks its size and SHA-256 against the release, puts it in place of the running exe (which Windows lets it rename) and restarts into it. Settings, backups and snapshots stay where they are; the previous exe is deleted once it has exited. If anything fails, the running version is untouched and the window offers the manual download.
+- Only the portable exe updates itself, and only a release with a published SHA-256. Run from the source code, SimpleTool still sends you to the download page.
+
+**A daily check**
+- Once a day at start SimpleTool quietly asks blagotech.uk whether a new version is out. If there is one, Help gets a dot, its menu an **Update to …** item, and a notification says so; no window opens. **Help → Check for updates daily** turns the check off.
+
+**Terms of use**
+- Section 7 describes the daily check, the download from GitHub and the specifications in problem reports, so SimpleTool asks you to accept the terms again.
+
 ## 0.6.2
 
 - **Help** button at the top of the window instead of an unnamed ⓘ icon: Check for updates, What's new, Report a problem and the terms of use.

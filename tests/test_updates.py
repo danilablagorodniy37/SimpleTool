@@ -47,7 +47,14 @@ class Versions(unittest.TestCase):
 class Check(unittest.TestCase):
     def test_newer_version(self):
         with answering({"ok": True, "version": "0.7", "url": EXE, "page": NOTES}):
-            self.assertEqual(updates.check("0.6.1"), {"version": "0.7", "newer": True, "url": EXE, "page": NOTES})
+            self.assertEqual(updates.check("0.6.1"), {"version": "0.7", "newer": True, "url": EXE, "page": NOTES,
+                                                      "sha256": None, "size": None})
+        with answering({"ok": True, "version": "0.7", "url": EXE, "sha256": "AB" * 32, "size": 12363139}):
+            info = updates.check("0.6.1")
+        self.assertEqual((info["sha256"], info["size"]), ("ab" * 32, 12363139))
+        with answering({"ok": True, "version": "0.7", "sha256": "not a hash", "size": -1}):
+            info = updates.check("0.6.1")
+        self.assertEqual((info["sha256"], info["size"]), (None, None))
 
     def test_same_or_older_version(self):
         for latest in ("0.6.1", "0.6.1.0", "0.6"):
