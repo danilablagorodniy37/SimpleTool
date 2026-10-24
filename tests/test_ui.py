@@ -15,6 +15,7 @@ import unittest
 import urllib.parse
 from unittest import mock
 
+import diagnostics
 import engine
 import i18n
 import limiter
@@ -24,6 +25,7 @@ import theme
 import tweaks
 import updater
 import updates
+from tests.test_diagnostics import event, healthy
 from widgets import GradientButton
 
 
@@ -40,6 +42,12 @@ class UiSmoke(unittest.TestCase):
                          "update_checked": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         self.other_account = None
         self.opened = []  # addresses SimpleTool asked Windows to open: a website, an email
+        self.started = []  # Windows tools troubleshooting opened
+        # Troubleshooting reads made-up facts: a PC with a few problems, read at once
+        self.facts = healthy()
+        self.facts.update(cpu={"load": 91.0, "top": [("game.exe", 80.0)]}, startup=[f"App {i}" for i in range(14)],
+                          events=[event("Microsoft-Windows-Kernel-Power", 41, level=1, args=["0"])],
+                          devices=[{"name": "Wi-Fi adapter", "code": 28}], restart_pending=None)
         self.patches = [
             mock.patch.object(engine, "data_dir", lambda: self.tmp),
             mock.patch.object(engine, "apply", forbidden),
@@ -56,9 +64,17 @@ class UiSmoke(unittest.TestCase):
             mock.patch.object(engine, "recent_restore_point", lambda: None),
             mock.patch.object(updates, "check", forbidden),
             mock.patch.object(main.App, "open_url", lambda app, url: self.opened.append(url) or True),
+            mock.patch.object(main.App, "shell_open", lambda app, target, args=None:
+                              self.started.append((target, args)) or True),
+            mock.patch.object(diagnostics, "gather", self.fake_gather),
         ]
         for patch in self.patches:
             patch.start()
+
+    def fake_gather(self, report=lambda step: None, api=None):
+        for group in diagnostics.GROUPS:
+            report(group)
+        return dict(self.facts)
 
     def tearDown(self):
         for patch in reversed(self.patches):
@@ -132,9 +148,13 @@ class UiSmoke(unittest.TestCase):
         for page in main.PAGES:
             app.show_page(page)
             self.pump(root, 0.15)
+            if page == "diagnostics":  # the first visit starts the check: its results are shown a moment later
+                self.wait(root, lambda: app.diag is not None and app.diag_cards)
             for key, widgets in list(app.cards.items()) + [(k, w) for k, w in app.service_cards.items()]:
                 kind = "t" if key in app.cards else "s"
                 app.toggle_details((kind, key), widgets)
+            for check, widgets in app.diag_cards.items():
+                app.toggle_details(("d", check), widgets)
             self.pump(root, 0.4)
 
     def test_admin_mode(self):
@@ -433,6 +453,57 @@ class UiSmoke(unittest.TestCase):
             # The letter carries the specifications the window showed
             body = urllib.parse.unquote(self.opened[-1].split("body=", 1)[1])
             self.assertTrue(shown and "Processor: " in shown[0] and shown[0] in body, body)
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_troubleshooting(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_app(admin=False)
+        try:
+            for dialog in self.dialogs(root):
+                dialog.destroy()
+            self.assertIsNone(app.diag, "the check waits until its page is opened")
+            self.assertEqual(app.nav["diagnostics"]["count"].cget("text"), "")
+            app.show_page("diagnostics")
+            self.pump(root, 0.1)
+            self.assertTrue(app.diag_running)
+            self.assertEqual(app.message_label.cget("text"), ui["diag_running"])
+            self.wait(root, lambda: not app.diag_running and app.diag_cards)
+            found = {f.check: f.severity for f in app.diag if f.severity != "ok"}
+            self.assertEqual(found, {"cpu_load": "warning", "startup_apps": "warning", "crashes": "warning",
+                                     "devices": "warning", "pending_restart": "unknown"})
+            self.assertEqual(app.nav["diagnostics"]["count"].cget("text"), "4")
+            self.assertEqual(set(app.diag_cards), {f.check for f in app.diag})
+            # Details show the explanation, the lines and the buttons; a button opens its Windows tool
+            app.toggle_details(("d", "devices"), app.diag_cards["devices"])
+            self.pump(root, 0.5)
+            inner = app.diag_cards["devices"]["inner"]
+            self.button(inner, ui["act_devices"])._click(None)
+            self.assertEqual(self.started, [("devmgmt.msc", None)])
+            app.toggle_details(("d", "cpu_load"), app.diag_cards["cpu_load"])
+            self.pump(root, 0.5)
+            self.click_text(app.diag_cards["cpu_load"]["inner"], "game.exe — 80%")
+            # A suggestion inside SimpleTool goes to its page
+            app.toggle_details(("d", "ram_load"), app.diag_cards["ram_load"])
+            self.pump(root, 0.5)
+            self.button(app.diag_cards["ram_load"]["inner"], ui["act_memory"])._click(None)
+            self.pump(root, 0.2)
+            self.assertEqual(app.page, "memory")
+            # Scan again reads the system once more; another language keeps the results
+            self.facts["cpu"] = {"load": 5.0, "top": []}
+            app.show_page("diagnostics")
+            app.rescan_diagnostics()
+            self.assertIsNone(app.diag)
+            self.wait(root, lambda: not app.diag_running and app.diag_cards)
+            self.assertEqual(app.nav["diagnostics"]["count"].cget("text"), "3")
+            for lang, _ in i18n.LANGUAGES:
+                app.set_language(lang)
+                self.pump(root, 0.2)
+                self.assertTrue(app.diag_cards)
+            for name in theme.THEMES:
+                app.set_theme(name)
+                self.pump(root, 0.2)
             self.assertEqual(errors, [])
         finally:
             root.destroy()

@@ -6,6 +6,29 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.7": {
+        "en": [
+            "New Troubleshooting page: almost fifty checks look for what makes the PC lag, freeze or crash — memory, "
+            "the processor, drives, drivers, the graphics card, the event logs, conflicting programs and settings "
+            "left behind by “optimizers”.",
+            "Every finding explains what it means and how to fix it, with a button that opens the right Windows tool. "
+            "The check only reads and changes nothing.",
+        ],
+        "ru": [
+            "Новая страница «Поиск проблем»: почти пятьдесят проверок ищут, из-за чего компьютер тормозит, зависает "
+            "или падает, — память, процессор, диски, драйверы, видеокарта, журналы событий, конфликтующие программы "
+            "и настройки, оставленные «оптимизаторами».",
+            "Каждая находка объясняет, что она значит и как это исправить, а кнопка открывает нужный инструмент "
+            "Windows. Проверка только читает и ничего не меняет.",
+        ],
+        "uk": [
+            "Нова сторінка «Пошук проблем»: майже п’ятдесят перевірок шукають, через що комп’ютер гальмує, зависає "
+            "або падає, — пам’ять, процесор, диски, драйвери, відеокарта, журнали подій, конфліктні програми й "
+            "налаштування, залишені «оптимізаторами».",
+            "Кожна знахідка пояснює, що вона означає і як це виправити, а кнопка відкриває потрібний інструмент "
+            "Windows. Перевірка лише читає й нічого не змінює.",
+        ],
+    },
     "0.6.4": {
         "en": [
             "Updating from inside SimpleTool now starts the new version cleanly: before, the previous version could "
