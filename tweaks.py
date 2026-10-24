@@ -1,7 +1,9 @@
-"""Tweak catalog. Registry values are tested on Windows 10/11."""
+"""Tweak catalog. Registry values are checked against Microsoft's documentation,
+and tested on Windows 10/11."""
 import os
 from winreg import REG_DWORD, REG_EXPAND_SZ, REG_SZ
 
+import sysinfo
 from engine import OwnedKey, Service, Shortcut, Task, Tweak, Value
 from i18n import TEXTS, menu_label
 
@@ -78,6 +80,10 @@ def submenu(path, label, icon, items):
 
 def photo_viewer_installed():
     return os.path.exists(os.path.expandvars(r"%ProgramFiles%\Windows Photo Viewer\PhotoViewer.dll"))
+
+
+def windows_11():
+    return sysinfo.release()[2] >= 22000
 
 
 # --- Privacy ---
@@ -178,7 +184,7 @@ SYSTEM = [
         Value(r"HKCU\Keyboard Layout\Toggle", "Hotkey", "2", REG_SZ, default="1"),
         Value(r"HKCU\Keyboard Layout\Toggle", "Language Hotkey", "2", REG_SZ, default="1"),
         Value(r"HKCU\Keyboard Layout\Toggle", "Layout Hotkey", "3", REG_SZ, default="2"),
-    ]),
+    ], effect="signout"),
     Tweak("photo_viewer", "system", [
         OwnedKey(PHOTO_VIEWER_OPEN),
         Value(PHOTO_VIEWER_OPEN, "MuiVerb", "@photoviewer.dll,-3043", REG_SZ),
@@ -200,6 +206,14 @@ SYSTEM = [
         Shortcut({lang: TEXTS[lang]["menu"]["shortcut_refresh"] for lang in TEXTS},
                  r"%SystemRoot%\System32\ie4uinit.exe", "-show", r"%SystemRoot%\System32\shell32.dll,238"),
     ]),
+    # Since Windows 10 1803 the RegIdleBackup task saves nothing unless this value is set (Microsoft KB4509719)
+    Tweak("registry_backup", "system", [
+        Value(r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Configuration Manager", "EnablePeriodicBackup", 1),
+    ], effect="restart"),
+    # The policy "Display highly detailed status messages"; the key also holds UAC settings, which stay untouched
+    Tweak("verbose_status", "system", [
+        Value(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", "VerboseStatus", 1),
+    ]),
 ]
 
 # --- File Explorer ---
@@ -220,7 +234,13 @@ EXPLORER_TWEAKS = [
     ]),
     Tweak("menu_delay", "explorer", [
         Value(r"HKCU\Control Panel\Desktop", "MenuShowDelay", "20", REG_SZ, default="400"),
-    ]),
+    ], effect="signout"),
+    # The policy "Turn off access to the Store" in the Open with dialog; the Store itself keeps working
+    Tweak("store_open_with", "explorer", [Value(POLICIES + r"\Explorer", "NoUseStoreOpenWith", 1)]),
+    # The Windows Spotlight icon "Learn about this picture", hidden like the Recycle Bin in the desktop icon settings
+    Tweak("spotlight_icon", "explorer", [
+        Value(EXPLORER + r"\HideDesktopIcons\NewStartPanel", "{2cc5ca98-6485-489a-920e-b3e88a6ccce3}", 1),
+    ], requires=windows_11),
 ]
 
 # --- Context menu ---
@@ -254,8 +274,23 @@ SAFE_MODE = [
 ]
 
 MMC = r"%SystemRoot%\System32\mmc.exe /s %SystemRoot%\System32\{}"
+# Windows 11 loads its new context menu through this component. An empty in-process server registered in HKCU
+# overrides the registration in HKLM, and Explorer falls back to the classic menu. Revert deletes the whole key.
+CLASSIC_MENU = HKCU_CLASSES + r"\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}"
+CONTEXT_HANDLERS = HKCU_CLASSES + r"\AllFilesystemObjects\shellex\ContextMenuHandlers"
+# Windows' own Copy To and Move To shell extensions (shell32.dll), which only have to be registered as handlers
+COPY_MOVE_TO = [("CopyTo", "{C2FBB630-2971-11D1-A18C-00C04FD75D13}"), ("MoveTo", "{C2FBB631-2971-11D1-A18C-00C04FD75D13}")]
 
 CONTEXT = [
+    Tweak("classic_menu", "context", [
+        OwnedKey(CLASSIC_MENU),
+        Value(CLASSIC_MENU + r"\InprocServer32", "", "", REG_SZ),
+    ], requires=windows_11, effect="explorer"),
+    Tweak("copy_move_to", "context", [
+        op for name, clsid in COPY_MOVE_TO
+        for op in (OwnedKey(rf"{CONTEXT_HANDLERS}\SimpleTool.{name}"),
+                   Value(rf"{CONTEXT_HANDLERS}\SimpleTool.{name}", "", clsid, REG_SZ))
+    ]),
     Tweak("take_ownership", "context",
           menu_item(HKCU_CLASSES + r"\*\shell\SimpleTool.TakeOwnership", menu_label("take_ownership"),
                     elevated(f'/c takeown /f "%1" /a & icacls "%1" /grant {ADMINS}:F /c', hidden=False),

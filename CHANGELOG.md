@@ -2,6 +2,20 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.8
+
+**New tweaks**
+- **Classic right-click menu** (Windows 11): the full menu opens at once, with no “Show more options”. SimpleTool restarts Explorer after applying or reverting it, so the change shows immediately; open folder windows close for a moment.
+- **Copy to folder and Move to folder** in the right-click menu of files and folders: Windows' own commands, registered for the current user.
+- **No Microsoft Store in “Open with”**: the dialog for files of an unknown type no longer offers to look for an app in the Store (the Windows policy for it; the Store itself keeps working).
+- **No “Learn about this picture” icon** (Windows 11): hides the Windows Spotlight icon on the desktop the way Windows hides the Recycle Bin; the pictures keep changing.
+- **Automatic registry backup**: Windows keeps a copy of the registry in RegBack again, as it did before version 1803, for repairs from the recovery environment. Microsoft's documented value; the first copy is made after a restart, and the RegIdleBackup task refreshes it during automatic maintenance.
+- **Detailed sign-in and shutdown messages**: Windows shows each step while signing in, signing out and shutting down, so a slow step can be seen.
+
+**Interface**
+- After Apply and Revert the message says what a change still needs: Explorer was restarted, sign out and back in, or restart the PC. Before, it always said that some changes may need a restart. Switching the keyboard layout hotkey and the menu delay are marked as needing a sign-out.
+- Explorer is restarted only in the current session and with the user's own environment, not SimpleTool's, so programs started from the taskbar do not inherit anything from it. When SimpleTool runs under another account's password, it asks to sign out instead.
+
 ## 0.7
 
 **Troubleshooting**

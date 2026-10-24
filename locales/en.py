@@ -17,8 +17,12 @@ TEXTS = {
         "checking": "Scanning the system…",
         "working_apply": "Applying…",
         "working_revert": "Reverting…",
-        "done_apply": "Applied: {n}. Some changes take effect after restarting Explorer or the PC.",
-        "done_revert": "Reverted: {n}.",
+        "done_apply": "Applied: {n}.{after}",
+        "done_revert": "Reverted: {n}.{after}",
+        "after_explorer": " Explorer was restarted, so the change shows at once.",
+        "after_signout": " Sign out and back in for the change to take effect.",
+        "after_restart": " Restart the PC for the change to take effect.",
+        "explorer_restart_failed": "Explorer could not be restarted; sign out and back in instead.",
         "nothing_to_apply": "The selected tweaks are already applied.",
         "nothing_to_revert": "The selected tweaks are not applied, there is nothing to revert.",
         "errors_title": "Some changes failed",
@@ -481,6 +485,38 @@ TEXTS = {
             "work first; programs with unsaved changes can still stop the restart. Refresh icons runs ie4uinit.exe "
             "-show, which rebuilds the icon cache and redraws the desktop; it helps when icons look wrong after "
             "installing or removing programs. Revert deletes both shortcuts."),
+        "registry_backup": (
+            "Automatic registry backup",
+            "Windows keeps a copy of the registry in RegBack again, for repairs when it does not start.",
+            "Up to Windows 10 version 1803, Windows kept a copy of the registry in "
+            "C:\\Windows\\System32\\config\\RegBack, refreshed by the RegIdleBackup task during automatic maintenance, "
+            "and a damaged registry could be repaired from that copy in the recovery environment. Since then the task "
+            "runs but saves nothing, to save disk space. This tweak turns the copies back on with the value Microsoft "
+            "documents for it; the first copy is made after a restart, and the task refreshes it from then on. It "
+            "does not replace restore points, and SimpleTool still asks for one before applying."),
+        "verbose_status": (
+            "Detailed sign-in and shutdown messages",
+            "Windows says what it is doing while you sign in, sign out and shut down.",
+            "Instead of a plain Welcome or Shutting down, Windows shows each step: applying your settings, starting "
+            "services, running sign-in scripts, waiting for programs to close. When sign-in or shutdown takes long, "
+            "the step that stays on the screen tells you what is slow. This is the Windows policy “Display highly "
+            "detailed status messages”, which administrators use for exactly that; it changes nothing else. The "
+            "messages appear from the next sign-in."),
+        "store_open_with": (
+            "No Microsoft Store in “Open with”",
+            "Opening a file of an unknown type does not offer to look for an app in the Microsoft Store.",
+            "When no program is set for a file type, Windows asks how to open the file and offers to look for an app "
+            "in the Microsoft Store. That line is easy to click by mistake and often leads to paid or unrelated apps. "
+            "This tweak removes it from the dialog with the Windows policy made for that; the programs on this PC and "
+            "“Look for another app on this PC” stay. The Store itself keeps working."),
+        "spotlight_icon": (
+            "No “Learn about this picture” icon",
+            "Removes the Windows Spotlight icon from the desktop; the changing wallpapers stay.",
+            "With Windows Spotlight as the desktop background, Windows 11 puts a “Learn about this picture” icon on "
+            "the desktop, and Delete does not remove it. This tweak hides it the way Windows hides the Recycle Bin or "
+            "This PC: with a value in the desktop icon settings. The pictures keep changing, nothing else is touched, "
+            "and the icon comes back when you revert. If the desktop does not refresh at once, click on it and press "
+            "F5."),
         "file_extensions": (
             "Show file extensions",
             "Always shows .exe, .pdf, .jpg and other extensions, so a disguised file is easier to spot.",
@@ -524,6 +560,22 @@ TEXTS = {
             "Windows waits 400 ms before it opens a submenu under the pointer, for example Open with or Send to in "
             "the context menu. This tweak cuts the delay to 20 ms, so menus open immediately. It takes effect after "
             "you sign out or restart."),
+        "classic_menu": (
+            "Classic right-click menu",
+            "Windows 11 shows the full menu at once, with no “Show more options”.",
+            "Windows 11 opens a short menu first and keeps the rest, including the items SimpleTool adds, behind "
+            "“Show more options” (Shift+F10). This tweak brings back the full Windows 10 style menu for your account: "
+            "the registry entry of the new menu’s component is overridden with an empty one, so Explorer loads the "
+            "classic menu. SimpleTool restarts Explorer after applying or reverting, so open folder windows close for "
+            "a moment. Not needed on Windows 10, where the menu is already like that."),
+        "copy_move_to": (
+            "Copy to folder and Move to folder",
+            "Right-click a file or folder to copy or move it to a folder you pick from a tree.",
+            "Adds two classic Windows commands to the right-click menu of files and folders. “Copy to folder…” and "
+            "“Move to folder…” open a small window with the folder tree, you pick the destination, and Windows copies "
+            "or moves the selection there, without a second Explorer window. The commands are Windows’ own shell "
+            "extensions, which only ever needed to be switched on in the registry, so they come in your language. On "
+            "Windows 11 they are under “Show more options”, unless the classic menu tweak is on."),
         "take_ownership": (
             "Take ownership",
             "Shift + right-click a file or folder to give Administrators full access to it. Be careful with system files.",

@@ -16,6 +16,11 @@ DANGEROUS_PATHS = [
     r"\\CurrentVersion\\Run", r"\\Windows Defender", r"\\WindowsUpdate", r"\\Lsa\b", r"\\SecurityProviders",
     r"\\Control\\Class\\", r"\\Policies\\System$", r"\\Terminal Server", r"\\BCD00000000",
 ]
+# Values inside those keys that Microsoft documents for exactly this purpose and that cannot break anything
+DANGEROUS_ALLOWED = {
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Configuration Manager|EnablePeriodicBackup",
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System|VerboseStatus",
+}
 DANGEROUS_NAMES = {"EnableLUA", "ConsentPromptBehaviorAdmin", "PromptOnSecureDesktop", "DisableAntiSpyware",
                    "SmartScreenEnabled", "EnableSmartScreen", "SaveZoneInformation", "Shell", "Userinit",
                    "AppInit_DLLs", "ImagePath", "Debugger", "LargeSystemCache", "Hidden", "ShowSuperHidden"}
@@ -25,6 +30,7 @@ SYSTEM_ALLOWED = [
     r"HKLM\SYSTEM\CurrentControlSet\Control\FileSystem|LongPathsEnabled",
     r"HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\7516b95f-f776-4464-8c53-06167f40cc99"
     r"\8EC4B3A5-6868-48c2-BE75-4F3044BE88A7|Attributes",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Configuration Manager|EnablePeriodicBackup",
 ]
 SERVICES_ALLOWED = {"DiagTrack", "dmwappushservice", "NvTelemetryContainer"}
 # Tasks without which Windows does not update, protect or maintain itself
@@ -36,6 +42,7 @@ OWNED_ALLOWED = [
     r"HKLM\SOFTWARE\Classes\.cmd\ShellNew", r"HKLM\SOFTWARE\Classes\.reg\ShellNew",
     r"HKLM\SOFTWARE\Classes\Applications\photoviewer.dll\shell\open",
     r"HKCU\Software\Classes\Unknown\shell\edit", r"HKCU\Software\Classes\MSInfoFile\shell\open",
+    r"HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}",  # the Windows 11 menu override
 ]
 FORBIDDEN_IN_COMMANDS = [r"\bdel\b", r"\brd\b", r"\brmdir\b", r"\bformat\b", r"reg(\.exe)? delete",
                          r"shutdown[^&]*\s/f\b",  # forced closing of programs without saving
@@ -66,6 +73,8 @@ class CatalogSafety(unittest.TestCase):
 
     def test_no_writes_to_dangerous_locations(self):
         for tweak, op in VALUES:
+            if f"{op.path}|{op.name}" in DANGEROUS_ALLOWED:
+                continue
             with self.subTest(tweak=tweak.id, value=str(op)):
                 for pattern in DANGEROUS_PATHS:
                     self.assertNotRegex(op.path, f"(?i){pattern}")
@@ -132,6 +141,16 @@ class CatalogSafety(unittest.TestCase):
         for tweak, command in commands():
             if re.search(r"(?i)\b(netsh|takeown|icacls|bcdedit)\b", command):
                 self.assertIn("Start-Process cmd.exe -Verb RunAs", command, tweak.id)
+
+    def test_effects_are_known_and_explorer_is_restarted_for_the_menu_only(self):
+        for tweak in tweaks.TWEAKS:
+            self.assertIn(tweak.effect, (None, "explorer", "signout", "restart"), tweak.id)
+        self.assertEqual([t.id for t in tweaks.TWEAKS if t.effect == "explorer"], ["classic_menu"])
+
+    def test_windows_11_tweaks_are_marked(self):
+        for tweak in tweaks.TWEAKS:
+            if tweak.id in ("classic_menu", "spotlight_icon"):
+                self.assertIs(tweak.requires, tweaks.windows_11, tweak.id)
 
     def test_restore_point_script_does_not_change_frequency_limit(self):
         self.assertNotIn("SystemRestorePointCreationFrequency", engine.RESTORE_POINT_SCRIPT)

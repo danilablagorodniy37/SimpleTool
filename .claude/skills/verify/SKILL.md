@@ -22,3 +22,4 @@ description: How to run and drive the SimpleTool exe to verify a change in the r
 - Clean up: `taskkill /T /F` the launcher (a forced kill leaves its `_MEI` folder: delete it), never touch
   `%TEMP%\_MEI000021202` or the user's own copy.
 - Save .ps1 helpers as UTF-8 with BOM: Windows PowerShell 5.1 reads them as ANSI otherwise and breaks Cyrillic.
+- Pictures of pages without the mouse (new cards, texts in ru/uk): `python .claude/skills/verify/shots.py <lang> <out dir> context:classic_menu system:registry_backup:1` builds the window from source with its own LOCALAPPDATA, waits for the scan, switches pages, expands cards, scrolls, and saves PNGs.

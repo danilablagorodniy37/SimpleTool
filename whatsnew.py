@@ -6,6 +6,31 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.8": {
+        "en": [
+            "Six new tweaks: the classic right-click menu of Windows 11 (SimpleTool restarts Explorer, so it shows at "
+            "once), Copy to folder and Move to folder, no Microsoft Store in Open with, no “Learn about this picture” "
+            "icon, automatic registry backups and detailed sign-in and shutdown messages.",
+            "After Apply, SimpleTool says exactly what a change still needs: Explorer was restarted, sign out and back "
+            "in, or restart the PC.",
+        ],
+        "ru": [
+            "Шесть новых твиков: классическое контекстное меню Windows 11 (SimpleTool перезапускает Проводник, и оно "
+            "появляется сразу), «Копировать в папку» и «Переместить в папку», без Microsoft Store в «Открыть с "
+            "помощью», без значка «Подробнее об этом изображении», автоматические копии реестра и подробные сообщения "
+            "при входе и выключении.",
+            "После применения SimpleTool говорит точно, что ещё нужно изменению: Проводник перезапущен, выйти из "
+            "системы и войти снова или перезагрузить компьютер.",
+        ],
+        "uk": [
+            "Шість нових твіків: класичне контекстне меню Windows 11 (SimpleTool перезапускає Провідник, і воно "
+            "з’являється одразу), «Копіювати до папки» та «Перемістити до папки», без Microsoft Store у «Відкрити за "
+            "допомогою», без значка «Докладніше про це зображення», автоматичні копії реєстру та докладні повідомлення "
+            "під час входу й вимкнення.",
+            "Після застосування SimpleTool каже точно, що ще потрібно зміні: Провідник перезапущено, вийти із системи й "
+            "увійти знову або перезавантажити комп’ютер.",
+        ],
+    },
     "0.7": {
         "en": [
             "New Troubleshooting page: almost fifty checks look for what makes the PC lag, freeze or crash — memory, "

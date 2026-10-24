@@ -305,6 +305,134 @@ def notify_shell():
         pass
 
 
+# --- Explorer ---
+# Shell settings such as the Windows 11 context menu are read when Explorer starts, so it has to be restarted.
+
+TH32CS_SNAPPROCESS = 0x2
+PROCESS_TERMINATE = 0x0001
+SYNCHRONIZE = 0x00100000
+TOKEN_QUERY = 0x0008
+TOKEN_DUPLICATE = 0x0002
+CREATE_UNICODE_ENVIRONMENT = 0x400
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG), ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+
+class STARTUPINFOW(ctypes.Structure):
+    _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR),
+                ("lpTitle", wintypes.LPWSTR), ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+                ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD), ("dwXCountChars", wintypes.DWORD),
+                ("dwYCountChars", wintypes.DWORD), ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD), ("lpReserved2", wintypes.LPBYTE),
+                ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE)]
+
+
+class PROCESS_INFORMATION(ctypes.Structure):
+    _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE), ("dwProcessId", wintypes.DWORD),
+                ("dwThreadId", wintypes.DWORD)]
+
+
+def explorer_pids():
+    """Process ids of explorer.exe in this session: this user's desktop, taskbar and folder windows."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    session, own = wintypes.DWORD(), wintypes.DWORD()
+    kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(own))
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot in (None, INVALID_HANDLE_VALUE):
+        raise ctypes.WinError(ctypes.get_last_error())
+    pids = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while found:
+            if (entry.szExeFile.lower() == "explorer.exe"
+                    and kernel32.ProcessIdToSessionId(entry.th32ProcessID, ctypes.byref(session))
+                    and session.value == own.value):
+                pids.append(entry.th32ProcessID)
+            found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return pids
+
+
+def start_explorer():
+    """Starts Explorer with the user's own environment from the registry, not SimpleTool's.
+
+    A onefile exe carries PyInstaller variables and SimpleTool sets PowerShell paths; Explorer would pass them on to
+    every program started from the taskbar. Started by an administrator, Explorer drops the elevation itself.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    userenv = ctypes.WinDLL("userenv", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CreateProcessW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+                                        wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+                                        ctypes.POINTER(STARTUPINFOW), ctypes.POINTER(PROCESS_INFORMATION)]
+    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    userenv.CreateEnvironmentBlock.argtypes = [ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.BOOL]
+    userenv.DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
+    path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "explorer.exe")
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        environment = ctypes.c_void_p()
+        if not userenv.CreateEnvironmentBlock(ctypes.byref(environment), token, False):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            info, process = STARTUPINFOW(), PROCESS_INFORMATION()
+            info.cb = ctypes.sizeof(info)
+            command = ctypes.create_unicode_buffer(f'"{path}"')
+            if not kernel32.CreateProcessW(path, command, None, None, False, CREATE_UNICODE_ENVIRONMENT, environment,
+                                           os.path.expanduser("~"), ctypes.byref(info), ctypes.byref(process)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            kernel32.CloseHandle(process.hProcess)
+            kernel32.CloseHandle(process.hThread)
+        finally:
+            userenv.DestroyEnvironmentBlock(environment)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def restart_explorer():
+    """Restarts this user's Explorer so that shell settings take effect; open folder windows close.
+
+    Returns False without doing anything when SimpleTool runs as another account than the one signed in: the new
+    Explorer would belong to that account. The user then signs out instead.
+    """
+    if other_account():
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    for pid in explorer_pids():
+        handle = kernel32.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, False, pid)
+        if not handle:
+            continue  # already gone
+        try:
+            kernel32.TerminateProcess(handle, 1)
+            kernel32.WaitForSingleObject(handle, 5000)
+        finally:
+            kernel32.CloseHandle(handle)
+    start_explorer()
+    return True
+
+
 # --- Tweak operations ---
 # Every operation has: admin, id, available(ctx), applied(ctx) -> True/False/None (None = does not affect the status),
 # snapshot(ctx) -> state before applying, apply(lang) -> list of created keys, restore(snapshot), reset().
@@ -518,8 +646,10 @@ class Shortcut:
 
 
 class Tweak:
-    def __init__(self, id, category, ops, requires=None):
-        self.id, self.category, self.ops, self.requires = id, category, ops, requires
+    def __init__(self, id, category, ops, requires=None, effect=None):
+        """effect: what the change needs before it shows. "explorer": SimpleTool restarts Explorer after applying or
+        reverting; "signout" and "restart": the user is told to sign out or restart the PC."""
+        self.id, self.category, self.ops, self.requires, self.effect = id, category, ops, requires, effect
         self.admin = any(op.admin for op in ops)
 
     def available_ops(self, ctx):

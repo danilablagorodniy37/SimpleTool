@@ -36,7 +36,7 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
                      Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.7"
+VERSION = "0.8"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -112,6 +112,17 @@ def log_error(text):
                     f"Windows {platform.version()}\n{text.rstrip()}\n")
     except OSError:
         pass
+
+
+def effect_keys(effects):
+    """Text keys for what applied changes still need: an Explorer restart has been done, a PC restart covers signing
+    out."""
+    keys = ["after_explorer"] if "explorer" in effects else []
+    if "restart" in effects:
+        keys.append("after_restart")
+    elif "signout" in effects:
+        keys.append("after_signout")
+    return keys
 
 
 def relaunch_as_admin():
@@ -2247,17 +2258,32 @@ class App:
         """Takes a "before" snapshot, applies or reverts tweaks in the background, then scans the system again."""
         names = {t.id: self.text("tweaks", t.id)[0] for t in chosen}
         ctx, statuses, failed = self.scan["ctx"], self.status_map(), self.t("snap_failed")
+        explorer_failed = self.t("explorer_restart_failed")
 
         def work():
-            errors = []
+            errors, broken = [], set()
             try:
                 engine.take_snapshot(tweaks.TWEAKS, ctx or engine.Context(), snapshot_kind, statuses, VERSION)
             except OSError as exc:
                 errors.append(f"{failed} {exc}")
             for tweak in chosen:
-                errors += [f"{names[tweak.id]}: {error}" for error in action(tweak)]
+                tweak_errors = action(tweak)
+                if tweak_errors:
+                    broken.add(tweak.id)
+                errors += [f"{names[tweak.id]}: {error}" for error in tweak_errors]
             engine.notify_shell()
-            return errors, collect_scan()
+            # What the changes still need before they show; a tweak that failed does not count
+            effects = {t.effect for t in chosen if t.effect and t.id not in broken}
+            if "explorer" in effects:
+                try:
+                    restarted = engine.restart_explorer()
+                except OSError as exc:
+                    errors.append(f"{explorer_failed} {exc}")
+                    restarted = False
+                if not restarted:
+                    effects.discard("explorer")
+                    effects.add("signout")
+            return errors, effects, collect_scan()
 
         def done(result):
             self.selected.clear()
@@ -2268,10 +2294,11 @@ class App:
                 self.notify(self.t("errors_title"), C["warn"], ICONS["warning"])
                 self.show_errors([str(result)])
                 return
-            errors, self.scan = result
-            self.message = (done_key, {"n": len(chosen)})
+            errors, effects, self.scan = result
+            after = "".join(self.t(key) for key in effect_keys(effects))
+            self.message = (done_key, {"n": len(chosen), "after": after})
             self.refresh_view()
-            text = self.t(done_key, n=len(chosen))
+            text = self.t(done_key, n=len(chosen), after=after)
             if errors:
                 self.notify(self.t("errors_title"), C["warn"], ICONS["warning"])
                 self.show_errors(errors)

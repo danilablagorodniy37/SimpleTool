@@ -51,9 +51,9 @@ with the reason. Most checks work without administrator rights.
 | Category | Tweaks | Examples |
 |---|---|---|
 | Privacy | 13 | Windows and NVIDIA telemetry, advertising ID, settings sync, data collection tasks, location |
-| System | 6 | startup delay, AutoPlay, Ctrl+Shift layout switch, classic Photo Viewer |
-| File Explorer | 7 | file extensions, This PC on Win+E, long paths, recent files history, menu delay |
-| Context menu | 9 | take ownership, block a program in the firewall, file hashes, copy image, This PC tools |
+| System | 8 | startup delay, AutoPlay, Ctrl+Shift layout switch, classic Photo Viewer, automatic registry backup, detailed sign-in messages |
+| File Explorer | 9 | file extensions, This PC on Win+E, long paths, recent files history, menu delay, no Store in Open with, no Spotlight icon |
+| Context menu | 11 | classic Windows 11 menu, Copy to and Move to folder, take ownership, block a program in the firewall, file hashes, copy image, This PC tools |
 
 Every tweak shows its current state: **Applied**, **Partly**, **Not applied**, or **Not found**
 when the service or task it targets is not on this PC.
