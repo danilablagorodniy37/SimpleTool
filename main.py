@@ -18,6 +18,7 @@ import urllib.parse
 from ctypes import wintypes
 from tkinter import ttk
 
+import diagnostics
 import engine
 import i18n
 import limiter
@@ -35,12 +36,12 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
                      Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.6.4"
+VERSION = "0.7"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
-PAGES = ["overview"] + tweaks.CATEGORIES + ["memory", "snapshots"]
+PAGES = ["overview", "diagnostics"] + tweaks.CATEGORIES + ["memory", "snapshots"]
 TRAY_OPEN, TRAY_LIMITER, TRAY_EXIT = 1, 2, 3  # tray icon menu items
 SELECTABLE = ("applied", "partial", "not_applied", "unknown")
 REVERTIBLE = ("applied", "partial", "unknown")
@@ -53,6 +54,7 @@ MISSING_SUMMARY = 3  # from this many items missing on the PC they collapse into
 GLOW_WIDTH = 900
 LANGUAGE_CODES = {"en": "EN", "ru": "RU", "uk": "UA"}
 INSTALLED_VISIBLE = 15  # this many installed programs are shown at once, the rest behind the "Show all" button
+DIAG_ITEMS = 15  # lines under a troubleshooting finding; the rest are counted
 
 # Icons from the Segoe Fluent Icons / Segoe MDL2 Assets font
 ICONS = {"overview": "", "privacy": "", "system": "", "explorer": "", "context": "",
@@ -60,7 +62,10 @@ ICONS = {"overview": "", "privacy": "", "system": "", "explorer": ""
          "globe": "", "palette": "", "shield": "", "down": "", "up": "",
          "warning": "", "check": "", "circle": "", "unknown": "", "dash": "",
          "info": "", "refresh": "", "dots": "", "snapshots": "", "folder": "", "memory": "",
-         "add": "", "apps": "", "help": ""}
+         "add": "", "apps": "", "help": "",
+         "diagnostics": "", "speed": "", "drive": "", "bug": ""}
+# The icon of each group of troubleshooting checks
+GROUP_ICONS = {"performance": "speed", "storage": "drive", "stability": "bug", "security": "shield"}
 
 
 def status_color(state):
@@ -70,6 +75,10 @@ def status_color(state):
 
 def service_color(state):
     return {"on": C["accent"], "off": C["muted"], "missing": C["dim"], "unknown": C["warn"]}[state]
+
+
+def severity_color(severity):
+    return {"problem": C["bad"], "warning": C["warn"], "info": C["accent"], "ok": C["ok"], "unknown": C["dim"]}[severity]
 
 
 def load_settings():
@@ -160,8 +169,13 @@ class App:
         self.message = ("checking", {})
         self.hovered = None
         self.cards, self.service_cards, self.page_cards, self.wraps = {}, {}, [], []
+        self.diag_cards = {}
         self.action_buttons = []  # (button, needs administrator rights) — disabled while the window is busy
         self.snapshots = engine.list_snapshots()
+        self.diag = None          # troubleshooting findings; the check runs the first time its page is opened
+        self.diag_time = None
+        self.diag_running = False
+        self.diag_done = set()
         self.content_width = self.px(700)
         self.jobs = queue.Queue()
         self.acting = False       # applying, reverting or restoring is in progress: exiting is not allowed
@@ -315,6 +329,17 @@ class App:
                 widget.bind("<Leave>", lambda e, p=page, w=item: None if self.pointer_inside(w) else self.hover_nav(p, False))
             self.nav[page] = {"item": item, "icon": icon, "count": count, "name": name, "parts": parts}
         self.indicator = tk.Frame(nav, bg=CATEGORY_COLORS[self.page], width=px(3))
+        self.nav_compact = False
+
+        def fit(event):
+            # In a short window the menu items move closer together, so the bottom of the sidebar stays in view
+            compact = event.height < px(660)
+            if compact != self.nav_compact:
+                self.nav_compact = compact
+                for widgets in self.nav.values():
+                    widgets["icon"].pack_configure(pady=px(6) if compact else px(9))
+
+        side.bind("<Configure>", fit, add="+")
 
         bottom = tk.Frame(side, bg=C["side"])
         bottom.pack(side="bottom", fill="x", padx=px(20), pady=(0, px(20)))  # left edge lines up with the logo
@@ -556,13 +581,19 @@ class App:
         # The memory limiter shows the number of programs it keeps within limits instead of a counter
         active = [r for r in self.limiter.snapshot()["config"]["rules"] if r["enabled"]] if self.limiter.active() else []
         self.nav["memory"]["count"].configure(text=str(len(active)) if active else "", fg=C["side_muted"])
+        # Troubleshooting: how many findings need attention, red if one of them is a problem
+        found = diagnostics.counts(self.diag or [])
+        attention = found["problem"] + found["warning"]
+        light = C["name"] == "light"  # the sidebar is dark in every theme
+        color = ("#FCA5A5" if light else C["bad"]) if found["problem"] else ("#F0B783" if light else C["warn"])
+        self.nav["diagnostics"]["count"].configure(text=str(attention) if attention else "", fg=color)
         if not self.scan:
             for page, widgets in self.nav.items():
-                if page != "memory":
+                if page not in ("memory", "diagnostics"):
                     widgets["count"].configure(text="")
             return
         for page, widgets in self.nav.items():
-            if page == "memory":
+            if page in ("memory", "diagnostics"):
                 continue
             if page == "overview":
                 problems = sum(self.unknown_reasons().values())
@@ -614,6 +645,8 @@ class App:
             self.link(self.links, self.t("snap_folder"), lambda: os.startfile(engine.snapshots_dir())).pack(side="left")
         elif page == "memory":
             self.link(self.links, self.t("mem_pick"), self.pick_running).pack(side="left")
+        elif page == "diagnostics":
+            self.link(self.links, self.t("rescan"), self.rescan_diagnostics).pack(side="left")
         else:
             for key, action in (("select_all", self.select_all), ("clear", self.clear_selection)):
                 self.link(self.links, self.t(key), action).pack(side="left", padx=(self.px(16), 0))
@@ -625,6 +658,7 @@ class App:
         for widget in self.list_frame.winfo_children():
             widget.destroy()
         self.cards, self.service_cards, self.page_cards, self.wraps = {}, {}, [], []
+        self.diag_cards = {}
         self.action_buttons = []
         self.mem = {}
         if page == "overview":
@@ -633,6 +667,8 @@ class App:
             self.build_snapshots_page()
         elif page == "memory":
             self.build_memory_page()
+        elif page == "diagnostics":
+            self.build_diagnostics_page()
         else:
             self.build_tweak_page(page)
         tk.Frame(self.list_frame, bg=C["bg"], height=self.px(12)).pack()
@@ -655,7 +691,9 @@ class App:
 
     def build_overview(self):
         if self.scan is None:
-            self.build_scan_panel()
+            self.scan_rows = self.build_scan_panel(ICONS["overview"], self.t("scan_title"), self.t("scan_text"),
+                                                   [(step, self.t("scan_" + step)) for step in SCAN_STEPS],
+                                                   self.scan_done)
             return
         self.build_summary()
         self.build_callout()
@@ -673,32 +711,45 @@ class App:
         tk.Label(head, text=text, font=self.fonts["small_bold"], fg=C["muted"], bg=C["bg"]).pack(
             side="left", padx=(self.px(8), 0))
 
-    def build_scan_panel(self):
+    def build_scan_panel(self, icon, title, text, steps, done):
+        """Rings and the list of steps while something is being read. Returns {step: (glyph, label)}."""
         px = self.px
         card = Card(self.list_frame, self.scale, radius=16, pad=8)
         card.pack(fill="x")
         body = card.body
-        rings = ScanRings(body, px(150), self.scale, ICONS["overview"], self.fonts["icon_scan"])
+        rings = ScanRings(body, px(150), self.scale, icon, self.fonts["icon_scan"])
         rings.pack(pady=(px(18), px(6)))
         rings.start()
-        tk.Label(body, text=self.t("scan_title"), font=self.fonts["dialog"], fg=C["text"], bg=card.fill).pack()
-        tk.Label(body, text=self.t("scan_text"), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
+        tk.Label(body, text=title, font=self.fonts["dialog"], fg=C["text"], bg=card.fill).pack()
+        tk.Label(body, text=text, font=self.fonts["small"], fg=C["muted"], bg=card.fill,
                  wraplength=px(440), justify="center").pack(pady=(px(4), px(14)))
-        steps = tk.Frame(body, bg=card.fill)
-        steps.pack(pady=(0, px(22)))
-        self.scan_rows = {}
-        for step in SCAN_STEPS:
-            row = tk.Frame(steps, bg=card.fill)
+        holder = tk.Frame(body, bg=card.fill)
+        holder.pack(pady=(0, px(22)))
+        rows = {}
+        for step, name in steps:
+            row = tk.Frame(holder, bg=card.fill)
             row.pack(anchor="w", pady=px(3))
-            done = step in self.scan_done
-            glyph = tk.Label(row, text=ICONS["check"] if done else ICONS["dots"], font=self.fonts["icon_small"],
-                             fg=C["ok"] if done else C["dim"], bg=card.fill, width=2)
+            finished = step in done
+            glyph = tk.Label(row, text=ICONS["check"] if finished else ICONS["dots"], font=self.fonts["icon_small"],
+                             fg=C["ok"] if finished else C["dim"], bg=card.fill, width=2)
             glyph.pack(side="left")
-            label = tk.Label(row, text=self.t("scan_" + step), font=self.fonts["body"],
-                             fg=C["text"] if done else C["muted"], bg=card.fill)
+            label = tk.Label(row, text=name, font=self.fonts["body"], fg=C["text"] if finished else C["muted"],
+                             bg=card.fill)
             label.pack(side="left", padx=(px(6), 0))
-            self.scan_rows[step] = (glyph, label)
+            rows[step] = (glyph, label)
         self.page_cards = [card]
+        return rows
+
+    def mark_step(self, rows, step):
+        """A step of the scan panel is done: its dots turn into a green check."""
+        if step in rows:
+            glyph, label = rows[step]
+            try:
+                glyph.configure(text=ICONS["check"])
+                self.animator.color(("step", step), lambda c: glyph.configure(fg=c), C["dim"], C["ok"], 0.3)
+                self.animator.color(("steplabel", step), lambda c: label.configure(fg=c), C["muted"], C["text"], 0.3)
+            except tk.TclError:
+                pass
 
     def build_summary(self):
         px = self.px
@@ -706,11 +757,15 @@ class App:
         counts = collections.Counter(info.state for info in infos)
         unknown = sum(self.unknown_reasons().values())  # the same number as in the tips block below
         applied = sum(status == "applied" for status in self.status_map().values())
-        tiles = [("summary_on", counts["on"], None, C["accent"], ICONS["check"]),
-                 ("summary_off", counts["off"], None, C["muted"], ICONS["circle"]),
-                 ("summary_missing", counts["missing"], None, C["dim"], ICONS["dash"]),
-                 ("summary_unknown", unknown, None, C["warn"] if unknown else C["dim"], ICONS["unknown"]),
-                 ("summary_tweaks", applied, len(tweaks.TWEAKS), C["ok"], ICONS["overview"])]
+        self.build_tiles([("summary_on", counts["on"], None, C["accent"], ICONS["check"]),
+                          ("summary_off", counts["off"], None, C["muted"], ICONS["circle"]),
+                          ("summary_missing", counts["missing"], None, C["dim"], ICONS["dash"]),
+                          ("summary_unknown", unknown, None, C["warn"] if unknown else C["dim"], ICONS["unknown"]),
+                          ("summary_tweaks", applied, len(tweaks.TWEAKS), C["ok"], ICONS["overview"])])
+
+    def build_tiles(self, tiles):
+        """A row of tiles with numbers that count up: [(text key, number, total or None, color, icon)]."""
+        px = self.px
         row = tk.Frame(self.list_frame, bg=C["bg"])
         row.pack(fill="x", pady=(0, px(4)))
         for i, (key, value, total, color, icon) in enumerate(tiles):
@@ -868,6 +923,242 @@ class App:
                 self.animator.color(("flash", tweak_id), card.set_border, C["accent"], C["border"], 1.2, delay=0.3)
 
         self.root.after(80, scroll)
+
+    # --- Troubleshooting ---
+
+    def build_diagnostics_page(self):
+        if self.diag is None:
+            if not self.diag_running:  # the first visit starts the check
+                self.begin_diagnostics()
+            self.diag_rows = self.build_scan_panel(ICONS["diagnostics"], self.t("diag_scan_title"),
+                                                   self.t("diag_scan_text"),
+                                                   [(g, self.t("diag_step_" + g)) for g in diagnostics.GROUPS],
+                                                   self.diag_done)
+            return
+        px = self.px
+        found = diagnostics.counts(self.diag)
+        self.build_tiles([("diag_tile_problem", found["problem"], None, C["bad"] if found["problem"] else C["dim"],
+                           ICONS["warning"]),
+                          ("diag_tile_warning", found["warning"], None, C["warn"] if found["warning"] else C["dim"],
+                           ICONS["unknown"]),
+                          ("diag_tile_info", found["info"], None, C["accent"] if found["info"] else C["dim"],
+                           ICONS["info"]),
+                          ("diag_tile_ok", found["ok"], None, C["ok"], ICONS["check"])])
+        if self.diag_time:
+            note = tk.Label(self.list_frame, text=self.t("diag_checked", time=f"{self.diag_time:%H:%M}"),
+                            font=self.fonts["small"], fg=C["dim"], bg=C["bg"], anchor="w", justify="left")
+            note.pack(fill="x", padx=px(18), pady=(px(6), 0))
+            self.wrap(note, px(36))
+        if not found["problem"] + found["warning"]:
+            self.build_diag_all_clear()
+        order = {check: i for i, (check, _) in enumerate(diagnostics.CHECKS)}
+        for key, severities in (("diag_sec_attention", ("problem", "warning")), ("diag_sec_info", ("info",)),
+                                ("diag_sec_ok", ("ok",)), ("diag_sec_unknown", ("unknown",))):
+            group = sorted((f for f in self.diag if f.severity in severities),
+                           key=lambda f: (diagnostics.SEVERITIES.index(f.severity), order[f.check]))
+            if not group:
+                continue
+            icon = {"diag_sec_attention": "warning", "diag_sec_info": "info", "diag_sec_ok": "check",
+                    "diag_sec_unknown": "unknown"}[key]
+            self.section_head(ICONS[icon], f"{self.t(key)}  ·  {len(group)}")
+            if key in ("diag_sec_ok", "diag_sec_unknown"):  # what is fine takes one line each
+                self.build_finding_list(group)
+                continue
+            for finding in group:
+                self.build_finding_card(finding)
+
+    def build_diag_all_clear(self):
+        px = self.px
+        card = Card(self.list_frame, self.scale, border=mix(C["ok"], C["surface"], 0.5), radius=14, pad=6)
+        card.pack(fill="x", pady=(px(10), 0))
+        head = tk.Frame(card.body, bg=card.fill)
+        head.pack(fill="x", padx=px(12), pady=(px(10), 0))
+        tk.Label(head, text=ICONS["check"], font=self.fonts["icon"], fg=C["ok"], bg=card.fill).pack(side="left")
+        tk.Label(head, text=self.t("diag_clear_title"), font=self.fonts["h2"], fg=C["text"], bg=card.fill).pack(
+            side="left", padx=(px(10), 0))
+        text = tk.Label(card.body, text=self.t("diag_clear_text"), font=self.fonts["small"], fg=C["muted"],
+                        bg=card.fill, anchor="w", justify="left")
+        text.pack(fill="x", padx=(px(40), px(12)), pady=(px(2), px(12)))
+        self.wrap(text, px(72))
+        self.page_cards.append(card)
+
+    def diag_text(self, key, params):
+        """A troubleshooting line with its numbers, sizes, dates and nested texts in the window's language."""
+        values = {}
+        for name, value in params.items():
+            if isinstance(value, diagnostics.Size):
+                value = self.size_text(value)
+            elif isinstance(value, datetime.date):
+                value = self.format_day(value)
+            elif isinstance(value, diagnostics.Text):  # filled in with the other values, never with itself
+                value = self.diag_text(value, {n: v for n, v in params.items() if not isinstance(v, diagnostics.Text)})
+            values[name] = value
+        return self.text("diag_lines", key).format(**values)
+
+    def format_day(self, day):
+        return f"{day.day} {day:%b %Y}" if self.lang == "en" else f"{day:%d.%m.%Y}"
+
+    def build_finding_card(self, finding):
+        px = self.px
+        color = severity_color(finding.severity)
+        card = Card(self.list_frame, self.scale,
+                    border=mix(color, C["surface"], 0.55) if finding.severity == "problem" else None)
+        card.pack(fill="x", pady=(0, px(10)))
+        body = card.body
+        body.columnconfigure(1, weight=1)
+        badge = Card(body, self.scale, fill=mix(color, card.fill, 0.14), border=mix(color, card.fill, 0.35), radius=12,
+                     pad=3)
+        badge.grid(row=0, column=0, rowspan=2, sticky="nw", padx=px(12), pady=(px(10), 0))
+        tk.Label(badge.body, text=ICONS[GROUP_ICONS[finding.group]], font=self.fonts["icon"], fg=color,
+                 bg=badge.fill).pack(padx=px(7), pady=px(5))
+        title = tk.Label(body, text=self.text("diag", finding.check)[0], font=self.fonts["h2"], fg=C["text"],
+                         bg=card.fill, anchor="w", justify="left")
+        title.grid(row=0, column=1, sticky="ew", pady=(px(9), 0))
+        line = tk.Label(body, text=self.diag_text(finding.line, finding.params), font=self.fonts["small"],
+                        fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+        line.grid(row=1, column=1, sticky="ew", pady=(px(1), 0))
+        pill = Pill(body, self.fonts["pill"], self.scale, self.animator)
+        pill.grid(row=2, column=2, sticky="e", padx=px(12), pady=(px(5), px(8)))  # on the "Details" line
+        pill.set(self.t("diag_" + finding.severity), color, animate=False)
+        self.wrap(title, px(232))
+        self.wrap(line, px(232))
+        widgets = {"card": card}
+        self.details_toggle(body, widgets, ("d", finding.check),
+                            lambda holder: self.build_finding_details(holder, finding), column=1, indent=0)
+        self.page_cards.append(card)
+        self.diag_cards[finding.check] = widgets
+
+    def build_finding_list(self, findings):
+        """One card with a line per finding: icon, name, result and its own Details."""
+        px = self.px
+        card = Card(self.list_frame, self.scale, radius=14, pad=6)
+        card.pack(fill="x", pady=(0, px(10)))
+        body = card.body
+        body.columnconfigure(2, weight=1)
+        # The results wrap in what the icons, the widest name and the widest Details link leave of the line
+        bold = tkfont.Font(font=self.fonts["small_bold"])
+        names = max(bold.measure(self.text("diag", f.check)[0]) for f in findings)
+        link = max(bold.measure(self.t(key)) for key in ("details_show", "details_hide"))
+        offset = names + link + px(122)
+        for i, finding in enumerate(findings):
+            top = 3 * i
+            if i:
+                tk.Frame(body, bg=C["border"], height=1).grid(row=top, column=0, columnspan=4, sticky="ew",
+                                                              padx=px(12))
+            color = severity_color(finding.severity)
+            tk.Label(body, text=ICONS[GROUP_ICONS[finding.group]], font=self.fonts["icon_small"], fg=color,
+                     bg=card.fill).grid(row=top + 1, column=0, sticky="w", padx=(px(14), px(10)), pady=px(8))
+            tk.Label(body, text=self.text("diag", finding.check)[0], font=self.fonts["small_bold"], fg=C["text"],
+                     bg=card.fill, anchor="w").grid(row=top + 1, column=1, sticky="w", padx=(0, px(12)))
+            line = tk.Label(body, text=self.diag_text(finding.line, finding.params), font=self.fonts["small"],
+                            fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+            line.grid(row=top + 1, column=2, sticky="ew")
+            self.wrap(line, offset)
+            widgets = {"card": card}
+            self.details_toggle(body, widgets, ("d", finding.check),
+                                lambda holder, f=finding: self.build_finding_details(holder, f, compact=True),
+                                column=3, indent=12, row=top + 1, span=4, sticky="e", pady=(6, 6))
+            widgets["toggle"].master.grid_configure(padx=(px(12), px(14)))
+            self.diag_cards[finding.check] = widgets
+        self.page_cards.append(card)
+
+    def build_finding_details(self, holder, finding, compact=False):
+        px = self.px
+        bg = holder.cget("bg")
+        inner = tk.Frame(holder, bg=bg)
+        # Under the name, past the badge of a card or the icon of a line
+        indent = (px(44) if compact else px(66), px(16))
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill="x", padx=(indent[0], px(12)), pady=(0, px(10)))
+        text = tk.Label(inner, text=self.text("diag", finding.check)[1], font=self.fonts["body"], fg=C["text"],
+                        bg=bg, anchor="w", justify="left")
+        text.pack(fill="x", padx=indent)
+        self.wrap(text, px(102))
+        if finding.items:
+            items = tk.Frame(inner, bg=bg)
+            items.pack(fill="x", padx=indent, pady=(px(10), 0))
+            shown = finding.items[:DIAG_ITEMS]
+            if len(finding.items) > DIAG_ITEMS:
+                shown.append(("item_more", {"n": len(finding.items) - DIAG_ITEMS}))
+            for key, params in shown:
+                line = tk.Frame(items, bg=bg)
+                line.pack(fill="x", pady=px(1))
+                tk.Label(line, text="•", font=self.fonts["small_bold"], fg=severity_color(finding.severity),
+                         bg=bg).pack(side="left", anchor="n")
+                label = tk.Label(line, text=self.diag_text(key, params), font=self.fonts["small"], fg=C["muted"],
+                                 bg=bg, anchor="w", justify="left")
+                label.pack(side="left", fill="x", expand=True, padx=(px(8), 0))
+                self.wrap(label, px(124))
+        if finding.actions:  # at most two, so they fit on one line
+            buttons = tk.Frame(inner, bg=bg)
+            buttons.pack(fill="x", padx=indent, pady=(px(14), 0))
+            for action in finding.actions:
+                GradientButton(buttons, self.t("act_" + action), lambda a=action: self.open_tool(a),
+                               self.fonts["button"], self.scale, self.animator, primary=False, pad=(14, 6)).pack(
+                    side="left", padx=(0, px(8)))
+        tk.Frame(inner, bg=bg, height=px(12)).pack()
+        return inner
+
+    def open_tool(self, action):
+        """Opens what a finding suggests: a page of SimpleTool, a Windows settings page or a Windows tool."""
+        kind, target, args = diagnostics.action_target(action)
+        if kind == "page":
+            self.show_page(target)
+            return
+        if not self.shell_open(target, args):
+            self.notify(self.t("diag_open_failed"), C["warn"], ICONS["warning"])
+
+    def shell_open(self, target, args=None):
+        """Opens a program, a document or a settings address the way Explorer would. False if Windows refuses."""
+        try:
+            return ctypes.windll.shell32.ShellExecuteW(None, "open", target, args, None, 1) > 32
+        except (AttributeError, OSError):
+            return False
+
+    def begin_diagnostics(self):
+        self.diag_running = True
+        self.diag_done = set()
+        self.diag_started = time.perf_counter()
+
+        def step(group):
+            self.jobs.put((self.on_diag_step, group))
+
+        self.run_job(lambda: diagnostics.evaluate(diagnostics.gather(step)), self.on_diag_done)
+        self.update_footer()
+
+    def rescan_diagnostics(self):
+        if self.diag_running:
+            return
+        self.diag = None
+        self.begin_diagnostics()
+        self.update_nav_counts()
+        if self.page == "diagnostics":
+            self.show_page("diagnostics", animate=False)
+
+    def on_diag_step(self, group):
+        self.diag_done.add(group)
+        if self.page == "diagnostics":
+            self.mark_step(getattr(self, "diag_rows", {}), group)
+
+    def on_diag_done(self, result):
+        wait = MIN_SCAN_SECONDS - (time.perf_counter() - self.diag_started)
+        if wait > 0:
+            self.root.after(int(wait * 1000), lambda: self.finish_diagnostics(result))
+        else:
+            self.finish_diagnostics(result)
+
+    def finish_diagnostics(self, result):
+        self.diag_running = False
+        if isinstance(result, Exception):
+            # Nothing was read: every check says so, rather than an empty list that would look like a healthy PC
+            self.diag, self.diag_time = diagnostics.evaluate({"now": datetime.datetime.now()}), None
+            self.show_errors([str(result)])
+        else:
+            self.diag, self.diag_time = result, datetime.datetime.now()
+        self.update_nav_counts()
+        if self.page == "diagnostics":
+            self.show_page("diagnostics")
+        else:
+            self.update_footer()
 
     # --- System snapshots ---
 
@@ -1549,19 +1840,20 @@ class App:
         self.paint_card(tweak, animate=False)
         return widgets
 
-    def details_toggle(self, body, widgets, key, builder, column=0, indent=12):
-        """A "Details" link and an animated expanding block under it."""
+    def details_toggle(self, body, widgets, key, builder, column=0, indent=12, row=2, span=3, sticky="w", pady=(5, 8)):
+        """A "Details" link at (row, column) and an animated expanding block in the grid row under it."""
         px = self.px
         bg = body.cget("bg")
+        link_row = row
         row = tk.Frame(body, bg=bg, cursor="hand2")
-        row.grid(row=2, column=column, sticky="w", padx=(px(indent), 0), pady=(px(5), px(8)))
+        row.grid(row=link_row, column=column, sticky=sticky, padx=(px(indent), 0), pady=(px(pady[0]), px(pady[1])))
         label = tk.Label(row, text=self.t("details_show"), font=self.fonts["small_bold"], fg=C["accent"], bg=bg,
                          cursor="hand2")
         label.pack(side="left")
         chevron = tk.Label(row, text=ICONS["down"], font=self.fonts["icon_tiny"], fg=C["accent"], bg=bg, cursor="hand2")
         chevron.pack(side="left", padx=(px(6), 0), pady=(px(2), 0))
         holder = tk.Frame(body, bg=bg, height=1)
-        holder.grid(row=3, column=0, columnspan=3, sticky="ew")
+        holder.grid(row=link_row + 1, column=0, columnspan=span, sticky="ew")
         holder.grid_remove()
         widgets.update(holder=holder, inner=None, toggle=label, chevron=chevron, builder=builder)
         for widget in (row, label, chevron):
@@ -1755,10 +2047,12 @@ class App:
             text = self.t("selected", n=len(self.selected))
         elif self.page == "memory":
             text = self.t("mem_on" if self.limiter.active() else "mem_off")
+        elif self.page == "diagnostics":
+            text = self.t("diag_running" if self.diag_running else "diag_footer")
         else:
             text = self.t("hint_select")
         self.message_label.configure(text=text)
-        if self.busy:
+        if self.busy or self.page == "diagnostics" and self.diag_running:
             if not self.spinner.winfo_ismapped():
                 self.spinner.pack(side="left", padx=(0, self.px(10)), before=self.message_label)
             self.spinner.start()
@@ -1779,7 +2073,7 @@ class App:
         if self.page in ("overview", "snapshots"):
             self.show_page(self.page)
             return
-        if self.page == "memory":
+        if self.page in ("memory", "diagnostics"):
             self.update_nav_counts()
             self.update_footer()
             return
@@ -1849,15 +2143,7 @@ class App:
 
     def on_scan_step(self, step):
         self.scan_done.add(step)
-        rows = getattr(self, "scan_rows", {})
-        if step in rows:
-            glyph, label = rows[step]
-            try:
-                glyph.configure(text=ICONS["check"])
-                self.animator.color(("step", step), lambda c: glyph.configure(fg=c), C["dim"], C["ok"], 0.3)
-                self.animator.color(("steplabel", step), lambda c: label.configure(fg=c), C["muted"], C["text"], 0.3)
-            except tk.TclError:
-                pass
+        self.mark_step(getattr(self, "scan_rows", {}), step)
 
     def on_scan_done(self, result):
         wait = MIN_SCAN_SECONDS - (time.perf_counter() - self.scan_started)

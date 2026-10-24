@@ -149,6 +149,19 @@ class WindowsApi:
         finally:
             self.k.CloseHandle(handle)
 
+    def cpu_time(self, pid):
+        """Processor time the process has used so far (in 100 ns units), or None if there is no access."""
+        handle = self._open(pid, self.QUERY)
+        if not handle:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not self.k.GetProcessTimes(handle, *[ctypes.byref(t) for t in times]):
+                return None
+            return sum(t.dwHighDateTime << 32 | t.dwLowDateTime for t in times[2:])  # kernel and user time
+        finally:
+            self.k.CloseHandle(handle)
+
     def trim(self, pid):
         handle = self._open(pid, self.QUERY | self.SET_QUOTA)
         if not handle:

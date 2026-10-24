@@ -23,7 +23,7 @@ class Texts(unittest.TestCase):
 
     def test_placeholders_match_english(self):
         for lang, texts in i18n.TEXTS.items():
-            for section in ("ui", "menu"):
+            for section in ("ui", "menu", "diag_lines"):
                 for key, text in EN[section].items():
                     with self.subTest(lang=lang, key=key):
                         self.assertEqual(placeholders(texts[section][key]), placeholders(text))
@@ -38,7 +38,7 @@ class Texts(unittest.TestCase):
             for _, name, _ in services.SERVICES:
                 title, details = texts["services"][name]
                 self.assertTrue(title and len(details) > 60, (lang, name))
-            for category in tweaks.CATEGORIES + ["overview", "memory", "snapshots"]:
+            for category in tweaks.CATEGORIES + ["overview", "diagnostics", "memory", "snapshots"]:
                 self.assertEqual(len(texts["categories"][category]), 2)
 
     def test_menu_labels_exist_for_every_language(self):

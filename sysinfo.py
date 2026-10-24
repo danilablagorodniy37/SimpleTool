@@ -57,8 +57,8 @@ class _MemoryStatus(ctypes.Structure):
                                                         "ullAvailExtendedVirtual")]
 
 
-def memory():
-    """Installed memory in GB as Windows reports it, rounded to a tenth."""
+def memory_status():
+    """Windows' memory counters (MEMORYSTATUSEX), or None if they cannot be read."""
     status = _MemoryStatus()
     status.dwLength = ctypes.sizeof(status)
     try:
@@ -66,7 +66,13 @@ def memory():
             return None
     except (AttributeError, OSError):
         return None
-    return round(status.ullTotalPhys / 1024 ** 3, 1)
+    return status
+
+
+def memory():
+    """Installed memory in GB as Windows reports it, rounded to a tenth."""
+    status = memory_status()
+    return round(status.ullTotalPhys / 1024 ** 3, 1) if status else None
 
 
 # EditionID as people know the editions
@@ -75,18 +81,26 @@ EDITIONS = {"Professional": "Pro", "Core": "Home", "CoreSingleLanguage": "Home S
             "IoTEnterprise": "IoT Enterprise"}
 
 
+def release():
+    """("Windows 11", "24H2", 26100, "Professional"); the build is 0 and the rest None when they cannot be read.
+    The registry still calls Windows 11 "Windows 10", so the build number decides."""
+    build = _value(WINDOWS_KEY, "CurrentBuild")
+    number = int(build) if build and build.isdigit() else 0
+    product = "Windows 11" if number >= 22000 else "Windows 10" if number else None
+    version = _value(WINDOWS_KEY, "DisplayVersion") or _value(WINDOWS_KEY, "ReleaseId")
+    return product, version, number, _value(WINDOWS_KEY, "EditionID")
+
+
 def windows():
-    """"Windows 11 Pro 24H2, build 26100.6584". The registry still calls Windows 11 "Windows 10", so the build
-    number decides."""
+    """"Windows 11 Pro 24H2, build 26100.6584"."""
     build = _value(WINDOWS_KEY, "CurrentBuild")
     update = _value(WINDOWS_KEY, "UBR")
-    edition = _value(WINDOWS_KEY, "EditionID")
+    name, release_name, _, edition = release()
     edition = EDITIONS.get(edition, edition)
-    release = _value(WINDOWS_KEY, "DisplayVersion") or _value(WINDOWS_KEY, "ReleaseId")
     if not build:
         return f"Windows {platform.version()}"
-    name = "Windows 11" if build.isdigit() and int(build) >= 22000 else "Windows 10"
-    parts = [name, edition, release]
+    name = name or "Windows 10"
+    parts = [name, edition, release_name]
     text = " ".join(part for part in parts if part)
     return f"{text}, build {build}" + (f".{update}" if update else "")
 

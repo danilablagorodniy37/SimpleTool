@@ -1,7 +1,7 @@
 # SimpleTool
 
 A Windows 10 and 11 tweaker for privacy, system features and File Explorer, with a memory limiter
-for programs such as Chrome and Discord. Tick the tweaks you want, press **Apply**, and press
+for programs such as Chrome and Discord and a troubleshooting check for lags, crashes and conflicts. Tick the tweaks you want, press **Apply**, and press
 **Revert** to put the original values back.
 
 > **Beta.** This is a test version and it is not stable yet. Use it at your own risk.
@@ -28,6 +28,23 @@ location, performance, Xbox and security are on, off or not installed. If someth
 it says why and how to fix it (usually: run as administrator). Every tweak and service has a
 detailed explanation, and each tweak lists exactly which registry values, services and tasks it
 changes and their current state.
+
+## Troubleshooting
+
+The **Troubleshooting** page looks for the usual causes of lags, freezes, crashes and conflicts. It only
+reads: nothing is changed and nothing leaves the PC. The check runs the first time the page is opened and takes
+a few seconds; **Scan again** repeats it. Every finding says what it means and how to fix it, and most have a
+button that opens the right Windows tool or settings page.
+
+| Group | What is checked |
+|---|---|
+| Performance | memory use and the programs that take most, installed memory and memory Windows cannot use, one memory module, mixed modules or a kit below its rated speed, memory held by drivers (a leak), the page file and the commit limit with the low-memory warnings Windows logs, processor load and its top programs, the microcode of Intel 13th and 14th Gen processors, AMD's driver for Ryzen 9 X3D processors, the power plan, the power mode, turbo boost and processor caps, the graphics driver (or none: the Microsoft Basic Display Adapter), a disabled graphics card, a monitor plugged into the processor's graphics while a graphics card is installed, a card on too few PCIe lanes, programs set to the power-saving graphics, the refresh rate, startup programs, several lighting programs at once, background game recording, boot options that limit processors or memory, test mode, kernel debugging, a forced HPET timer, Driver Verifier and disabled graphics driver recovery, a desktop slowed down by its firmware, time since the last restart |
+| Drives | free space, drive health and SSD wear (as administrator), Windows on a hard disk, eMMC, a memory card or a USB drive, TRIM turned off for an SSD, drive and file system errors in the event log, temporary files |
+| Stability | blue screens and sudden shutdowns (with the power button held, or a hang while shutting down or going to sleep), program crashes and hangs and the module they crash in (overlays, the graphics driver, the drive, unstable memory or processor settings), graphics driver crashes, NVIDIA driver errors and graphics engine hangs, hardware (WHEA) errors, the last Windows Memory Diagnostic, devices with driver problems or resource conflicts, services that keep failing, important services disabled by "optimization" tools, damaged system files (as administrator), an old or missing Visual C++ runtime, the Media Feature Pack on N editions, battery wear |
+| Protection, updates and network | antivirus (none, out of date, or two at once), UAC and the Spectre and Meltdown mitigations turned off, memory integrity and its cost in games, UEFI, Secure Boot and TPM 2.0 for anti-cheats, Windows Update (turned off, idle, or updates that keep failing), a pending restart, the end of support of this version of Windows, IP address conflicts and a wired connection at 100 Mb/s, a proxy server, the hosts file |
+
+Findings are **Problem**, **Warning**, **Note** or **OK**; what could not be read is listed as **Not checked**
+with the reason. Most checks work without administrator rights.
 
 ## What it changes
 
