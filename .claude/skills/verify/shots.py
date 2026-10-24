@@ -13,7 +13,12 @@ import sys
 from ctypes import wintypes
 
 LANG, OUT = sys.argv[1], os.path.abspath(sys.argv[2])
-SPECS = [(spec.split(":") + [None, "0"])[:3] for spec in sys.argv[3:]] or [["overview", None, "0"]]
+def parse(spec):
+    parts = spec.split(":")
+    return parts[0], (parts[1] if len(parts) > 1 and parts[1] else None), (float(parts[2]) if len(parts) > 2 else 0.0)
+
+
+SPECS = [parse(spec) for spec in sys.argv[3:]] or [("overview", None, 0.0)]
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DATA = os.path.join(OUT, "data")
 os.makedirs(os.path.join(DATA, "SimpleTool"), exist_ok=True)
