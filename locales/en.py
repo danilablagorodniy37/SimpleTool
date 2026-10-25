@@ -334,6 +334,8 @@ TEXTS = {
         "act_network_status": "Network status",
         "act_optional_features": "Optional features",
         "act_recovery": "Recovery",
+        "act_apps": "Installed apps",
+        "act_system_properties": "Startup and Recovery",
         "act_uac": "UAC settings",
     },
     "themes": {"navy": "Navy", "midnight": "Midnight", "light": "Light"},
@@ -838,6 +840,33 @@ TEXTS = {
                         "Reliability Monitor shows the details of every crash. "
                         "The list also names the module a program crashed in: an overlay (Discord, Steam, RivaTuner, "
                         "OBS), the graphics driver, or Windows' own code."),
+        "crash_files": ("Crash reports outside the Windows log",
+                       "Browsers built on Chromium (Chrome, Edge, Brave, Opera, Vivaldi), programs built on Electron "
+                       "(Discord, Visual Studio Code, Teams, Slack, Signal, WhatsApp), Steam, the Epic Games and Riot "
+                       "launchers and some others catch their own crashes: they write a report to their folder and "
+                       "close the process before Windows notices, so these crashes never reach Event Viewer or "
+                       "Reliability Monitor. SimpleTool counts the reports of the last 14 days in those folders, and "
+                       "the reports waiting in Windows Error Reporting. A program that crashes again and again needs an "
+                       "update, a reset of its profile or the removal of an extension; for browsers the count also "
+                       "includes crashes of a single tab or of the graphics process."),
+        "live_kernel": ("Hangs recovered without a blue screen",
+                       "When a driver stops responding, Windows can sometimes recover instead of showing a blue screen: "
+                       "it saves a live kernel dump to C:\\Windows\\LiveKernelReports and carries on. The folder name "
+                       "says what hung: WATCHDOG is the graphics driver or the graphics card (the screen freezes or "
+                       "goes black for a few seconds), NDIS the network driver, USBHUB3 the USB controller, "
+                       "PoW32kWatchdog and PDC a hang while going to sleep or waking up. Reliability Monitor shows them "
+                       "as LiveKernelEvent only while Windows Error Reporting is on; the files stay either way. Reading "
+                       "the folder needs administrator rights; without them SimpleTool can only tell which components "
+                       "ever left a dump."),
+        "conflicting_software": ("Programs with documented problems",
+                                "Installed programs and drivers whose problems their makers, Microsoft or game "
+                                "developers have documented: audio software that crashes games right after start "
+                                "(Nahimic, Sonic Studio), the inpoutx64 driver of lighting and monitoring tools that "
+                                "Windows now blocks because games crash with it, network “boosters” that load the "
+                                "processor (Killer, cFosSpeed), an old RivaTuner next to Overwolf, virtual machines "
+                                "slowed down by core isolation, and “optimizers” and “repair tools” that antivirus "
+                                "makers list as unwanted or that regulators fined. Each line says what was reported and "
+                                "what to do. SimpleTool removes nothing itself."),
         "gpu_resets": ("Graphics driver crashes",
                        "Windows restarts the graphics driver when it stops responding for a few seconds: the screen "
                        "goes black or freezes, and a game may close. The NVIDIA driver also records its own errors, "
@@ -1116,6 +1145,74 @@ TEXTS = {
         "kind_write": "Lost writes",
         "item_bsod": "{date}: stop code {code}",
         "item_reset": "{date}: turned off without shutting down",
+        "crash_files": "Crash reports outside the Windows log in the last {days} days: {n}, most of all {name}",
+        "crash_files_ok": "No program kept crash reports of its own in the last {days} days",
+        "item_crash_files": "{name}: {n} crash reports, last on {date}, in {folder}",
+        "item_crash_files_hidden": "These crashes are not in Event Viewer or Reliability Monitor: the program closed itself before Windows "
+            "could record them",
+        "item_crash_files_tabs": "For browsers the count includes crashes of a single tab, an extension or the graphics process",
+        "live_kernel": "Hangs recovered without a blue screen in the last {days} days: {n}",
+        "live_kernel_ok": "No live kernel dumps in the last {days} days",
+        "live_kernel_old": "Live kernel dumps exist, the last one on {date}; none in the last {days} days",
+        "live_kernel_registry": "Windows has recorded live kernel dumps ({components}); run SimpleTool as administrator to see when",
+        "item_live_kind": "{kind}: {n}, last on {date}",
+        "kind_live_watchdog": "The graphics driver or the graphics card stopped responding (WATCHDOG)",
+        "kind_live_ndis": "The network driver stopped responding (NDIS)",
+        "kind_live_usb": "The USB controller stopped responding ({component})",
+        "kind_live_power": "A hang while going to sleep or waking up ({component})",
+        "kind_live_other": "{component}",
+        "item_live_watchdog_hint": "Install the graphics driver cleanly; if it goes on, check the temperatures and the power supply and "
+            "remove any overclock",
+        "item_live_ndis_hint": "Update the network adapter driver from the maker of the PC or the motherboard",
+        "item_live_usb_hint": "Update the chipset and USB drivers; try another port or hub for the device that was in use",
+        "item_live_power_hint": "Update the chipset and graphics drivers; powercfg /sleepstudy names the device that does not wake up "
+            "properly",
+        "conflicts": "Programs and drivers with documented problems: {n}",
+        "conflicts_ok": "No programs with documented problems were found",
+        "item_sw_inpout": "The inpoutx64 driver, installed by lighting and monitoring tools, is active: since the August 2026 "
+            "Windows update games such as ARC Raiders and THE FINALS crash with it and Microsoft blocks it; update or "
+            "remove the tool that installed it",
+        "item_sw_nahimic": "{name} is active: this audio software injects into games and makes some of them crash right after start; "
+            "turn its service off or update it",
+        "item_sw_nahimic_installed": "{name} is installed but not running: if a game crashes right after start, this is a suspect",
+        "item_sw_killer": "{name}: Intel documents high processor load with older versions; install the latest version or remove "
+            "it, the network works without it",
+        "item_sw_cfos": "{name}: a traffic shaper that motherboard makers ship as a “LAN manager”; it has blocked Windows "
+            "upgrades and can slow the connection, remove it if you do not use it",
+        "item_sw_overwolf_rtss": "Overwolf next to RivaTuner Statistics Server {version}: Overwolf documents low FPS, mouse lag and "
+            "freezes with versions before 7.3.7; update RivaTuner or MSI Afterburner",
+        "item_sw_overwolf_capture": "Overwolf together with {name}: Overwolf advises against running it with another capture program, both "
+            "take processor and graphics time",
+        "item_sw_vmware_vbs": "{name} runs slower while core isolation or Hyper-V is on: it has to go through the Windows Hypervisor "
+            "Platform",
+        "item_sw_pup": "{name}: antivirus makers classify it as a potentially unwanted program that changes system settings and "
+            "bundles other software; remove it",
+        "item_sw_scam": "{name}: in 2024 the US FTC fined its makers for fake Windows error warnings that sold repairs; remove it",
+        "item_sw_optimizer": "{name}: a “cleaner” or driver updater; such programs disable services, replace drivers and change "
+            "settings Windows manages itself; use Windows Update and the makers’ drivers instead",
+        "item_sw_ccleaner": "CCleaner: fine as a manual tool, but Smart Cleaning keeps a process running and its installer has been "
+            "flagged for bundled software; keep automatic cleaning off",
+        "item_sw_armoury_arc": "Armoury Crate with an Intel Arc graphics card: Intel documents crashes of Armoury Crate and conflicts "
+            "with Intel Arc Control; keep one of them",
+        "item_sw_corsair_link": "Corsair Link and iCUE are both installed: Corsair asks to uninstall Link first, the two fight over the "
+            "devices",
+        "item_sw_lgs_ghub": "Logitech Gaming Software {version} next to G HUB: Logitech supports both together only from version "
+            "8.98; update or remove the old one",
+        "item_dumps_saved": "{name}: {n} crash dumps saved in {folder} ({size}); a developer can read them in a debugger",
+        "item_minidump": "{date}: a blue screen dump in C:\\Windows\\Minidump (the log has no record of it)",
+        "item_last_crash": "Windows recorded its last blue screen on {date} (the log has no record of it)",
+        "item_dumps_disabled": "Saving of crash dumps is turned off in Startup and Recovery, so a blue screen leaves nothing to analyse",
+        "item_memory_dmp": "MEMORY.DMP from {date} takes {size}",
+        "temp_many": "Temporary files take {size} in {files} files",
+        "temp_many_partial": "Temporary files take at least {size} in at least {files} files",
+        "item_temp_top": "{name}: {size}, {files} files",
+        "item_temp_file": "{name}: {size}",
+        "item_temp_family": "{n} files like {pattern}: {size}",
+        "item_cbs_large": "{name} in Windows\\Logs\\CBS is {size}: a known fault of the servicing log that fills the disk with cab_* "
+            "files in Windows\\Temp; stop the Windows Modules Installer service, move the file away and restart",
+        "item_cbs_cabs": "{n} cab_* files in Windows\\Temp: the servicing stack keeps failing to compress its log",
+        "item_shader_cache": "If games stutter or crash after a driver update, clear the shader cache in {folder}: the driver rebuilds "
+            "it, and the first session after that stutters once",
         "item_app_crash": "{name}: crashes {crashes}, hangs {hangs}",
         "item_device": "{name}: {problem}",
         "code_1": "not configured correctly (code 1)",

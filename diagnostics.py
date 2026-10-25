@@ -8,6 +8,7 @@ verdict on made-up facts. A fact that could not be read is missing, and its chec
 """
 import ctypes
 import datetime
+import glob
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from ctypes import wintypes
 
 import engine
 import limiter
+import programs
 import services
 import sysinfo
 
@@ -30,11 +32,13 @@ CHECKS = [
     ("cpu_microcode", "performance"), ("x3d_cores", "performance"), ("power_plan", "performance"),
     ("graphics_driver", "performance"), ("display_output", "performance"), ("gpu_link", "performance"),
     ("gpu_preference", "performance"), ("refresh_rate", "performance"), ("startup_apps", "performance"),
-    ("rgb_software", "performance"), ("game_dvr", "performance"), ("boot_options", "performance"),
+    ("rgb_software", "performance"), ("conflicting_software", "performance"), ("game_dvr", "performance"),
+    ("boot_options", "performance"),
     ("throttling", "performance"), ("uptime", "performance"),
     ("disk_space", "storage"), ("disk_health", "storage"), ("system_drive", "storage"), ("disk_errors", "storage"),
     ("temp_files", "storage"),
-    ("crashes", "stability"), ("app_crashes", "stability"), ("gpu_resets", "stability"), ("whea", "stability"),
+    ("crashes", "stability"), ("app_crashes", "stability"), ("crash_files", "stability"), ("gpu_resets", "stability"),
+    ("live_kernel", "stability"), ("whea", "stability"),
     ("memory_test", "stability"), ("devices", "stability"), ("services", "stability"),
     ("core_services", "stability"), ("system_files", "stability"), ("vc_runtime", "stability"),
     ("media_pack", "stability"), ("battery", "stability"),
@@ -69,6 +73,8 @@ ACTIONS = {
     "optional_features": ("open", "ms-settings:optionalfeatures", None),
     "uac": ("open", "UserAccountControlSettings.exe", None),
     "recovery": ("open", "ms-settings:recovery", None),
+    "apps": ("open", "ms-settings:appsfeatures", None),
+    "system_properties": ("open", "SystemPropertiesAdvanced.exe", None),
     "network_status": ("open", "ms-settings:network-status", None),
     "proxy": ("open", "ms-settings:network-proxy", None),
     "hosts": ("open", "notepad.exe", "%HOSTS%"),
@@ -83,6 +89,73 @@ THROTTLE_DAYS = 7
 THROTTLE_SECONDS = 3600  # a desktop slowed down by its firmware for an hour in a week is held back for real
 CPU_SAMPLE = 1.0     # seconds the processor load is measured over
 TEMP_BUDGET = 3.0    # seconds to add up the temporary folder: a huge one is reported as "at least"
+TEMP_MANY_FILES = 20_000  # this many files in the temporary folder slow down every program that lists it
+TEMP_TOP_MIN = 300 * 1024 ** 2  # an entry of the temporary folder big enough to name
+TEMP_FAMILY_MIN = 1000    # loose files with the same name pattern: one program littering
+CBS_LOG_LIMIT = 1024 ** 3  # a servicing log this big is the known fault that fills the disk with cab_* files
+CRASH_FILE_DAYS = 14      # crash reports programs keep themselves: the same window as the Windows log
+LIVE_KERNEL_DAYS = 60     # live kernel dumps: rarer than program crashes, so a longer window
+# Programs that catch their own crashes and keep the reports in files (Crashpad, Unreal Engine, Breakpad):
+# (program, pattern). * stands for any name in that segment; a pattern ending in \* counts entries, one per crash.
+# %STEAM% is Steam's install folder. These crashes never reach the Windows log
+CRASH_LOCATIONS = [
+    ("Google Chrome", r"%LocalAppData%\Google\Chrome\User Data\Crashpad\reports\*.dmp"),
+    ("Chromium", r"%LocalAppData%\Chromium\User Data\Crashpad\reports\*.dmp"),
+    ("Microsoft Edge", r"%LocalAppData%\Microsoft\Edge\User Data\Crashpad\reports\*.dmp"),
+    ("Brave", r"%LocalAppData%\BraveSoftware\Brave-Browser\User Data\Crashpad\reports\*.dmp"),
+    ("Vivaldi", r"%LocalAppData%\Vivaldi\User Data\Crashpad\reports\*.dmp"),
+    ("Opera", r"%AppData%\Opera Software\Opera Stable\Crashpad\reports\*.dmp"),
+    ("Opera GX", r"%AppData%\Opera Software\Opera GX Stable\Crashpad\reports\*.dmp"),
+    ("Yandex Browser", r"%LocalAppData%\Yandex\YandexBrowser\User Data\Crashpad\reports\*.dmp"),
+    ("Discord", r"%AppData%\discord\Crashpad\reports\*.dmp"),
+    ("Discord PTB", r"%AppData%\discordptb\Crashpad\reports\*.dmp"),
+    ("Discord Canary", r"%AppData%\discordcanary\Crashpad\reports\*.dmp"),
+    ("Visual Studio Code", r"%AppData%\Code\Crashpad\reports\*.dmp"),
+    ("Microsoft Teams", r"%AppData%\Microsoft\Teams\Crashpad\reports\*.dmp"),
+    ("Slack", r"%AppData%\Slack\Crashpad\reports\*.dmp"),
+    ("Signal", r"%AppData%\Signal\Crashpad\reports\*.dmp"),
+    ("WhatsApp", r"%AppData%\WhatsApp\Crashpad\reports\*.dmp"),
+    ("Obsidian", r"%AppData%\obsidian\Crashpad\reports\*.dmp"),
+    ("Logitech G HUB", r"%AppData%\G HUB\Crashpad\reports\*.dmp"),
+    ("Steam", r"%STEAM%\dumps\*.dmp"),
+    ("Steam", r"%STEAM%\dumps\reports\*.dmp"),
+    ("Epic Games Launcher", r"%LocalAppData%\EpicGamesLauncher\Saved\Crashes\*"),
+    ("Riot Client", r"%LocalAppData%\Riot Games\Riot Client\Crashes\*\reports\*.dmp"),
+    ("VALORANT", r"%LocalAppData%\VALORANT\Saved\Crashes\*"),
+    ("GOG Galaxy", r"%ProgramData%\GOG.com\Galaxy\crashdumps\*.dmp"),
+    ("Telegram Desktop", r"%AppData%\Telegram Desktop\tdata\dumps\*.dmp"),
+    ("OBS Studio", r"%AppData%\obs-studio\crashes\*"),
+    ("NVIDIA", r"%ProgramData%\NVIDIA Corporation\CrashDumps\*"),
+    ("Mozilla Firefox", r"%AppData%\Mozilla\Firefox\Profiles\*\minidumps\*.dmp"),
+    ("Thunderbird", r"%AppData%\Thunderbird\Profiles\*\minidumps\*.dmp"),
+]
+# Windows Error Reporting keeps a folder per report; its name starts with the kind and the program
+WER_QUEUES = [r"%ProgramData%\Microsoft\Windows\WER\ReportQueue", r"%ProgramData%\Microsoft\Windows\WER\ReportArchive",
+              r"%LocalAppData%\Microsoft\Windows\WER\ReportQueue", r"%LocalAppData%\Microsoft\Windows\WER\ReportArchive"]
+WER_KINDS = ("AppCrash", "AppHang", "Critical", "NonCritical")
+# Where Windows Error Reporting writes its local dumps (the LocalDumps key), for the user and for services
+LOCAL_DUMPS_KEY = r"HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+LOCAL_DUMP_FOLDERS = [r"%LocalAppData%\CrashDumps",
+                      r"%SystemRoot%\System32\config\systemprofile\AppData\Local\CrashDumps",
+                      r"%SystemRoot%\ServiceProfiles\LocalService\AppData\Local\CrashDumps",
+                      r"%SystemRoot%\ServiceProfiles\NetworkService\AppData\Local\CrashDumps"]
+CRASH_CONTROL = r"HKLM\SYSTEM\CurrentControlSet\Control\CrashControl"
+# The folders of C:\Windows\LiveKernelReports, by the component that stopped responding
+LIVE_KERNEL_KINDS = {"watchdog": "kind_live_watchdog", "ndis": "kind_live_ndis", "usbhub3": "kind_live_usb",
+                     "usbxhci": "kind_live_usb", "usbhub": "kind_live_usb", "pow32kwatchdog": "kind_live_power",
+                     "pdcrevocation": "kind_live_power", "pdc": "kind_live_power"}
+LIVE_KERNEL_HINTS = {"kind_live_watchdog": "item_live_watchdog_hint", "kind_live_ndis": "item_live_ndis_hint",
+                     "kind_live_usb": "item_live_usb_hint", "kind_live_power": "item_live_power_hint"}
+# Programs and drivers with documented problems: the services, Store packages and files to look at
+WATCHED_SERVICES = re.compile(r"nahimic|a-volute|killer|rivet|cfosspeed|inpoutx64|armourycrate", re.IGNORECASE)
+WATCHED_PACKAGES = re.compile(r"nahimic|a-volute|sonicstudio|sonicradar", re.IGNORECASE)
+RTSS_PATH = r"%ProgramFiles(x86)%\RivaTuner Statistics Server\RTSS.exe"
+RTSS_FIXED = (7, 3, 7)  # Overwolf: older RivaTuner versions cause low FPS, mouse lag and freezes next to it
+LGS_FIXED = (8, 98)     # Logitech: Gaming Software and G HUB live together only from this version
+PUP_PROGRAMS = ("advanced systemcare", "driverpack")  # classified as potentially unwanted by antivirus makers
+SCAM_PROGRAMS = ("restoro", "reimage")                 # fined by the US FTC in 2024 for fake Windows warnings
+OPTIMIZER_PROGRAMS = ("driver booster", "driver easy", "wise care", "avast cleanup", "avg tuneup", "avg pc tuneup",
+                      "smart game booster")
 POWERSHELL_TIMEOUT = 120
 GB = 1024 ** 3
 MB = 1024 ** 2
@@ -709,11 +782,11 @@ def drives():
 
 
 def folder_size(path, budget=TEMP_BUDGET):
-    """{"size": bytes, "partial": whether the time ran out first}. Links are not followed."""
-    size, stack, deadline = 0, [path], time.monotonic() + budget
+    """{"size": bytes, "files": count, "partial": whether the time ran out first}. Links are not followed."""
+    size, files, stack, deadline = 0, 0, [path], time.monotonic() + budget
     while stack:
         if time.monotonic() > deadline:
-            return {"size": size, "partial": True}
+            return {"size": size, "files": files, "partial": True}
         try:
             with os.scandir(stack.pop()) as entries:
                 for entry in entries:
@@ -722,11 +795,49 @@ def folder_size(path, budget=TEMP_BUDGET):
                             stack.append(entry.path)
                         elif entry.is_file(follow_symlinks=False):
                             size += entry.stat(follow_symlinks=False).st_size
+                            files += 1
                     except OSError:
                         continue
         except OSError:
             continue
-    return {"size": size, "partial": False}
+    return {"size": size, "files": files, "partial": False}
+
+
+def temp_report(path, budget=TEMP_BUDGET):
+    """The temporary folder: its size and file count, the entries that take most ("top") and the families of loose
+    files with the same name pattern ("families"), so that the program that litters can be named."""
+    deadline = time.monotonic() + budget
+    try:
+        with os.scandir(path) as it:
+            entries = list(it)
+    except OSError:
+        return None
+    size = files = 0
+    partial = False
+    top, families = [], {}
+    for entry in entries:
+        if time.monotonic() > deadline:
+            partial = True
+            break
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                sub = folder_size(entry.path, max(0.05, deadline - time.monotonic()))
+                partial = partial or sub["partial"]
+                size, files = size + sub["size"], files + sub["files"]
+                top.append({"name": entry.name + "\\", "size": sub["size"], "files": sub["files"]})
+            elif entry.is_file(follow_symlinks=False):
+                length = entry.stat(follow_symlinks=False).st_size
+                size, files = size + length, files + 1
+                top.append({"name": entry.name, "size": length, "files": 1})
+                stem, extension = os.path.splitext(entry.name)
+                pattern = stem[:8].lower() + "*" + extension.lower()
+                family = families.setdefault(pattern, {"pattern": pattern, "n": 0, "size": 0})
+                family["n"], family["size"] = family["n"] + 1, family["size"] + length
+        except OSError:
+            continue
+    top.sort(key=lambda t: t["size"], reverse=True)
+    ranked = sorted(families.values(), key=lambda f: f["n"], reverse=True)
+    return {"size": size, "files": files, "partial": partial, "top": top[:5], "families": ranked[:3]}
 
 
 class _DeviceNumber(ctypes.Structure):
@@ -938,6 +1049,218 @@ def security_settings():
 # processor and memory modules, network adapters, battery wear and the event logs. Each part fails on its own and is
 # then missing. Logs that can fill up with one kind of event are read on their own, so a flood of one does not push
 # the others out; drive events are filtered with XPath, which does not fail on a driver this PC does not have
+# --- Crash reports in files, live kernel dumps, blue screen dumps, servicing logs, installed programs ---
+
+def _steam_folder():
+    found = _read(r"HKCU\Software\Valve\Steam", "SteamPath")
+    if isinstance(found, str) and found:
+        return os.path.normpath(found)
+    return os.path.expandvars(r"%ProgramFiles(x86)%\Steam")
+
+
+def _expand(pattern):
+    return os.path.expandvars(pattern.replace("%STEAM%", _steam_folder()))
+
+
+def _stamps(pattern):
+    """[(modification time, size)] of what matches a pattern; * may stand in any segment."""
+    found = []
+    for path in glob.glob(pattern):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        found.append((datetime.datetime.fromtimestamp(st.st_mtime), st.st_size))
+    return found
+
+
+def _tally(found, name, kind, folder, stamps, since):
+    entry = found.setdefault((name, kind), {"name": name, "kind": kind, "folder": folder, "recent": 0, "total": 0,
+                                           "newest": None, "size": 0})
+    for moment, size in stamps:
+        entry["total"] += 1
+        entry["size"] += size
+        entry["recent"] += moment >= since
+        if entry["newest"] is None or moment > entry["newest"]:
+            entry["newest"] = moment
+
+
+def crash_files(now=None):
+    """Crash reports programs keep themselves, and the reports of Windows Error Reporting on disk:
+    [{"name", "kind", "folder", "recent", "total", "newest", "size"}], one per program that has a report folder."""
+    since = (now or datetime.datetime.now()) - datetime.timedelta(days=CRASH_FILE_DAYS)
+    found = {}
+    for name, pattern in CRASH_LOCATIONS:
+        full = _expand(pattern)
+        folder = full.rsplit("\\", 1)[0]
+        stamps = _stamps(full)
+        if not stamps and not glob.glob(folder):
+            continue  # the program is not on this PC
+        kind = "crashpad" if "crashpad" in pattern.lower() or "minidumps" in pattern.lower() else "folder"
+        _tally(found, name, kind, folder.split("*")[0].rstrip("\\"), stamps, since)
+    for queue in WER_QUEUES:
+        folder = os.path.expandvars(queue)
+        try:
+            with os.scandir(folder) as it:
+                reports = list(it)
+        except OSError:
+            continue
+        for report in reports:
+            kind, _, rest = report.name.partition("_")
+            program = rest.split("_")[0]
+            if kind not in WER_KINDS or not program:
+                continue
+            try:
+                moment = datetime.datetime.fromtimestamp(report.stat(follow_symlinks=False).st_mtime)
+            except OSError:
+                continue
+            _tally(found, program, "wer", folder, [(moment, 0)], since)
+    return list(found.values())
+
+
+def local_dumps():
+    """Windows Error Reporting's local dumps: whether the LocalDumps key is there (its presence turns them on) and
+    the dumps found: [{"name": program, "time", "size", "folder"}]."""
+    custom = _read(LOCAL_DUMPS_KEY, "DumpFolder")
+    folders = [os.path.expandvars(f) for f in ([custom] if isinstance(custom, str) and custom else []) + LOCAL_DUMP_FOLDERS]
+    dumps, seen = [], set()
+    for folder in folders:
+        if os.path.normcase(folder) in seen:
+            continue
+        seen.add(os.path.normcase(folder))
+        for path in glob.glob(os.path.join(folder, "*.dmp")):
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            stem = os.path.basename(path)[:-4]
+            name, _, pid = stem.rpartition(".")
+            dumps.append({"name": name if name and pid.isdigit() else stem,
+                          "time": datetime.datetime.fromtimestamp(st.st_mtime), "size": st.st_size, "folder": folder})
+    return {"enabled": engine.key_exists(LOCAL_DUMPS_KEY), "folder": folders[0], "dumps": dumps}
+
+
+def live_kernel():
+    """Live kernel dumps: Windows recovered from a hung driver without a blue screen. The folder is readable only
+    by administrators; the registry keeps the names of the components that ever produced one."""
+    root = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "LiveKernelReports")
+    components = sorted({name for key in ("LiveKernelReports", "FullLiveKernelReports")
+                         for name in _subkeys(winreg.HKEY_LOCAL_MACHINE, rf"SYSTEM\CurrentControlSet\Control\CrashControl\{key}")})
+    dumps, readable = [], True
+    try:
+        with os.scandir(root) as it:
+            top = list(it)
+    except PermissionError:
+        readable, top = False, []
+    except OSError:
+        top = []  # no folder: no live dump was ever written
+    for entry in top:
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                dumps += [{"component": entry.name, "time": moment, "size": size}
+                          for moment, size in _stamps(os.path.join(entry.path, "*.dmp"))]
+            elif entry.name.lower().endswith(".dmp"):
+                st = entry.stat(follow_symlinks=False)
+                dumps.append({"component": "", "time": datetime.datetime.fromtimestamp(st.st_mtime), "size": st.st_size})
+        except OSError:
+            continue
+    return {"readable": readable, "dumps": dumps, "components": components}
+
+
+def _filetime_moment(value):
+    """A FILETIME from the registry (a number or eight bytes) as a local date and time, or None."""
+    if isinstance(value, bytes):
+        value = int.from_bytes(value[:8], "little") if len(value) >= 8 else 0
+    if not isinstance(value, int) or value <= 116444736000000000:
+        return None
+    try:
+        return datetime.datetime.fromtimestamp((value - 116444736000000000) / 10_000_000)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def kernel_dumps():
+    """Blue screen dumps and their settings: the dates of the minidumps, MEMORY.DMP, and CrashControl."""
+    folder = os.path.expandvars(_read(CRASH_CONTROL, "MinidumpDir") or r"%SystemRoot%\Minidump")
+    dump_file = os.path.expandvars(_read(CRASH_CONTROL, "DumpFile") or r"%SystemRoot%\MEMORY.DMP")
+    readable = True
+    try:
+        os.listdir(folder)
+    except PermissionError:
+        readable = False
+    except OSError:
+        pass
+    minidumps = sorted((moment for moment, _ in _stamps(os.path.join(folder, "*.dmp"))), reverse=True)
+    memory = None
+    try:
+        st = os.stat(dump_file)
+        memory = {"time": datetime.datetime.fromtimestamp(st.st_mtime), "size": st.st_size}
+    except OSError:
+        pass
+    return {"readable": readable, "minidumps": minidumps, "memory_dmp": memory,
+            "enabled": _read(CRASH_CONTROL, "CrashDumpEnabled"), "last_crash": _filetime_moment(_read(CRASH_CONTROL, "LastCrashTime")),
+            "count": _read(CRASH_CONTROL, "MinidumpsCount")}
+
+
+def cbs_logs():
+    """The largest servicing log and the cab_* files it leaves in Windows\\Temp when it cannot compress itself."""
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    largest = None
+    try:
+        with os.scandir(os.path.join(root, "Logs", "CBS")) as it:
+            for entry in it:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        size = entry.stat(follow_symlinks=False).st_size
+                        if largest is None or size > largest["size"]:
+                            largest = {"name": entry.name, "size": size}
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    cabs = None
+    try:
+        with os.scandir(os.path.join(root, "Temp")) as it:
+            cabs = sum(1 for entry in it if entry.name.lower().startswith("cab_"))
+    except OSError:
+        pass  # a standard user may create files in Windows\Temp but not list it
+    return {"largest": largest, "cabs": cabs}
+
+
+def software():
+    """What the check of programs with documented problems looks at: installed programs (lower-case title ->
+    (title, version)), the Store packages and services of interest, and RivaTuner's version."""
+    found = {}
+    for hive, path in programs.UNINSTALL:
+        try:
+            root = winreg.OpenKey(hive, path)
+        except OSError:
+            continue
+        with root:
+            for subkey in programs._subkeys(root):
+                try:
+                    with winreg.OpenKey(root, subkey) as key:
+                        title, version, system = programs._values(key, "DisplayName", "DisplayVersion", "SystemComponent")
+                except OSError:
+                    continue
+                if isinstance(title, str) and title.strip() and system != 1:
+                    found.setdefault(title.strip().lower(), (title.strip(), str(version or "")))
+    packages = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, programs.PACKAGES) as key:
+            packages = [name for name in programs._subkeys(key) if WATCHED_PACKAGES.search(name)]
+    except OSError:
+        pass
+    watched = {}
+    for name in _subkeys(winreg.HKEY_LOCAL_MACHINE, SERVICES_KEY):
+        display = _read(rf"HKLM\{SERVICES_KEY}\{name}", "DisplayName")
+        display = display if isinstance(display, str) and not display.startswith("@") else name
+        if WATCHED_SERVICES.search(f"{name} {display}"):
+            watched[name.lower()] = {"display": display, "start": _read(rf"HKLM\{SERVICES_KEY}\{name}", "Start")}
+    return {"programs": found, "packages": packages, "services": watched,
+            "rtss": file_version(os.path.expandvars(RTSS_PATH))}
+
+
 POWERSHELL_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
@@ -1136,6 +1459,7 @@ def gather(report=lambda step: None, api=None):
     read("vram", video_memory)
     read("gpu_preferences", gpu_preferences)
     read("startup", startup_programs)
+    read("software", software)
     read("game_dvr", game_dvr)
     read("boot", boot_options)
     read("uptime", uptime)
@@ -1148,7 +1472,8 @@ def gather(report=lambda step: None, api=None):
     read("drives", drives)
     read("system_disk", system_disk)
     read("trim_off", trim_off)
-    read("temp", lambda: folder_size(temp_dir()) if temp_dir() else None)
+    read("temp", lambda: temp_report(temp_dir()) if temp_dir() else None)
+    read("cbs", cbs_logs)
     if process:
         try:
             facts.update(finish_powershell(process))
@@ -1160,6 +1485,10 @@ def gather(report=lambda step: None, api=None):
     report("storage")
     read("disabled_services", disabled_services)
     read("wer_off", wer_off)
+    read("crash_files", lambda: crash_files(facts["now"]))
+    read("local_dumps", local_dumps)
+    read("live_kernel", live_kernel)
+    read("kernel_dumps", kernel_dumps)
     read("vc_runtime", vc_runtime)
     report("stability")
     read("restart_pending", restart_pending)
@@ -1751,10 +2080,34 @@ def check_temp_files(facts):
     temp = facts.get("temp")
     if not temp:
         return unknown("temp_files")
-    params = {"size": Size(temp["size"])}
-    line = "temp_size_partial" if temp["partial"] else "temp_size"
-    severity = "warning" if temp["size"] >= 5 * GB else "ok"
-    return Finding("temp_files", severity, line, params, actions=["temp", "storage"] if severity != "ok" else [])
+    size, files = temp["size"], temp.get("files")
+    items = []
+    # Who litters: the biggest entries and the families of loose files with the same name
+    for entry in temp.get("top") or []:
+        if entry["size"] >= TEMP_TOP_MIN or (entry["size"] >= 100 * MB and entry["size"] >= size / 10):
+            if entry["files"] == 1 and not entry["name"].endswith("\\"):
+                items.append(("item_temp_file", {"name": entry["name"], "size": Size(entry["size"])}))
+            else:
+                items.append(("item_temp_top", {"name": entry["name"], "size": Size(entry["size"]), "files": entry["files"]}))
+    for family in temp.get("families") or []:
+        if family["n"] >= TEMP_FAMILY_MIN:
+            items.append(("item_temp_family", {"pattern": family["pattern"], "n": family["n"], "size": Size(family["size"])}))
+    cbs, servicing_fault = facts.get("cbs") or {}, False
+    largest = cbs.get("largest")
+    if largest and largest["size"] >= CBS_LOG_LIMIT:
+        items.append(("item_cbs_large", {"name": largest["name"], "size": Size(largest["size"])}))
+        servicing_fault = True
+    if (cbs.get("cabs") or 0) >= 10:
+        items.append(("item_cbs_cabs", {"n": cbs["cabs"]}))
+        servicing_fault = True
+    many = files is not None and files >= TEMP_MANY_FILES
+    params = {"size": Size(size), "files": files or 0}
+    if temp["partial"]:
+        line = "temp_many_partial" if many else "temp_size_partial"
+    else:
+        line = "temp_many" if many else "temp_size"
+    severity = "warning" if size >= 5 * GB or many or servicing_fault else "ok"
+    return Finding("temp_files", severity, line, params, items, ["temp", "storage"] if severity != "ok" else [])
 
 
 def check_crashes(facts):
@@ -1791,11 +2144,46 @@ def check_crashes(facts):
         else:
             key = "item_reset"
         items.append((key, {"date": e["time"].date()}))
+    # The dump files are a second witness: they stay when the log was cleared or the events were never written
+    kernel = facts.get("kernel_dumps") or {}
+    minidumps = [moment for moment in kernel.get("minidumps") or [] if moment >= since]
+    last_crash = kernel.get("last_crash")
+    if not blue and minidumps:
+        items = [("item_minidump", {"date": moment.date()}) for moment in minidumps[:6]] + items
+        blue = minidumps
+    elif not blue and last_crash and last_crash >= since:
+        items.insert(0, ("item_last_crash", {"date": last_crash.date()}))
+        blue = [last_crash]
+    actions = ["reliability"]
+    if kernel.get("enabled") == 0:
+        items.append(("item_dumps_disabled", {}))
+        actions.append("system_properties")
+    memory = kernel.get("memory_dmp")
+    if memory and memory["size"] >= GB:
+        items.append(("item_memory_dmp", {"date": memory["time"].date(), "size": Size(memory["size"])}))
     if blue:
-        return Finding("crashes", "problem", "bsod", {"n": len(blue), "days": EVENT_DAYS}, items, ["reliability"])
+        return Finding("crashes", "problem", "bsod", {"n": len(blue), "days": EVENT_DAYS}, items, actions)
     if resets:
-        return Finding("crashes", "warning", "resets", {"n": len(resets), "days": EVENT_DAYS}, items, ["reliability"])
-    return Finding("crashes", "ok", "crashes_ok", {"days": EVENT_DAYS})
+        return Finding("crashes", "warning", "resets", {"n": len(resets), "days": EVENT_DAYS}, items, actions)
+    return Finding("crashes", "ok", "crashes_ok", {"days": EVENT_DAYS}, items, actions[1:])
+
+
+def _module_vendor(module):
+    """The maker of a graphics driver module by its name: nvwgf2umx.dll -> NVIDIA."""
+    module = (module or "").lower()
+    if module.startswith("nv"):
+        return NVIDIA
+    if module.startswith(("amd", "ati")):
+        return AMD
+    if module.startswith("ig"):
+        return INTEL
+    return None
+
+
+def shader_cache_folder(vendor):
+    """Where the graphics driver keeps its compiled shaders; a damaged cache makes games stutter or crash."""
+    return {NVIDIA: r"%LocalAppData%\NVIDIA\DXCache", AMD: r"%LocalAppData%\AMD\DxCache",
+            INTEL: r"%LocalAppData%\Intel\ShaderCache"}.get(vendor)
 
 
 def _module_kind(module):
@@ -1838,6 +2226,17 @@ def check_app_crashes(facts):
             items.append(("item_app_crash_module", {"name": name, "crashes": c, "hangs": h, "module": module}))
         else:
             items.append(("item_app_crash", {"name": name, "crashes": c, "hangs": h}))
+    # Dumps Windows Error Reporting saved locally for these crashes: a developer can read them
+    dumps = {}
+    for dump in (facts.get("local_dumps") or {}).get("dumps") or []:
+        if dump["time"] >= since:
+            entry = dumps.setdefault(dump["name"].lower(), {"n": 0, "size": 0, "folder": dump["folder"]})
+            entry["n"], entry["size"] = entry["n"] + 1, entry["size"] + dump["size"]
+    for name, _ in ranked[:8]:
+        saved = dumps.get(name.lower()) or dumps.get(name.lower().removesuffix(".exe"))
+        if saved:
+            items.append(("item_dumps_saved", {"name": name, "n": saved["n"], "folder": saved["folder"],
+                                               "size": Size(saved["size"])}))
     # Hints from the modules and the codes: an overlay, the graphics driver, the drive, unstable hardware
     hinted = set()
     for name, _ in ranked[:8]:
@@ -1849,6 +2248,9 @@ def check_app_crashes(facts):
                     items.append(("item_hint_overlay", {"module": module, "product": kind[1]}))
                 else:
                     items.append(("item_hint_gpu", {"module": module}))
+                    folder = shader_cache_folder(_module_vendor(module))
+                    if folder and ("item_shader_cache", {"folder": folder}) not in items:
+                        items.append(("item_shader_cache", {"folder": folder}))
     if any(code == CRASH_IN_PAGE for code, _ in codes):
         items.append(("item_hint_disk", {"code": "0x" + CRASH_IN_PAGE.upper()}))
     illegal = any(code == CRASH_ILLEGAL for code, _ in codes)
@@ -1895,6 +2297,13 @@ def check_gpu_resets(facts):
     if not incidents:
         return Finding("gpu_resets", "info", "gpu_exceptions", {"n": len(exceptions), "days": EVENT_DAYS}, items,
                        ["devices"])
+    # The shader cache advice for the graphics card, or for the processor's graphics when there is no card
+    cards = sorted(facts.get("video") or [], key=lambda c: not is_discrete(pci_vendor(c.get("pnp")), c.get("name")))
+    for card in cards:
+        folder = shader_cache_folder(pci_vendor(card.get("pnp")))
+        if folder:
+            items.append(("item_shader_cache", {"folder": folder}))
+            break
     severity = "problem" if len(resets) >= 3 or len(incidents) >= 10 else "warning"
     return Finding("gpu_resets", severity, "tdr", {"n": len(incidents), "days": EVENT_DAYS}, items, ["devices"])
 
@@ -2252,6 +2661,147 @@ def check_hosts(facts):
     if state["entries"] >= HOSTS_MANY:
         return Finding("hosts", "info", "hosts_many", {"n": state["entries"]}, actions=["hosts"])
     return Finding("hosts", "ok", "hosts_ok", {"n": state["entries"]})
+
+
+def check_crash_files(facts):
+    found = facts.get("crash_files")
+    if found is None:
+        return unknown("crash_files")
+    recent = sorted((f for f in found if f["recent"]), key=lambda f: (-f["recent"], f["name"]))
+    if not recent:
+        return Finding("crash_files", "ok", "crash_files_ok", {"days": CRASH_FILE_DAYS})
+    items = [("item_crash_files", {"name": f["name"], "n": f["recent"], "date": f["newest"].date(), "folder": f["folder"]})
+             for f in recent[:8]]
+    items.append(("item_crash_files_hidden", {}))
+    if any(f["kind"] == "crashpad" for f in recent):
+        items.append(("item_crash_files_tabs", {}))
+    severity = "warning" if recent[0]["recent"] >= 3 else "info"
+    actions = ["reliability"] if any(f["kind"] == "wer" for f in recent) else []
+    return Finding("crash_files", severity, "crash_files", {"n": sum(f["recent"] for f in recent),
+                                                            "days": CRASH_FILE_DAYS, "name": recent[0]["name"]},
+                   items, actions)
+
+
+def check_live_kernel(facts):
+    live = facts.get("live_kernel")
+    if live is None:
+        return unknown("live_kernel")
+    if not live["readable"]:
+        if live["components"]:
+            return Finding("live_kernel", "info", "live_kernel_registry", {"components": ", ".join(live["components"])})
+        return unknown("live_kernel", "unknown_admin")
+    since = _days_ago(facts, LIVE_KERNEL_DAYS)
+    recent = [d for d in live["dumps"] if d["time"] >= since]
+    if not recent:
+        if live["dumps"]:
+            return Finding("live_kernel", "ok", "live_kernel_old",
+                           {"days": LIVE_KERNEL_DAYS, "date": max(d["time"] for d in live["dumps"]).date()})
+        return Finding("live_kernel", "ok", "live_kernel_ok", {"days": LIVE_KERNEL_DAYS})
+    kinds = {}
+    for dump in recent:
+        component = dump["component"] or "LiveKernelReports"
+        kind = LIVE_KERNEL_KINDS.get(component.lower(), "kind_live_other")
+        entry = kinds.setdefault(kind, {"component": component, "n": 0, "date": dump["time"]})
+        entry["n"] += 1
+        entry["date"] = max(entry["date"], dump["time"])
+    items = [("item_live_kind", {"kind": Text(kind), "component": v["component"], "n": v["n"], "date": v["date"].date()})
+             for kind, v in sorted(kinds.items(), key=lambda item: -item[1]["n"])]
+    items += [(LIVE_KERNEL_HINTS[kind], {}) for kind in kinds if kind in LIVE_KERNEL_HINTS]
+    if facts.get("wer_off"):
+        items.append(("item_wer_off", {}))
+    return Finding("live_kernel", "warning", "live_kernel", {"n": len(recent), "days": LIVE_KERNEL_DAYS}, items,
+                   ["devices", "reliability"])
+
+
+def _version_tuple(text):
+    parts = re.findall(r"\d+", str(text or ""))
+    return tuple(int(p) for p in parts[:4])
+
+
+def check_conflicting_software(facts):
+    found = facts.get("software")
+    if found is None:
+        return unknown("conflicting_software")
+    installed, watched = found.get("programs") or {}, found.get("services") or {}
+    running = facts.get("processes") or set()
+    items, severities, actions = [], [], []
+
+    def program(*fragments):
+        for key, (title, version) in installed.items():
+            if any(fragment in key for fragment in fragments):
+                return title, version
+        return None
+
+    def service(*fragments):
+        for name, info in watched.items():
+            if any(fragment in f"{name} {info.get('display') or ''}".lower() for fragment in fragments):
+                return name, info
+        return None
+
+    def add(key, severity, params=None, action=None):
+        items.append((key, params or {}))
+        severities.append(severity)
+        if action and action not in actions:
+            actions.append(action)
+
+    inpout = service("inpoutx64")
+    if inpout and inpout[1].get("start") != 4:
+        add("item_sw_inpout", "warning", action="devices")
+    nahimic = service("nahimic", "a-volute")
+    if nahimic:
+        name, info = nahimic[1].get("display") or nahimic[0], nahimic[1]
+        active = nahimic[0] in running or info.get("start") == 2
+        add("item_sw_nahimic" if active else "item_sw_nahimic_installed", "warning" if active else "info",
+            {"name": name}, "services")
+    else:
+        for package in found.get("packages") or []:
+            lowered = package.lower()
+            name = "Sonic Studio" if "sonicstudio" in lowered else "Sonic Radar" if "sonicradar" in lowered else "Nahimic"
+            if not any(p.get("name") == name for _, p in items):
+                add("item_sw_nahimic_installed", "info", {"name": name}, "apps")
+    killer = service("killer", "rivet")
+    if killer:
+        add("item_sw_killer", "info", {"name": killer[1].get("display") or killer[0]}, "apps")
+    cfos = service("cfosspeed")
+    if cfos:
+        add("item_sw_cfos", "info", {"name": cfos[1].get("display") or cfos[0]}, "apps")
+    overwolf = program("overwolf")
+    if overwolf:
+        rtss = found.get("rtss")
+        if rtss and tuple(rtss[:3]) < RTSS_FIXED:
+            add("item_sw_overwolf_rtss", "warning", {"version": ".".join(str(p) for p in rtss[:3])}, "apps")
+        capture = program("obs studio", "nvidia app")
+        if capture:
+            add("item_sw_overwolf_capture", "info", {"name": capture[0]}, "apps")
+    machine = program("vmware workstation", "vmware player")
+    if machine and (facts.get("vbs") or {}).get("running"):
+        add("item_sw_vmware_vbs", "info", {"name": machine[0]}, "core_isolation")
+    for fragment in PUP_PROGRAMS:
+        pup = program(fragment)
+        if pup:
+            add("item_sw_pup", "warning", {"name": pup[0]}, "apps")
+    scam = program(*SCAM_PROGRAMS)
+    if scam:
+        add("item_sw_scam", "warning", {"name": scam[0]}, "apps")
+    for fragment in OPTIMIZER_PROGRAMS:
+        optimizer = program(fragment)
+        if optimizer:
+            add("item_sw_optimizer", "info", {"name": optimizer[0]}, "apps")
+    if any(key.startswith("ccleaner") and "browser" not in key for key in installed):
+        add("item_sw_ccleaner", "info", action="apps")
+    arc = any(pci_vendor(c.get("pnp")) == INTEL and re.search(r"\bArc\b", c.get("name") or "")
+              for c in facts.get("video") or [])
+    if arc and (program("armoury crate") or service("armourycrate")):
+        add("item_sw_armoury_arc", "warning", action="apps")
+    if program("corsair link") and program("icue"):
+        add("item_sw_corsair_link", "info", action="apps")
+    gaming_software, hub = program("logitech gaming software"), program("logitech g hub", "g hub")
+    if gaming_software and hub and _version_tuple(gaming_software[1])[:2] < LGS_FIXED:
+        add("item_sw_lgs_ghub", "info", {"version": gaming_software[1] or "?"}, "apps")
+    if not items:
+        return Finding("conflicting_software", "ok", "conflicts_ok", {})
+    severity = min(severities, key=SEVERITIES.index)
+    return Finding("conflicting_software", severity, "conflicts", {"n": len(items)}, items, actions)
 
 
 VERDICTS = {check: globals()["check_" + check] for check, _ in CHECKS}

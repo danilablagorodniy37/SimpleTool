@@ -27,7 +27,7 @@ os.environ["LOCALAPPDATA"] = DATA
 sys.path.insert(0, REPO)
 os.chdir(REPO)
 import tkinter as tk  # noqa: E402
-from PIL import ImageGrab  # noqa: E402
+from PIL import Image  # noqa: E402
 import main  # noqa: E402
 import terms  # noqa: E402
 
@@ -48,12 +48,45 @@ root.deiconify()
 user32 = ctypes.windll.user32
 
 
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+                ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG), ("biYPelsPerMeter", wintypes.LONG),
+                ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+
+
 def shoot(name):
+    """PrintWindow of the window itself: works when other windows cover it (the user keeps working meanwhile)."""
     root.update()
+    gdi32 = ctypes.windll.gdi32
+    user32.GetWindowDC.restype = gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateCompatibleBitmap.restype = gdi32.SelectObject.restype = wintypes.HGDIOBJ
+    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+    gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+    gdi32.DeleteObject.argtypes, gdi32.DeleteDC.argtypes = [wintypes.HGDIOBJ], [wintypes.HDC]
+    gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HGDIOBJ, wintypes.UINT, wintypes.UINT, ctypes.c_void_p,
+                                ctypes.c_void_p, wintypes.UINT]
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
     hwnd = user32.GetAncestor(root.winfo_id(), 2)
     rect = wintypes.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(rect))
-    image = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom), all_screens=True)
+    width, height = rect.right - rect.left, rect.bottom - rect.top
+    hdc = user32.GetWindowDC(hwnd)
+    memory = gdi32.CreateCompatibleDC(hdc)
+    bitmap = gdi32.CreateCompatibleBitmap(hdc, width, height)
+    previous = gdi32.SelectObject(memory, bitmap)
+    user32.PrintWindow(hwnd, memory, 2)  # PW_RENDERFULLCONTENT
+    info = BITMAPINFOHEADER(biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=width, biHeight=-height, biPlanes=1,
+                            biBitCount=32)
+    buffer = ctypes.create_string_buffer(width * height * 4)
+    gdi32.GetDIBits(memory, bitmap, 0, height, buffer, ctypes.byref(info), 0)
+    image = Image.frombuffer("RGBA", (width, height), buffer, "raw", "BGRA", 0, 1)
+    gdi32.SelectObject(memory, previous)
+    gdi32.DeleteObject(bitmap)
+    gdi32.DeleteDC(memory)
+    user32.ReleaseDC(hwnd, hdc)
     path = os.path.join(OUT, f"{LANG}_{name}.png")
     image.save(path)
     print("saved", path, image.size)
@@ -70,7 +103,18 @@ def step(i):
     if expand:
         app.expanded.add(("t", expand))
     app.show_page(page, animate=False)
-    root.after(900, lambda: (app.canvas.yview_moveto(float(scroll)), root.after(600, finish, i)))
+    if page == "diagnostics":
+        root.after(1500, wait_diagnostics, i, scroll, 0)
+    else:
+        root.after(900, lambda: (app.canvas.yview_moveto(float(scroll)), root.after(600, finish, i)))
+
+
+def wait_diagnostics(i, scroll, waited):
+    """The Troubleshooting page runs its check when opened; the picture is taken when it is done."""
+    if getattr(app, "diag_running", False) and waited < 90:
+        root.after(500, wait_diagnostics, i, scroll, waited + 0.5)
+        return
+    root.after(800, lambda: (app.canvas.yview_moveto(float(scroll)), root.after(600, finish, i)))
 
 
 def finish(i):

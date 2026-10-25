@@ -6,6 +6,32 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.9": {
+        "en": [
+            "Troubleshooting now sees crashes that never reach the Windows log: the crash reports Chromium browsers, "
+            "Electron apps (Discord, VS Code, Teams), Steam, Epic, Riot and others keep themselves, and the live kernel "
+            "dumps of drivers that hung without a blue screen.",
+            "A new check names installed programs and drivers with documented problems: Nahimic, the inpoutx64 driver, "
+            "Killer, cFosSpeed, an old RivaTuner next to Overwolf, unwanted “optimizers” and more. Temporary files say "
+            "who litters, and program crashes list the saved dumps.",
+        ],
+        "ru": [
+            "«Поиск проблем» видит сбои, которых нет в журнале Windows: отчёты, которые браузеры на Chromium, программы "
+            "на Electron (Discord, VS Code, Teams), Steam, Epic, Riot и другие хранят сами, и живые дампы ядра от "
+            "драйверов, зависших без синего экрана.",
+            "Новая проверка называет установленные программы и драйверы с известными проблемами: Nahimic, драйвер "
+            "inpoutx64, Killer, cFosSpeed, старый RivaTuner рядом с Overwolf, нежелательные «оптимизаторы» и другие. "
+            "Временные файлы говорят, кто мусорит, а сбои программ показывают сохранённые дампы.",
+        ],
+        "uk": [
+            "«Пошук проблем» бачить збої, яких немає в журналі Windows: звіти, які браузери на Chromium, програми на "
+            "Electron (Discord, VS Code, Teams), Steam, Epic, Riot та інші зберігають самі, і живі дампи ядра від "
+            "драйверів, що зависли без синього екрана.",
+            "Нова перевірка називає встановлені програми й драйвери з відомими проблемами: Nahimic, драйвер inpoutx64, "
+            "Killer, cFosSpeed, старий RivaTuner поруч з Overwolf, небажані «оптимізатори» та інші. Тимчасові файли "
+            "кажуть, хто смітить, а збої програм показують збережені дампи.",
+        ],
+    },
     "0.8": {
         "en": [
             "Six new tweaks: the classic right-click menu of Windows 11 (SimpleTool restarts Explorer, so it shows at "

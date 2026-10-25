@@ -2,6 +2,17 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.9
+
+**Troubleshooting**
+- **Crash reports outside the Windows log.** Browsers built on Chromium (Chrome, Edge, Brave, Opera, Vivaldi), programs built on Electron (Discord, Visual Studio Code, Teams, Slack, Signal, WhatsApp), Steam, the Epic Games and Riot launchers, OBS, Telegram, Firefox and others catch their own crashes and close the process before Windows notices, so Event Viewer and Reliability Monitor never see them. SimpleTool now counts the reports of the last 14 days in their crash folders, and the reports waiting in Windows Error Reporting.
+- **Hangs recovered without a blue screen.** The live kernel dumps in C:\Windows\LiveKernelReports: a graphics driver or card that stopped responding (WATCHDOG), a network driver (NDIS), a USB controller, a hang while going to sleep or waking up. They stay on disk when Windows Error Reporting is off and the log has nothing. Reading them needs administrator rights; without them SimpleTool names the components the registry remembers.
+- **Programs with documented problems.** Audio software that crashes games at start (Nahimic, Sonic Studio), the inpoutx64 driver of lighting and monitoring tools that Microsoft blocks since August 2026 because games crash with it, Killer and cFosSpeed network tools, an old RivaTuner next to Overwolf, VMware slowed down by core isolation, Corsair Link next to iCUE, an old Logitech Gaming Software next to G HUB, Armoury Crate with an Intel Arc card, and "optimizers", driver updaters and "repair tools" that antivirus makers flag or regulators fined. Every line says what was reported and what to do; SimpleTool removes nothing itself.
+- **Program crashes** also show the crash dumps Windows Error Reporting saved locally for a program (their number, size and folder), and advise clearing the shader cache when a program crashes inside the graphics driver. Graphics driver crashes get the same advice.
+- **Blue screens** have a second witness for when the log was cleared: the dump files in C:\Windows\Minidump and the date of the last crash Windows remembers. A note when saving of crash dumps is turned off, and the size of MEMORY.DMP when it is over a gigabyte.
+- **Temporary files** now name who litters: the biggest folders and the families of loose files with the same name, warn from 20 000 files, and recognise the servicing log fault that fills the disk with cab_* files.
+- All of this only reads files and the registry and takes milliseconds; the temporary folder keeps its time budget.
+
 ## 0.8
 
 **New tweaks**

@@ -63,6 +63,13 @@ def healthy():
         "system_disk": 0,
         "trim_off": False,
         "temp": {"size": 1 * GB, "partial": False},
+        "cbs": {"largest": {"name": "CBS.log", "size": 7 * MB}, "cabs": 0},
+        "crash_files": [],
+        "local_dumps": {"enabled": False, "folder": "D:\\Data\\AppData\\Local\\CrashDumps", "dumps": []},
+        "live_kernel": {"readable": True, "dumps": [], "components": []},
+        "kernel_dumps": {"readable": True, "minidumps": [], "memory_dmp": None, "enabled": 7, "last_crash": None,
+                         "count": 5},
+        "software": {"programs": {}, "packages": [], "services": {}, "rtss": None},
         "disks": [{"id": "0", "name": "Samsung SSD 980", "media": "SSD", "health": "Healthy", "bus": "NVMe"}],
         "wear": [],
         "devices": [],
@@ -485,6 +492,166 @@ class Verdicts(unittest.TestCase):
         self.assertIn(("item_hint_unstable", {}), verdict("app_crashes", app_events=everywhere).items)
         self.assertNotIn(("item_hint_unstable", {}), verdict("app_crashes", app_events=everywhere[:3]).items)
         self.assertRenders(verdict("app_crashes", app_events=everywhere + crashes))
+
+    def test_temporary_files_breakdown(self):
+        temp = {"size": 4 * GB, "files": 41_000, "partial": False,
+                "top": [{"name": "claude\\", "size": 1300 * MB, "files": 32_000}, {"name": "big.iso", "size": 400 * MB, "files": 1},
+                        {"name": "small\\", "size": 20 * MB, "files": 3}],
+                "families": [{"pattern": "tree-sit*.dll", "n": 3000, "size": 2 * GB}, {"pattern": "x*.log", "n": 5, "size": 0}]}
+        finding = verdict("temp_files", temp=temp)
+        self.assertEqual((finding.severity, finding.line, finding.params["files"]), ("warning", "temp_many", 41_000))
+        self.assertEqual([key for key, _ in finding.items], ["item_temp_top", "item_temp_file", "item_temp_family"])
+        self.assertEqual(finding.items[2][1]["n"], 3000)
+        few = verdict("temp_files", temp=dict(temp, files=200, size=1 * GB))
+        self.assertEqual((few.severity, few.line), ("ok", "temp_size"))
+        self.assertEqual(verdict("temp_files", temp=dict(temp, partial=True)).line, "temp_many_partial")
+        self.assertEqual(verdict("temp_files", temp=dict(temp, partial=True, files=10)).line, "temp_size_partial")
+        servicing = verdict("temp_files", cbs={"largest": {"name": "CbsPersist_20261001.log", "size": 2 * GB}, "cabs": 12})
+        self.assertEqual(servicing.severity, "warning")
+        self.assertEqual([key for key, _ in servicing.items], ["item_cbs_large", "item_cbs_cabs"])
+        self.assertEqual(self.severity("temp_files", cbs={"largest": None, "cabs": None}), "ok")
+        self.assertRenders(servicing)
+        self.assertRenders(finding)
+
+    def test_blue_screen_dumps(self):
+        day = datetime.timedelta(days=1)
+        dumps = {"readable": True, "minidumps": [NOW - 2 * day, NOW - 5 * day], "memory_dmp": None, "enabled": 7,
+                 "last_crash": NOW - 2 * day, "count": 5}
+        finding = verdict("crashes", kernel_dumps=dumps)
+        self.assertEqual((finding.severity, finding.params["n"]), ("problem", 2), "the dump files witness the crashes")
+        self.assertEqual(finding.items[0], ("item_minidump", {"date": (NOW - 2 * day).date()}))
+        remembered = verdict("crashes", kernel_dumps=dict(dumps, minidumps=[]))
+        self.assertEqual((remembered.severity, remembered.items[0][0]), ("problem", "item_last_crash"))
+        old = verdict("crashes", kernel_dumps=dict(dumps, minidumps=[NOW - 100 * day], last_crash=NOW - 100 * day))
+        self.assertEqual(old.severity, "ok")
+        bsod = event("Microsoft-Windows-WER-SystemErrorReporting", 1001, args=["0x0000009f (0x3, 0x0)", "C:\\x"])
+        both = verdict("crashes", events=[bsod], kernel_dumps=dumps)
+        self.assertEqual(both.params["n"], 1, "with the event logged, the dump is the same crash")
+        self.assertNotIn("item_minidump", [key for key, _ in both.items])
+        off = verdict("crashes", kernel_dumps=dict(dumps, minidumps=[], last_crash=None, enabled=0,
+                                                   memory_dmp={"time": NOW - 3 * day, "size": 3 * GB}))
+        self.assertEqual(off.severity, "ok")
+        self.assertEqual([key for key, _ in off.items], ["item_dumps_disabled", "item_memory_dmp"])
+        self.assertIn("system_properties", off.actions)
+        self.assertRenders(off)
+        self.assertRenders(finding)
+
+    def test_local_dumps_and_shader_hint(self):
+        def crash(name, module="game.dll"):
+            return event("Application Error", 1000, 1, args=[name, "1.0", "0", module, "1.0", "0", "c0000005", "0x0", "1"])
+
+        folder = "D:\\Data\\AppData\\Local\\CrashDumps"
+        dumps = {"enabled": True, "folder": folder, "dumps": [
+            {"name": "game.exe", "time": NOW - datetime.timedelta(days=1), "size": 40 * MB, "folder": folder},
+            {"name": "game.exe", "time": NOW - datetime.timedelta(days=2), "size": 40 * MB, "folder": folder},
+            {"name": "game.exe", "time": NOW - datetime.timedelta(days=40), "size": 40 * MB, "folder": folder},
+            {"name": "other.exe", "time": NOW - datetime.timedelta(days=1), "size": 1 * MB, "folder": folder}]}
+        finding = verdict("app_crashes", app_events=[crash("game.exe")], local_dumps=dumps)
+        self.assertIn(("item_dumps_saved", {"name": "game.exe", "n": 2, "folder": folder, "size": Size(80 * MB)}),
+                      finding.items)
+        self.assertNotIn("other.exe", repr(finding.items), "dumps of a program that is not in the log are not listed")
+        gpu = verdict("app_crashes", app_events=[crash("game.exe", "nvwgf2umx.dll")])
+        self.assertIn(("item_shader_cache", {"folder": "%LocalAppData%\\NVIDIA\\DXCache"}), gpu.items)
+        amd = verdict("app_crashes", app_events=[crash("game.exe", "amdxx64.dll")])
+        self.assertIn(("item_shader_cache", {"folder": "%LocalAppData%\\AMD\\DxCache"}), amd.items)
+        tdr = verdict("gpu_resets", events=[event("Display", 4101, level=3)])
+        self.assertIn(("item_shader_cache", {"folder": "%LocalAppData%\\NVIDIA\\DXCache"}), tdr.items)
+        self.assertRenders(finding)
+        self.assertRenders(tdr)
+
+    def test_crash_reports_outside_the_log(self):
+        report = {"name": "Brave", "kind": "crashpad", "folder": "D:\\Data\\Crashpad\\reports", "recent": 3,
+                  "total": 30, "newest": NOW - datetime.timedelta(days=1), "size": 3 * MB}
+        finding = verdict("crash_files", crash_files=[report])
+        self.assertEqual((finding.severity, finding.params["name"], finding.params["n"]), ("warning", "Brave", 3))
+        self.assertEqual(finding.items[0][1]["n"], 3)
+        self.assertIn(("item_crash_files_hidden", {}), finding.items)
+        self.assertIn(("item_crash_files_tabs", {}), finding.items)
+        self.assertEqual(finding.actions, [], "Reliability Monitor does not show these crashes")
+        self.assertEqual(self.severity("crash_files", crash_files=[dict(report, recent=1)]), "info")
+        self.assertEqual(self.severity("crash_files", crash_files=[dict(report, recent=0)]), "ok")
+        wer = dict(report, name="game.exe", kind="wer", recent=1)
+        queued = verdict("crash_files", crash_files=[wer])
+        self.assertEqual(queued.actions, ["reliability"])
+        self.assertNotIn(("item_crash_files_tabs", {}), queued.items)
+        both = verdict("crash_files", crash_files=[wer, report])
+        self.assertEqual((both.params["name"], both.params["n"]), ("Brave", 4))
+        self.assertRenders(both)
+
+    def test_live_kernel_dumps(self):
+        day = datetime.timedelta(days=1)
+        dump = {"component": "WATCHDOG", "time": NOW - 5 * day, "size": 2 * MB}
+        finding = verdict("live_kernel", live_kernel={"readable": True, "dumps": [dump], "components": ["WATCHDOG"]})
+        self.assertEqual((finding.severity, finding.params["n"]), ("warning", 1))
+        self.assertEqual(finding.items[0][1]["kind"], "kind_live_watchdog")
+        self.assertIn(("item_live_watchdog_hint", {}), finding.items)
+        old = verdict("live_kernel", live_kernel={"readable": True, "dumps": [dict(dump, time=NOW - 90 * day)],
+                                                  "components": ["WATCHDOG"]})
+        self.assertEqual((old.severity, old.line, old.params["date"]), ("ok", "live_kernel_old", (NOW - 90 * day).date()))
+        hidden = verdict("live_kernel", live_kernel={"readable": False, "dumps": [], "components": ["NDIS"]})
+        self.assertEqual((hidden.severity, hidden.line), ("info", "live_kernel_registry"))
+        self.assertEqual(verdict("live_kernel", live_kernel={"readable": False, "dumps": [], "components": []}).line,
+                         "unknown_admin")
+        mixed = verdict("live_kernel", wer_off=True, live_kernel={"readable": True, "components": [], "dumps": [
+            dump, dict(dump, component="USBHUB3"), dict(dump, component="Mystery"), dict(dump, component="")]})
+        kinds = {params["kind"] for key, params in mixed.items if key == "item_live_kind"}
+        self.assertEqual(kinds, {"kind_live_watchdog", "kind_live_usb", "kind_live_other"})
+        self.assertIn(("item_wer_off", {}), mixed.items)
+        self.assertEqual(mixed.params["n"], 4)
+        self.assertRenders(mixed)
+        self.assertRenders(hidden)
+
+    def test_programs_with_documented_problems(self):
+        def software(programs=(), services=(), rtss=None, packages=()):
+            return {"programs": {title.lower(): (title, version) for title, version in programs}, "packages": list(packages),
+                    "services": {name.lower(): {"display": display, "start": start} for name, display, start in services},
+                    "rtss": rtss}
+
+        self.assertEqual(verdict("conflicting_software", software=software()).line, "conflicts_ok")
+        inpout = verdict("conflicting_software", software=software(services=[("inpoutx64", "inpoutx64", 1)]))
+        self.assertEqual((inpout.severity, inpout.items[0][0], inpout.actions), ("warning", "item_sw_inpout", ["devices"]))
+        self.assertEqual(self.severity("conflicting_software", software=software(services=[("inpoutx64", "inpoutx64", 4)])),
+                         "ok", "a disabled driver does not load")
+        auto = software(services=[("NahimicService", "Nahimic service", 2)])
+        nahimic = verdict("conflicting_software", software=auto)
+        self.assertEqual((nahimic.severity, nahimic.items[0]), ("warning", ("item_sw_nahimic", {"name": "Nahimic service"})))
+        manual = software(services=[("NahimicService", "Nahimic service", 3)])
+        self.assertEqual(verdict("conflicting_software", software=manual).items[0][0], "item_sw_nahimic_installed")
+        self.assertEqual(verdict("conflicting_software", software=manual, processes={"nahimicservice"}).items[0][0],
+                         "item_sw_nahimic")
+        sonic = verdict("conflicting_software", software=software(packages=["ASUSTeKCOMPUTERINC.SonicStudio3_1.0_x64__q"]))
+        self.assertEqual(sonic.items, [("item_sw_nahimic_installed", {"name": "Sonic Studio"})])
+        overwolf = verdict("conflicting_software", software=software(programs=[("Overwolf", "0.2"), ("OBS Studio", "30")],
+                                                                     rtss=(7, 3, 5, 0)))
+        self.assertEqual([key for key, _ in overwolf.items], ["item_sw_overwolf_rtss", "item_sw_overwolf_capture"])
+        self.assertEqual((overwolf.severity, overwolf.items[0][1]["version"]), ("warning", "7.3.5"))
+        self.assertEqual(self.severity("conflicting_software", software=software(programs=[("Overwolf", "0.2")],
+                                                                                  rtss=(7, 3, 7, 0))), "ok")
+        pups = verdict("conflicting_software", software=software(programs=[
+            ("Advanced SystemCare 17", "17.0"), ("Restoro", "2.6"), ("Driver Booster 11", "11"), ("CCleaner", "6.20")]))
+        self.assertEqual([key for key, _ in pups.items], ["item_sw_pup", "item_sw_scam", "item_sw_optimizer", "item_sw_ccleaner"])
+        self.assertEqual((pups.severity, pups.params["n"], pups.actions), ("warning", 4, ["apps"]))
+        machine = software(programs=[("VMware Workstation", "17.5")])
+        slow = verdict("conflicting_software", software=machine, vbs={"available": [1, 2], "running": [2]})
+        self.assertEqual((slow.severity, slow.items), ("info", [("item_sw_vmware_vbs", {"name": "VMware Workstation"})]))
+        self.assertEqual(self.severity("conflicting_software", software=machine), "ok")
+        logitech = software(programs=[("Logitech Gaming Software", "8.96.88"), ("Logitech G HUB", "2024.1")])
+        self.assertEqual(verdict("conflicting_software", software=logitech).items[0][0], "item_sw_lgs_ghub")
+        newer = software(programs=[("Logitech Gaming Software", "9.02.65"), ("Logitech G HUB", "2024.1")])
+        self.assertEqual(self.severity("conflicting_software", software=newer), "ok")
+        arc = [{"name": "Intel(R) Arc(TM) A770 Graphics", "inf": "oem9.inf", "version": "32.0.101.6000",
+                "pnp": "PCI\\VEN_8086&DEV_56A0&SUBSYS_00000000\\3&1", "code": 0, "date": "2026-06-17T00:00:00"}]
+        crate = software(programs=[("ARMOURY CRATE", "6.1")])
+        self.assertEqual(verdict("conflicting_software", software=crate, video=arc).items[0][0], "item_sw_armoury_arc")
+        self.assertEqual(self.severity("conflicting_software", software=crate), "ok", "no Arc, no documented conflict")
+        network = software(services=[("Killer Network Service", "Killer Network Service", 2), ("cFosSpeedS", "cFosSpeed System Service", 2)])
+        self.assertEqual([key for key, _ in verdict("conflicting_software", software=network).items],
+                         ["item_sw_killer", "item_sw_cfos"])
+        corsair = software(programs=[("Corsair Link 4", "4.9"), ("iCUE", "5.1")])
+        self.assertEqual(verdict("conflicting_software", software=corsair).items[0][0], "item_sw_corsair_link")
+        self.assertRenders(verdict("conflicting_software", software=network))
+        self.assertRenders(pups)
+        self.assertRenders(nahimic)
 
     def test_graphics_driver_crashes(self):
         self.assertEqual(self.severity("gpu_resets", events=[event("Display", 4101, level=3)]), "warning")
