@@ -33,7 +33,7 @@ import terms  # noqa: E402
 
 with open(os.path.join(DATA, "SimpleTool", "settings.json"), "w", encoding="utf-8") as f:
     json.dump({"lang": LANG, "terms": terms.VERSION, "seen_version": main.VERSION, "tray_hint_shown": True,
-               "auto_update_check": False}, f)
+               "auto_update_check": False, "theme": os.environ.get("ST_THEME", "navy")}, f)
 
 ctypes.windll.shcore.SetProcessDpiAwareness(1)
 root = tk.Tk()

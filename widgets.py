@@ -114,16 +114,25 @@ class Card(tk.Frame):
         self.backdrop = tk.Canvas(self, bg=parent.cget("bg"), highlightthickness=0, bd=0)
         self.backdrop.place(x=0, y=0, relwidth=1, relheight=1)
         self.shape = self.backdrop.create_polygon(0, 0, 0, 0, smooth=True, fill=self.fill, outline=self.border, width=1)
+        # A thin colored bar along the left edge: the status of a tweak, the severity of a finding
+        self.bar = max(2, round(3 * scale))
+        self.accent = self.backdrop.create_polygon(0, 0, 0, 0, smooth=True, outline="", state="hidden")
         self.body = tk.Frame(self, bg=self.fill)
         self.body.pack(fill="both", expand=True, padx=self.pad, pady=self.pad)
         self.bind("<Configure>", self._layout)
 
     def _layout(self, event):
         self.backdrop.coords(self.shape, *round_points(1, 1, event.width - 2, event.height - 2, self.radius))
+        top = max(self.radius, self.bar)
+        self.backdrop.coords(self.accent, *round_points(2, top, 2 + self.bar, event.height - top, self.bar / 2))
 
     def set_border(self, color):
         self.border = color
         self.backdrop.itemconfigure(self.shape, outline=color)
+
+    def set_accent(self, color):
+        """Shows the bar along the left edge in color, or hides it with None."""
+        self.backdrop.itemconfigure(self.accent, fill=color or "", state="normal" if color else "hidden")
 
 
 class Pill(tk.Canvas):
@@ -519,6 +528,46 @@ class Meter(tk.Canvas):
 
         if animate:
             self.animator.animate(("meter", id(self)), 0.5, step)
+        else:
+            step(1.0)
+
+
+class ProgressBar(tk.Canvas):
+    """A thin bar filled with the brand gradient up to a share: how much of a page is applied. The gradient runs
+    over the whole bar, so the filled part ends in the color the full bar would have there."""
+
+    def __init__(self, parent, scale, animator, height=6):
+        self.bg = parent.cget("bg")
+        self.h = max(4, round(height * scale))
+        super().__init__(parent, height=self.h, bg=self.bg, highlightthickness=0)
+        self.animator, self.ratio, self.shown = animator, 0.0, 0.0
+        self.track_color = mix(C["raised"], self.bg, 0.9)
+        self.track = self.create_polygon(0, 0, 0, 0, smooth=True, fill=self.track_color)
+        self.fill = self.create_image(0, 0, anchor="nw", state="hidden")
+        self.bind("<Configure>", lambda e: self._draw())
+
+    def _draw(self):
+        w = self.winfo_width()
+        if w <= 1:
+            return
+        self.coords(self.track, *round_points(0, 0, w, self.h, self.h / 2))
+        width = round(w * max(0.0, min(self.shown, 1.0)))
+        if width < self.h:
+            self.itemconfigure(self.fill, state="hidden")
+            return
+        end = lerp(C["grad_a"], C["grad_b"], width / w)
+        image = theme.gradient_pill(width, self.h, self.h / 2, C["grad_a"], end, self.track_color)
+        self.itemconfigure(self.fill, image=image, state="normal")
+
+    def set(self, ratio, animate=True):
+        start, self.ratio = self.shown, max(0.0, min(ratio, 1.0))
+
+        def step(t):
+            self.shown = start + (self.ratio - start) * t
+            self._draw()
+
+        if animate:
+            self.animator.animate(("progress", id(self)), 0.7, step, delay=0.15)
         else:
             step(1.0)
 

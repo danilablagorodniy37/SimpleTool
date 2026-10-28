@@ -86,6 +86,11 @@ def windows_11():
     return sysinfo.release()[2] >= 22000
 
 
+def steps_recorder_installed():
+    """Steps Recorder is deprecated since 2023 and on its way out of Windows; without psr.exe there is nothing to turn off."""
+    return os.path.exists(os.path.expandvars(r"%SystemRoot%\System32\psr.exe"))
+
+
 # --- Privacy ---
 
 DATA_COLLECTION_TASKS = [
@@ -118,6 +123,9 @@ OFFICE_TELEMETRY_TASKS = [
 NVIDIA_TASKS = [f"{name}_{{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}}" for name in ("NvTmRepOnLogon", "NvTmRep", "NvTmMon")]
 
 SYNC_GROUPS = ["Accessibility", "BrowserSettings", "Credentials", "Language", "Personalization", "Windows"]
+# The policy "Do not sync" (SettingSync.admx; Pro, Enterprise and Education). Windows 11 keeps the per-group switches
+# only for Microsoft accounts, under "Remember my preferences"; the policy turns the whole feature off for everyone
+SETTING_SYNC_POLICY = POLICIES + r"\SettingSync"
 
 PRIVACY = [
     Tweak("ads", "privacy", [
@@ -126,6 +134,9 @@ PRIVACY = [
     Tweak("sync", "privacy", [
         Value(rf"HKCU\Software\Microsoft\Windows\CurrentVersion\SettingSync\Groups\{group}", "Enabled", 0)
         for group in SYNC_GROUPS
+    ] + [
+        Value(SETTING_SYNC_POLICY, "DisableSettingSync", 2),
+        Value(SETTING_SYNC_POLICY, "DisableSettingSyncUserOverride", 1),
     ]),
     Tweak("telemetry", "privacy", [
         Value(r"HKLM\SYSTEM\CurrentControlSet\Control\WMI\Autologger\Diagtrack-Listener", "Start", 0, default=1),
@@ -150,7 +161,7 @@ PRIVACY = [
     Tweak("steps_recorder", "privacy", [
         Value(POLICIES + r"\AppCompat", "DisableUAR", 1),
         Value(POLICIES + r"\Personalization", "NoLockScreenCamera", 1),
-    ]),
+    ], requires=steps_recorder_installed),
     Tweak("location", "privacy", [
         Value(POLICIES + r"\LocationAndSensors", name, 1)
         for name in ("DisableLocation", "DisableLocationScripting", "DisableWindowsLocationProvider")

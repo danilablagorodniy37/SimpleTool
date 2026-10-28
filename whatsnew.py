@@ -6,6 +6,37 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.10": {
+        "en": [
+            "Pages read at a glance: every tweak page starts with “Applied: N of M” and a bar that fills up, applied "
+            "tweaks get a teal bar along the left edge of their card, partly applied ones an orange bar, and "
+            "troubleshooting findings a bar in the color of their severity.",
+            "Turn off settings sync now also sets the Windows policy, so it works for Windows 11's “Remember my "
+            "preferences” too; applied with an earlier version it shows Partly: select it and press Apply. Turn off "
+            "Microsoft experiments warns that it also turns off Known Issue Rollback.",
+            "Drive errors of a memory stick or phone unplugged since are a note, not a problem.",
+        ],
+        "ru": [
+            "Страницы читаются с первого взгляда: каждая страница твиков начинается с «Применено: N из M» и полоски, "
+            "которая заполняется; у применённых твиков слева от карточки бирюзовая полоса, у частично применённых — "
+            "оранжевая, а у находок «Поиска проблем» — полоса цвета их серьёзности.",
+            "«Отключить синхронизацию настроек» теперь задаёт и политику Windows, поэтому работает и для «Запоминать "
+            "мои настройки» в Windows 11; применённый прежней версией твик показывает «Частично» — выберите его и "
+            "нажмите «Применить». «Отключить эксперименты Microsoft» предупреждает, что отключает и Known Issue "
+            "Rollback.",
+            "Ошибки диска от флешки или телефона, которые с тех пор отключили, — заметка, а не проблема.",
+        ],
+        "uk": [
+            "Сторінки читаються з першого погляду: кожна сторінка твіків починається із «Застосовано: N з M» і "
+            "смужки, що заповнюється; у застосованих твіків ліворуч від картки бірюзова смуга, у частково "
+            "застосованих — помаранчева, а в знахідок «Пошуку проблем» — смуга кольору їхньої серйозності.",
+            "«Вимкнути синхронізацію налаштувань» тепер задає й політику Windows, тому працює і для «Запам’ятати мої "
+            "параметри» у Windows 11; застосований попередньою версією твік показує «Частково» — виберіть його й "
+            "натисніть «Застосувати». «Вимкнути експерименти Microsoft» попереджає, що вимикає й Known Issue "
+            "Rollback.",
+            "Помилки диска від флешки або телефона, які відтоді відключили, — нотатка, а не проблема.",
+        ],
+    },
     "0.9": {
         "en": [
             "Troubleshooting now sees crashes that never reach the Windows log: the crash reports Chromium browsers, "

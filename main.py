@@ -33,10 +33,10 @@ import updater
 import updates
 import whatsnew
 from theme import C, CATEGORY_COLORS, lerp, mix
-from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ScanRings, Segmented, Spinner,
-                     Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
+from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, ScanRings, Segmented,
+                     Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.9"
+VERSION = "0.10"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -45,6 +45,9 @@ PAGES = ["overview", "diagnostics"] + tweaks.CATEGORIES + ["memory", "snapshots"
 TRAY_OPEN, TRAY_LIMITER, TRAY_EXIT = 1, 2, 3  # tray icon menu items
 SELECTABLE = ("applied", "partial", "not_applied", "unknown")
 REVERTIBLE = ("applied", "partial", "unknown")
+# The colored bar along the left edge of a card: the states of a tweak and the severities of a finding that get one
+STATE_ACCENTS = {"applied": "ok", "partial": "warn", "unknown": "warn"}
+SEVERITY_ACCENTS = {"problem": "bad", "warning": "warn", "info": "accent"}
 SCAN_STEPS = ["services", "tasks", "registry"]
 MIN_SCAN_SECONDS = 1.0  # the scan screen does not flash even if everything is read instantly
 # Content column: header, list and footer share the same edges; in a wide window the column is centered
@@ -672,6 +675,7 @@ class App:
         self.diag_cards = {}
         self.action_buttons = []
         self.mem = {}
+        self.progress = None
         if page == "overview":
             self.build_overview()
         elif page == "snapshots":
@@ -1015,9 +1019,11 @@ class App:
         card = Card(self.list_frame, self.scale,
                     border=mix(color, C["surface"], 0.55) if finding.severity == "problem" else None)
         card.pack(fill="x", pady=(0, px(10)))
+        if finding.severity in SEVERITY_ACCENTS:
+            card.set_accent(C[SEVERITY_ACCENTS[finding.severity]])
         body = card.body
         body.columnconfigure(1, weight=1)
-        badge = Card(body, self.scale, fill=mix(color, card.fill, 0.14), border=mix(color, card.fill, 0.35), radius=12,
+        badge = Card(body, self.scale, fill=mix(color, card.fill, 0.2), border=mix(color, card.fill, 0.45), radius=12,
                      pad=3)
         badge.grid(row=0, column=0, rowspan=2, sticky="nw", padx=px(12), pady=(px(10), 0))
         tk.Label(badge.body, text=ICONS[GROUP_ICONS[finding.group]], font=self.fonts["icon"], fg=color,
@@ -1817,9 +1823,39 @@ class App:
     # --- Tweak pages ---
 
     def build_tweak_page(self, page):
-        for tweak in tweaks.TWEAKS:
-            if tweak.category == page:
-                self.cards[tweak.id] = self.build_tweak_card(tweak)
+        items = [t for t in tweaks.TWEAKS if t.category == page]
+        self.build_progress(items)
+        for tweak in items:
+            self.cards[tweak.id] = self.build_tweak_card(tweak)
+
+    def build_progress(self, items):
+        """How much of the page is applied: a line of text and a thin gradient bar that fills up under it."""
+        px = self.px
+        row = tk.Frame(self.list_frame, bg=C["bg"])
+        row.pack(fill="x", padx=px(2), pady=(0, px(12)))
+        head = tk.Frame(row, bg=C["bg"])
+        head.pack(fill="x")
+        label = tk.Label(head, font=self.fonts["small_bold"], fg=C["muted"], bg=C["bg"], anchor="w")
+        label.pack(side="left")
+        percent = tk.Label(head, font=self.fonts["small"], fg=C["dim"], bg=C["bg"])
+        percent.pack(side="right")
+        bar = ProgressBar(row, self.scale, self.animator)
+        bar.pack(fill="x", pady=(px(6), 0))
+        self.progress = {"items": items, "label": label, "percent": percent, "bar": bar}
+        self.update_progress(animate=True)
+
+    def update_progress(self, animate=True):
+        if not self.progress:
+            return
+        items, statuses = self.progress["items"], self.status_map()
+        applied = sum(statuses.get(t.id) == "applied" for t in items)
+        share = applied / len(items) if items else 0.0
+        try:
+            self.progress["label"].configure(text=self.t("progress", applied=applied, total=len(items)))
+            self.progress["percent"].configure(text=f"{round(100 * share)}%")
+            self.progress["bar"].set(share, animate)
+        except tk.TclError:
+            pass  # the page was replaced meanwhile
 
     def build_tweak_card(self, tweak):
         px = self.px
@@ -2017,6 +2053,7 @@ class App:
             self.animator.color(("border", tweak.id), card.set_border, card.border, border, 0.2)
         else:
             card.set_border(border)
+        card.set_accent(C[STATE_ACCENTS[state]] if state in STATE_ACCENTS else None)
         widgets["title"].configure(fg=C["dim"] if state in ("unavailable", "admin") else C["text"])
         for key in ("card", "check", "title", "pill"):
             widgets[key].configure(cursor="hand2" if enabled else "arrow")
@@ -2095,6 +2132,7 @@ class App:
                 widgets["inner"] = None
                 if ("t", tweak_id) in self.expanded:
                     self.expand(("t", tweak_id), widgets, animate=False)
+        self.update_progress()
         self.update_nav_counts()
         self.update_footer()
 

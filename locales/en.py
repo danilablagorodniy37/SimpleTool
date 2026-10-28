@@ -14,6 +14,7 @@ TEXTS = {
         "rescan": "Scan again",
         "selected": "Selected: {n}",
         "hint_select": "Select tweaks to apply or revert.",
+        "progress": "Applied: {applied} of {total}",
         "checking": "Scanning the system…",
         "working_apply": "Applying…",
         "working_revert": "Reverting…",
@@ -361,10 +362,15 @@ TEXTS = {
         "sync": (
             "Turn off settings sync",
             "Windows stops syncing themes, passwords, language and other settings with your Microsoft account.",
-            "When you sign in with a Microsoft account, Windows uploads your theme, saved passwords, language "
-            "preferences, accessibility options, browser and other settings to the cloud and applies them on your "
-            "other PCs. This tweak turns off every sync group for your account. Your settings stay on this PC; they "
-            "just stop being copied to the cloud and from other devices."),
+            "When you sign in with a Microsoft account, Windows uploads your theme, language preferences, "
+            "accessibility options and other settings to the cloud and applies them on your other PCs; Windows 10 "
+            "also syncs saved passwords and browser settings. Windows 11 calls this “Remember my preferences”, in "
+            "Settings → Accounts → Windows backup. This tweak turns off every sync group for your account and, as "
+            "administrator, sets the Windows policy “Do not sync”, which switches the whole feature off and greys "
+            "out the switch; Settings may then say “Some settings are managed by your organisation”. Windows Home "
+            "ignores the policy, so there the per-account switches do the work, and they exist only for Microsoft "
+            "accounts. Your settings stay on this PC; they just stop being copied to the cloud and from other "
+            "devices."),
         "telemetry": (
             "Turn off Windows telemetry",
             "Disables the DiagTrack service and its logger, the WAP push service and Office telemetry tasks.",
@@ -420,8 +426,10 @@ TEXTS = {
             "Disables recording of user actions and blocks the camera on the lock screen.",
             "Steps Recorder (psr.exe) records every click and keystroke with screenshots, which helps tech support "
             "but captures everything you do on screen. This tweak turns it off with the “Turn off Steps Recorder” "
-            "policy and blocks the camera on the lock screen, so nobody can take photos before signing in. If you "
-            "send Steps Recorder captures to tech support, leave this tweak off."),
+            "policy and blocks the camera on the lock screen, a Windows 10 feature that let anyone take photos "
+            "before signing in. Microsoft declared Steps Recorder obsolete in 2023 and is removing it from Windows: "
+            "on a PC where it is already gone, the tweak shows Not found. If you send Steps Recorder captures to "
+            "tech support, leave this tweak off."),
         "location": (
             "Turn off location",
             "Turns off location for the whole system: maps, weather and Find my device will not see where you are.",
@@ -446,7 +454,10 @@ TEXTS = {
             "Prevents Microsoft from remotely turning on experimental features on this PC.",
             "Microsoft can turn on features that are still being tested on some PCs to try them before release; the "
             "AllowExperimentation setting controls this. This tweak sets it to 0, so no experiments run on this PC. "
-            "Regular updates and features released to everyone are not affected."),
+            "Regular updates and features released to everyone are not affected. One thing is: Known Issue Rollback, "
+            "the mechanism Microsoft uses to switch off a change of an update that turned out to cause problems, "
+            "works through the same channel and stops working too. If an update misbehaves and Microsoft announces "
+            "a rollback for it, revert this tweak for a day."),
         "startup_delay": (
             "Remove startup delay",
             "Startup programs launch right after sign-in instead of waiting several seconds.",
@@ -1312,7 +1323,8 @@ TEXTS = {
         "pagefile_missing": "Windows could not create the page file",
         "item_numproc_option": "The boot option {option} limits the processors",
         "item_hpet": "The HPET timer is forced as the system clock (useplatformclock)",
-        "item_removable": "All of them come from removable drives, which is usually harmless",
+        "item_removable": "All of them come from removable drives or from a drive that is not connected now, which is "
+                          "usually harmless",
         "item_reset_sleep": "{date}: turned off while going to sleep",
         "item_reset_shutdown": "{date}: turned off while shutting down or hibernating",
         "item_app_crash_module": "{name}: crashes {crashes}, hangs {hangs}, mostly in {module}",

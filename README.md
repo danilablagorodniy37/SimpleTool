@@ -56,7 +56,8 @@ with the reason. Most checks work without administrator rights.
 | Context menu | 11 | classic Windows 11 menu, Copy to and Move to folder, take ownership, block a program in the firewall, file hashes, copy image, This PC tools |
 
 Every tweak shows its current state: **Applied**, **Partly**, **Not applied**, or **Not found**
-when the service or task it targets is not on this PC.
+when the service or task it targets is not on this PC. Applied tweaks carry a teal bar along the left edge
+of their card, and each page starts with how many of its tweaks are applied.
 
 ## Memory limiter
 

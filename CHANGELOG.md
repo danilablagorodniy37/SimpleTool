@@ -2,6 +2,19 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.10
+
+**Interface**
+- **Pages read at a glance.** Every tweak page starts with "Applied: N of M" and a gradient bar that fills up. Applied tweaks carry a teal bar along the left edge of their card and partly applied ones an orange bar; troubleshooting findings carry a red, orange or blue bar by severity, and their badges are tinted the same way.
+
+**Tweaks**
+- **Turn off settings sync** also sets the Windows policy "Do not sync" (Pro, Enterprise and Education), which turns the whole "Remember my preferences" feature of Windows 11 off and greys out its switch. Windows 11 creates the per-group switches only for Microsoft accounts, so on a local account the tweak changed nothing visible. The tweak now needs administrator rights; applied with an earlier version it shows **Partly**: select it and press **Apply**.
+- **Turn off Microsoft experiments** says that it also turns off Known Issue Rollback, Microsoft's way of switching off a change of an update that causes problems, and what to do then.
+- **Turn off Steps Recorder** shows **Not found** on a PC where Microsoft has already removed Steps Recorder (deprecated since 2023), and its description says what the lock screen camera policy is for.
+
+**Troubleshooting**
+- **Drive errors** of a disk that is not on the PC any more, such as a memory stick or phone unplugged since, are a note rather than a problem. Before, they were taken for errors of an internal drive.
+
 ## 0.9
 
 **Troubleshooting**

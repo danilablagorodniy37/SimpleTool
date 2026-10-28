@@ -442,6 +442,14 @@ class Verdicts(unittest.TestCase):
                                                                        args=["\\Device\\Harddisk3\\DR3"])])
         self.assertEqual((removed.severity, removed.items[-1]), ("info", ("item_removable", {})),
                          "a memory stick pulled out")
+        gone = verdict("disk_errors", disk_events=[event("disk", 11, args=["\\Device\\Harddisk2\\DR3"])])
+        self.assertEqual((gone.severity, gone.items[-1]), ("info", ("item_removable", {})),
+                         "a disk that is not on the PC now: a stick or phone unplugged since")
+        self.assertEqual(self.severity("disk_errors", disks=[],
+                                       disk_events=[event("disk", 11, args=["\\Device\\Harddisk2\\DR3"])]), "problem",
+                         "without the list of disks nothing says the disk is gone")
+        self.assertEqual(self.severity("disk_errors", disk_events=[event("disk", 11, args=["\\Device\\Harddisk0\\DR0"])]),
+                         "problem", "the disk is still there")
 
     def test_temporary_files(self):
         self.assertEqual(self.severity("temp_files", temp={"size": 6 * GB, "partial": False}), "warning")

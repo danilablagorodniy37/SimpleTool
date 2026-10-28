@@ -2055,9 +2055,12 @@ def check_disk_errors(facts):
             kind = "reset"
         if not kind or e["time"] < since or (e["level"] or 4) > 3:
             continue
-        # "\Device\Harddisk2\DR2": errors of a memory stick or card pulled out are normal
+        # "\Device\Harddisk2\DR2": errors of a memory stick or card pulled out are normal, and so are those of a disk
+        # that is not on the PC any more: its number is not among the disks found now (when they could be listed)
         disk = re.search(r"Harddisk(\d+)", e["args"][0] if e["args"] else "")
-        removable = provider == "disk" and disk is not None and buses.get(disk.group(1)) in REMOVABLE_BUSES
+        number = disk.group(1) if disk else None
+        gone = bool(buses) and number is not None and number not in buses
+        removable = provider == "disk" and number is not None and (gone or buses.get(number) in REMOVABLE_BUSES)
         internal = internal or not removable
         count, last, serious = kinds.get(kind, (0, e["time"], False))
         kinds[kind] = (count + 1, max(last, e["time"]), serious or not removable)
