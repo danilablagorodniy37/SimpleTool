@@ -6,6 +6,29 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.10.1": {
+        "en": [
+            "Crisper text: on Windows 11 the interface uses Segoe UI Variable Text, the system font made for small "
+            "sizes; descriptions, notes and the sidebar are one step larger, and secondary text and card borders "
+            "have more contrast in every theme.",
+            "System overview: the card of a running service carries a blue bar along its left edge, like applied "
+            "tweaks carry a teal one; a service that could not be checked carries an orange bar.",
+        ],
+        "ru": [
+            "Чётче текст: в Windows 11 интерфейс использует Segoe UI Variable Text, системный шрифт для мелких "
+            "размеров; описания, заметки и боковая панель стали на шаг крупнее, а второстепенный текст и границы "
+            "карточек контрастнее во всех темах.",
+            "Обзор системы: у карточки работающей службы слева синяя полоса, как бирюзовая у применённых твиков; у "
+            "службы, которую не удалось проверить, — оранжевая.",
+        ],
+        "uk": [
+            "Чіткіший текст: у Windows 11 інтерфейс використовує Segoe UI Variable Text, системний шрифт для дрібних "
+            "розмірів; описи, нотатки й бічна панель стали на крок більшими, а другорядний текст і межі карток "
+            "контрастніші в усіх темах.",
+            "Огляд системи: у картки працюючої служби ліворуч синя смуга, як бірюзова в застосованих твіків; у "
+            "служби, яку не вдалося перевірити, — помаранчева.",
+        ],
+    },
     "0.10": {
         "en": [
             "Pages read at a glance: every tweak page starts with “Applied: N of M” and a bar that fills up, applied "

@@ -7,24 +7,25 @@ import tkinter as tk
 # plates #12294A / #16345C, light grey #E3E9F1. The accent gradient goes from blue to teal.
 _SIDEBAR = {
     "side": "#081628", "side_hover": "#0F2341", "side_active": "#16345C", "side_border": "#1A2F50",
-    "side_text": "#E8EEFC", "side_muted": "#9FB0D6", "side_dim": "#6F7FA6",
+    "side_text": "#E8EEFC", "side_muted": "#A9B9DC", "side_dim": "#8090B8",
 }
 
+# Secondary text and borders are kept well above 4.5:1 against their background, so small text stays crisp
 PALETTES = {
     "navy": dict(_SIDEBAR,
-                 bg="#0A1B33", surface="#12294A", raised="#16345C", border="#223B60", border_hover="#3D5F8F",
-                 text="#E8EEFC", muted="#B8C3E6", dim="#7F8DB0",
+                 bg="#0A1B33", surface="#12294A", raised="#16345C", border="#2A4670", border_hover="#4A6EA0",
+                 text="#EEF3FF", muted="#C3CDEB", dim="#9AA8CC",
                  accent="#5FB4FF", primary="#2F8CF5", grad_a="#2F8CF5", grad_b="#34D8A8", on_primary="#FFFFFF",
                  ok="#34D8A8", warn="#F0B783", bad="#FCA5A5", caption="#081628"),
     "midnight": dict(side="#040A15", side_hover="#0B172B", side_active="#12264A", side_border="#0F1D35",
-                     side_text="#EEF3FF", side_muted="#93A3C8", side_dim="#5F6F94",
-                     bg="#070F1E", surface="#0D1B33", raised="#132748", border="#1B3051", border_hover="#2C6E78",
-                     text="#EEF3FF", muted="#A9B6D6", dim="#6E7EA3",
+                     side_text="#EEF3FF", side_muted="#A0B0D2", side_dim="#7585AA",
+                     bg="#070F1E", surface="#0D1B33", raised="#132748", border="#24406A", border_hover="#2C6E78",
+                     text="#F2F6FF", muted="#B6C2DF", dim="#8A99BF",
                      accent="#34D8A8", primary="#2F8CF5", grad_a="#2F8CF5", grad_b="#34D8A8", on_primary="#FFFFFF",
                      ok="#34D8A8", warn="#F0B783", bad="#FCA5A5", caption="#040A15"),
     "light": dict(_SIDEBAR,
-                  bg="#F2F5FA", surface="#FFFFFF", raised="#E3E9F1", border="#D8E0EC", border_hover="#8FB3E6",
-                  text="#0A1B33", muted="#43546E", dim="#8391A8",
+                  bg="#F2F5FA", surface="#FFFFFF", raised="#E3E9F1", border="#CBD5E3", border_hover="#8FB3E6",
+                  text="#0A1B33", muted="#3C4D68", dim="#6B7A93",
                   accent="#2F8CF5", primary="#2F8CF5", grad_a="#2F8CF5", grad_b="#2BC79A", on_primary="#FFFFFF",
                   ok="#0E9F74", warn="#C2701A", bad="#D64545", caption="#081628"),
 }

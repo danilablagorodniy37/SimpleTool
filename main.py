@@ -36,7 +36,7 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, ScanRings, Segmented,
                      Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.10"
+VERSION = "0.10.1"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -48,6 +48,7 @@ REVERTIBLE = ("applied", "partial", "unknown")
 # The colored bar along the left edge of a card: the states of a tweak and the severities of a finding that get one
 STATE_ACCENTS = {"applied": "ok", "partial": "warn", "unknown": "warn"}
 SEVERITY_ACCENTS = {"problem": "bad", "warning": "warn", "info": "accent"}
+SERVICE_ACCENTS = {"on": "accent", "unknown": "warn"}
 SCAN_STEPS = ["services", "tasks", "registry"]
 MIN_SCAN_SECONDS = 1.0  # the scan screen does not flash even if everything is read instantly
 # Content column: header, list and footer share the same edges; in a wide window the column is centered
@@ -234,13 +235,17 @@ class App:
     def setup_fonts(self):
         families = set(tkfont.families(self.root))
         icons = "Segoe Fluent Icons" if "Segoe Fluent Icons" in families else "Segoe MDL2 Assets"
-        semibold = "Segoe UI Semibold" if "Segoe UI Semibold" in families else "Segoe UI"
+        # Windows 11's Segoe UI Variable Text is cut for small sizes and reads crisper than Segoe UI; Windows 10 has
+        # only Segoe UI. One size step up for the small texts: 9 pt was hard to read on a large screen
+        text = "Segoe UI Variable Text" if "Segoe UI Variable Text" in families else "Segoe UI"
+        semibold = next((name for name in ("Segoe UI Variable Text Semibold", "Segoe UI Semibold") if name in families),
+                        "Segoe UI")
         mono = "Cascadia Mono" if "Cascadia Mono" in families else "Consolas"
         self.fonts = {
-            "brand": (semibold, 14), "title": (semibold, 20), "h2": (semibold, 11), "dialog": (semibold, 13),
-            "number": (semibold, 22), "nav": ("Segoe UI", 10), "nav_active": (semibold, 10),
-            "body": ("Segoe UI", 10), "small": ("Segoe UI", 9), "small_bold": (semibold, 9), "pill": (semibold, 8),
-            "button": (semibold, 10), "mono": (mono, 9),
+            "brand": (semibold, 14), "title": (semibold, 20), "h2": (semibold, 12), "dialog": (semibold, 14),
+            "number": (semibold, 22), "nav": (text, 11), "nav_active": (semibold, 11),
+            "body": (text, 11), "small": (text, 10), "small_bold": (semibold, 10), "pill": (semibold, 9),
+            "button": (semibold, 11), "mono": (mono, 10),
             "icon": (icons, 13), "icon_small": (icons, 10), "icon_tiny": (icons, 7), "icon_big": (icons, 20),
             "icon_scan": (icons, 26),
         }
@@ -305,7 +310,7 @@ class App:
 
     def build_sidebar(self):
         px = self.px
-        side = tk.Frame(self.root, bg=C["side"], width=px(264))
+        side = tk.Frame(self.root, bg=C["side"], width=px(284))  # the longest page name and its counter at 11 pt
         side.grid(row=0, column=0, sticky="ns")
         side.pack_propagate(False)
         tk.Frame(side, bg=C["side_border"], width=1).pack(side="right", fill="y")
@@ -883,6 +888,8 @@ class App:
         title, details = self.text("services", name)
         card = Card(self.list_frame, self.scale)
         card.pack(fill="x", pady=(0, px(10)))
+        if info.state in SERVICE_ACCENTS:  # a running service, or one that could not be checked
+            card.set_accent(C[SERVICE_ACCENTS[info.state]])
         body = card.body
         body.columnconfigure(0, weight=1)
         title_label = tk.Label(body, text=title, font=self.fonts["h2"], bg=card.fill, anchor="w", justify="left",

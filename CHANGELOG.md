@@ -2,6 +2,15 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.10.1
+
+**Crisper text**
+- On Windows 11 the interface uses Segoe UI Variable Text, the system font cut for small sizes; Windows 10 keeps Segoe UI. Descriptions, notes and the sidebar are one step larger (10 and 11 pt instead of 9 and 10), card titles and dialog headings too, so the hierarchy of a card is clearer.
+- Secondary text, counters and card borders have more contrast in all three themes.
+
+**System overview**
+- The card of a running service carries a blue bar along its left edge, like applied tweaks carry a teal one; a service that could not be checked carries an orange bar. Services that are off or not installed stay plain.
+
 ## 0.10
 
 **Interface**

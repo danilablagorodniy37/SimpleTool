@@ -24,7 +24,8 @@ Light). SimpleTool picks the language of Windows; switch language and theme in t
 ## System overview
 
 At startup SimpleTool scans the system and shows which Windows services related to telemetry,
-location, performance, Xbox and security are on, off or not installed. If something cannot be read,
+location, performance, Xbox and security are on, off or not installed; a running service carries a
+blue bar along the left edge of its card. If something cannot be read,
 it says why and how to fix it (usually: run as administrator). Every tweak and service has a
 detailed explanation, and each tweak lists exactly which registry values, services and tasks it
 changes and their current state.
