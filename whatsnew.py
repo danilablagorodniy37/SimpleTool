@@ -6,6 +6,20 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.10.3": {
+        "en": [
+            "Smooth circles: the ring on the tweaks tile, the scan animation and the activity indicator are drawn "
+            "with antialiasing now, instead of the jagged circles Tk draws by itself.",
+        ],
+        "ru": [
+            "Гладкие круги: кольцо на плитке твиков, анимация сканирования и индикатор активности теперь рисуются "
+            "со сглаживанием вместо зубчатых кругов, которые Tk рисует сам.",
+        ],
+        "uk": [
+            "Гладкі кола: кільце на плитці твіків, анімація сканування та індикатор активності тепер малюються зі "
+            "згладжуванням замість зубчастих кіл, які Tk малює сам.",
+        ],
+    },
     "0.10.2": {
         "en": [
             "Colored tiles: the counters at the top of System overview and Troubleshooting are tinted in their own "

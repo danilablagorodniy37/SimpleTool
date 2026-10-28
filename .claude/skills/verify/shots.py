@@ -93,6 +93,10 @@ def shoot(name):
 
 
 def step(i):
+    if i < len(SPECS) and SPECS[i][0] == "scan":  # the scan screen itself, while the first scan still runs
+        shoot("scan")
+        root.after(200, step, i + 1)
+        return
     if app.scan is None:
         root.after(300, step, i)  # the first scan is still running: cards say "Checking…"
         return

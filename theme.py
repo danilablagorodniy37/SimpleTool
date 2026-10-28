@@ -165,6 +165,32 @@ def glow(width, height, color, background, strength=0.22, step=2):
     return _cache[key + ("zoom", step)]
 
 
+def ring(size, ratio, start, end, track, background, width):
+    """An antialiased ring: a track with an arc in a gradient that runs clockwise from the top, filling ratio of
+    the circle. Tk's own arcs are jagged, so the ring is computed pixel by pixel like the gradient plates."""
+    size = max(int(size), 4)
+    outer = size / 2 - 1
+    inner = max(outer - width, 1)
+    centre = size / 2
+    extent = max(0.0, min(ratio, 1.0)) * 2 * math.pi
+    full = 2 * math.pi
+
+    def pixel(x, y):
+        dx, dy = x + 0.5 - centre, y + 0.5 - centre
+        distance = math.hypot(dx, dy)
+        cover = max(0.0, min(1.0, min(outer - distance, distance - inner) + 0.5))
+        if cover <= 0:
+            return background
+        angle = math.atan2(dx, -dy) % full  # clockwise from 12 o'clock
+        # The arc's share of the pixel: soft at both ends, measured along the circle
+        along = min(extent - angle, angle) * distance if extent > 0 else -1
+        share = max(0.0, min(1.0, along + 0.5))
+        color = mix(lerp(start, end, angle / full), track, share) if share > 0 else track
+        return mix(color, background, cover)
+
+    return _image(("ring", size, round(ratio, 3), start, end, track, background, width), size, size, pixel)
+
+
 def gradient_line(width, height, start, end):
     width, height = max(int(width), 1), max(int(height), 1)
     return _image(("line", width, height, start, end), width, height,

@@ -2,6 +2,10 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.10.3
+
+- **Smooth circles.** Tk draws circles and arcs without antialiasing, so the ring on the tweaks tile, the scan animation and the activity indicator in the footer looked jagged. The scan animation and the indicator are now drawn through Windows' own GDI+ (no extra library) into images, frame by frame and kept for the loop; the ring is computed pixel by pixel with soft edges, like the gradient buttons. Without GDI+ the old drawing stays as a fallback.
+
 ## 0.10.2
 
 - **Colored tiles.** The tiles at the top of System overview and Troubleshooting are tinted and framed in their own color: blue for services on, teal for tweaks applied and findings in order, orange for warnings, red for problems. A tile whose count is zero stays plain.

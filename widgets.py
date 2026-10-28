@@ -4,6 +4,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 
+import raster
 import theme
 from theme import C, lerp, mix
 
@@ -278,14 +279,33 @@ class CheckBox(tk.Canvas):
                                  width=max(2, s / 9), capstyle="round", joinstyle="round")
 
 
+def smooth_frame(size, draw, background):
+    """An antialiased PhotoImage of size × size drawn by draw(surface) through GDI+, or None if that is not
+    available (then the caller draws on the canvas as Tk can)."""
+    try:
+        with raster.Surface(size, size, background) as surface:
+            draw(surface)
+            return tk.PhotoImage(data=surface.png())
+    except (OSError, tk.TclError):
+        return None
+
+
 class ScanRings(tk.Canvas):
-    """Scan animation: expanding rings and two rotating arcs in the brand colors."""
+    """Scan animation: expanding rings and two rotating arcs in the brand colors.
+
+    The frames are drawn antialiased through GDI+ (raster.py) and kept while the animation runs: it repeats every
+    PERIOD seconds, so after the first cycle no frame is drawn twice. Without GDI+ the canvas draws them itself."""
+
+    FPS = 30
+    PERIOD = 3.6  # the rings expand twice and the arcs make two and one turns, so the loop joins seamlessly
 
     def __init__(self, parent, size, scale, icon, icon_font):
         self.bg = parent.cget("bg")
         super().__init__(parent, width=size, height=size, bg=self.bg, highlightthickness=0)
         self.size, self.scale, self.icon, self.icon_font = size, scale, icon, icon_font
         self.running = False
+        self.frames = {}
+        self.smooth = True
 
     def start(self):
         if not self.running:
@@ -294,6 +314,15 @@ class ScanRings(tk.Canvas):
 
     def stop(self):
         self.running = False
+        self.frames = {}
+
+    def _draw(self, surface, t):
+        c, s = self.size / 2, self.size
+        for i in range(3):
+            k = (t / (self.PERIOD / 2) + i / 3) % 1.0
+            surface.circle(c, c, s * 0.2 + k * s * 0.28, C["accent"], max(1.0, 1.5 * self.scale), alpha=(1 - k) * 0.55)
+        for radius, turns, extent, color, width in ((0.24, 2, 120, C["grad_a"], 4), (0.17, -1, 90, C["grad_b"], 3)):
+            surface.arc(c, c, s * radius, (t / self.PERIOD * 360 * turns) % 360, extent, color, width * self.scale)
 
     def _frame(self):
         if not self.running:
@@ -305,26 +334,42 @@ class ScanRings(tk.Canvas):
             return
         t = time.perf_counter()
         c, s = self.size / 2, self.size
-        for i in range(3):
-            k = (t * 0.55 + i / 3) % 1.0
-            r = s * 0.2 + k * s * 0.28
-            self.create_oval(c - r, c - r, c + r, c + r, outline=mix(C["accent"], self.bg, (1 - k) * 0.55),
-                             width=max(1, round(1.5 * self.scale)))
-        for radius, speed, extent, color, width in ((0.24, 240, 120, C["grad_a"], 4), (0.17, -170, 90, C["grad_b"], 3)):
-            r = s * radius
-            self.create_arc(c - r, c - r, c + r, c + r, start=(t * speed) % 360, extent=extent, style="arc",
-                            outline=color, width=round(width * self.scale))
+        if self.smooth:
+            index = int((t % self.PERIOD) * self.FPS)
+            if index not in self.frames:
+                self.frames[index] = smooth_frame(self.size, lambda surface: self._draw(surface, index / self.FPS), self.bg)
+            frame = self.frames[index]
+            if frame is None:
+                self.smooth = False  # no GDI+: the canvas draws the rest of the frames
+            else:
+                self.create_image(0, 0, anchor="nw", image=frame)
+        if not self.smooth:
+            for i in range(3):
+                k = (t * 0.55 + i / 3) % 1.0
+                r = s * 0.2 + k * s * 0.28
+                self.create_oval(c - r, c - r, c + r, c + r, outline=mix(C["accent"], self.bg, (1 - k) * 0.55),
+                                 width=max(1, round(1.5 * self.scale)))
+            for radius, speed, extent, color, width in ((0.24, 240, 120, C["grad_a"], 4),
+                                                        (0.17, -170, 90, C["grad_b"], 3)):
+                r = s * radius
+                self.create_arc(c - r, c - r, c + r, c + r, start=(t * speed) % 360, extent=extent, style="arc",
+                                outline=color, width=round(width * self.scale))
         self.create_text(c, c, text=self.icon, font=self.icon_font, fill=C["text"])
-        self.after(16, self._frame)
+        self.after(1000 // self.FPS if self.smooth else 16, self._frame)
 
 
 class Spinner(tk.Canvas):
-    """A small activity indicator in the footer."""
+    """A small activity indicator in the footer: a ring with an arc that turns once a second. Drawn antialiased
+    through GDI+ when it is there, one turn of frames kept while it runs."""
+
+    FPS = 30
 
     def __init__(self, parent, size, scale):
         self.bg = parent.cget("bg")
         super().__init__(parent, width=size, height=size, bg=self.bg, highlightthickness=0)
         self.size, self.scale, self.running = size, scale, False
+        self.frames = {}
+        self.smooth = True
 
     def start(self):
         if not self.running:
@@ -333,10 +378,17 @@ class Spinner(tk.Canvas):
 
     def stop(self):
         self.running = False
+        self.frames = {}
         try:
             self.delete("all")
         except tk.TclError:
             pass
+
+    def _draw(self, surface, angle):
+        s, w = self.size, max(2.0, 2 * self.scale)
+        c, r = s / 2, s / 2 - w
+        surface.circle(c, c, r, C["accent"], w, alpha=0.2)
+        surface.arc(c, c, r, angle, 100, C["accent"], w)
 
     def _frame(self):
         if not self.running:
@@ -347,10 +399,21 @@ class Spinner(tk.Canvas):
             self.running = False
             return
         s, w = self.size, max(2, round(2 * self.scale))
-        self.create_oval(w, w, s - w, s - w, outline=mix(C["accent"], self.bg, 0.2), width=w)
-        self.create_arc(w, w, s - w, s - w, start=(time.perf_counter() * 360) % 360, extent=100, style="arc",
-                        outline=C["accent"], width=w)
-        self.after(16, self._frame)
+        angle = (time.perf_counter() * 360) % 360
+        if self.smooth:
+            index = int(angle / 360 * self.FPS)
+            if index not in self.frames:
+                self.frames[index] = smooth_frame(self.size, lambda surface: self._draw(surface, index * 360 / self.FPS),
+                                                  self.bg)
+            frame = self.frames[index]
+            if frame is None:
+                self.smooth = False
+            else:
+                self.create_image(0, 0, anchor="nw", image=frame)
+        if not self.smooth:
+            self.create_oval(w, w, s - w, s - w, outline=mix(C["accent"], self.bg, 0.2), width=w)
+            self.create_arc(w, w, s - w, s - w, start=angle, extent=100, style="arc", outline=C["accent"], width=w)
+        self.after(1000 // self.FPS if self.smooth else 16, self._frame)
 
 
 class Toast:
@@ -575,35 +638,23 @@ class ProgressBar(tk.Canvas):
 class Ring(tk.Canvas):
     """A share of a whole as a ring: a track, an arc in the brand gradient that grows clockwise from the top, and
     the percentage inside. The gradient runs around the whole circle, so the arc ends in the color a full ring
-    would have there."""
-
-    SEGMENTS = 48  # the arc is drawn in pieces, each in its own shade
+    would have there. The ring is an antialiased image (theme.ring): Tk's own arcs are jagged."""
 
     def __init__(self, parent, size, scale, animator, font):
         self.bg = parent.cget("bg")
         super().__init__(parent, width=size, height=size, bg=self.bg, highlightthickness=0)
         self.size, self.scale, self.animator, self.font = size, scale, animator, font
         self.ratio = self.shown = 0.0
+        self.image = self.create_image(0, 0, anchor="nw")
+        self.label = self.create_text(size / 2, size / 2, font=font, fill=C["text"])
         self._draw()
 
     def _draw(self):
-        self.delete("all")
-        s, w = self.size, max(3, round(4 * self.scale))
-        pad = w / 2 + 1
-        box = (pad, pad, s - pad, s - pad)
-        self.create_oval(*box, outline=mix(C["raised"], self.bg, 0.9), width=w)
-        extent = 360 * max(0.0, min(self.shown, 1.0))
-        if extent > 0:
-            steps = max(1, round(self.SEGMENTS * extent / 360))
-            part = extent / steps
-            for i in range(steps):
-                # Tk arcs run counterclockwise from 3 o'clock; a piece from angle a to a + part clockwise from
-                # 12 o'clock is drawn from 90 - (a + part). The pieces overlap a little so no seams show
-                a = part * i
-                shade = lerp(C["grad_a"], C["grad_b"], (a + part / 2) / 360)
-                self.create_arc(*box, start=90 - (a + part), extent=part + (0.8 if i else 0), style="arc",
-                                outline=shade, width=w)
-        self.create_text(s / 2, s / 2, text=f"{round(100 * min(self.shown, 1.0))}%", font=self.font, fill=C["text"])
+        width = max(3, round(4.5 * self.scale))
+        track = mix(C["text"], self.bg, 0.14)
+        self.itemconfigure(self.image, image=theme.ring(self.size, self.shown, C["grad_a"], C["grad_b"], track, self.bg,
+                                                        width))
+        self.itemconfigure(self.label, text=f"{round(100 * min(self.shown, 1.0))}%")
 
     def set(self, ratio, animate=True, delay=0.0):
         start, self.ratio = self.shown, max(0.0, min(ratio, 1.0))
