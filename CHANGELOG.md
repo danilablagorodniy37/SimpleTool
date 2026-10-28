@@ -2,6 +2,11 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.10.2
+
+- **Colored tiles.** The tiles at the top of System overview and Troubleshooting are tinted and framed in their own color: blue for services on, teal for tweaks applied and findings in order, orange for warnings, red for problems. A tile whose count is zero stays plain.
+- **A ring for tweaks applied.** The tweaks tile is a third wider and shows the share of applied tweaks as a ring in the brand gradient, with the percentage inside; it fills up with the count.
+
 ## 0.10.1
 
 **Crisper text**

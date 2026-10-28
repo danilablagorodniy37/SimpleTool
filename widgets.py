@@ -572,6 +572,52 @@ class ProgressBar(tk.Canvas):
             step(1.0)
 
 
+class Ring(tk.Canvas):
+    """A share of a whole as a ring: a track, an arc in the brand gradient that grows clockwise from the top, and
+    the percentage inside. The gradient runs around the whole circle, so the arc ends in the color a full ring
+    would have there."""
+
+    SEGMENTS = 48  # the arc is drawn in pieces, each in its own shade
+
+    def __init__(self, parent, size, scale, animator, font):
+        self.bg = parent.cget("bg")
+        super().__init__(parent, width=size, height=size, bg=self.bg, highlightthickness=0)
+        self.size, self.scale, self.animator, self.font = size, scale, animator, font
+        self.ratio = self.shown = 0.0
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        s, w = self.size, max(3, round(4 * self.scale))
+        pad = w / 2 + 1
+        box = (pad, pad, s - pad, s - pad)
+        self.create_oval(*box, outline=mix(C["raised"], self.bg, 0.9), width=w)
+        extent = 360 * max(0.0, min(self.shown, 1.0))
+        if extent > 0:
+            steps = max(1, round(self.SEGMENTS * extent / 360))
+            part = extent / steps
+            for i in range(steps):
+                # Tk arcs run counterclockwise from 3 o'clock; a piece from angle a to a + part clockwise from
+                # 12 o'clock is drawn from 90 - (a + part). The pieces overlap a little so no seams show
+                a = part * i
+                shade = lerp(C["grad_a"], C["grad_b"], (a + part / 2) / 360)
+                self.create_arc(*box, start=90 - (a + part), extent=part + (0.8 if i else 0), style="arc",
+                                outline=shade, width=w)
+        self.create_text(s / 2, s / 2, text=f"{round(100 * min(self.shown, 1.0))}%", font=self.font, fill=C["text"])
+
+    def set(self, ratio, animate=True, delay=0.0):
+        start, self.ratio = self.shown, max(0.0, min(ratio, 1.0))
+
+        def step(t):
+            self.shown = start + (self.ratio - start) * t
+            self._draw()
+
+        if animate:
+            self.animator.animate(("ring", id(self)), 0.9, step, delay=delay)
+        else:
+            step(1.0)
+
+
 class Stepper(tk.Frame):
     """A value with − and + buttons that step it through the values ladder."""
 

@@ -6,6 +6,20 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.10.2": {
+        "en": [
+            "Colored tiles: the counters at the top of System overview and Troubleshooting are tinted in their own "
+            "color, and the tweaks tile shows the share of applied tweaks as a ring in the brand gradient.",
+        ],
+        "ru": [
+            "Цветные плитки: счётчики вверху «Обзора системы» и «Поиска проблем» подкрашены своим цветом, а плитка "
+            "твиков показывает долю применённых кольцом в фирменном градиенте.",
+        ],
+        "uk": [
+            "Кольорові плитки: лічильники вгорі «Огляду системи» та «Пошуку проблем» підфарбовані своїм кольором, а "
+            "плитка твіків показує частку застосованих кільцем у фірмовому градієнті.",
+        ],
+    },
     "0.10.1": {
         "en": [
             "Crisper text: on Windows 11 the interface uses Segoe UI Variable Text, the system font made for small "

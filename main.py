@@ -33,10 +33,10 @@ import updater
 import updates
 import whatsnew
 from theme import C, CATEGORY_COLORS, lerp, mix
-from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, ScanRings, Segmented,
-                     Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
+from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, Ring, ScanRings,
+                     Segmented, Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.10.1"
+VERSION = "0.10.2"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -784,37 +784,47 @@ class App:
                           ("summary_tweaks", applied, len(tweaks.TWEAKS), C["ok"], ICONS["overview"])])
 
     def build_tiles(self, tiles):
-        """A row of tiles with numbers that count up: [(text key, number, total or None, color, icon)]."""
+        """A row of tiles with numbers that count up: [(text key, number, total or None, color, icon)]. A tile in a
+        live color (not the grey of an empty count) is tinted with it; a tile with a total shows the share as a ring."""
         px = self.px
         row = tk.Frame(self.list_frame, bg=C["bg"])
         row.pack(fill="x", pady=(0, px(4)))
         for i, (key, value, total, color, icon) in enumerate(tiles):
             # Tiles sit in even columns of equal width, gaps are separate narrow columns between them:
-            # padding inside a column would make every tile except the first narrower
-            row.columnconfigure(2 * i, weight=1, uniform="tile")
+            # padding inside a column would make every tile except the first narrower. The tile with a ring is a
+            # third wider: the number and the ring need the room
+            row.columnconfigure(2 * i, weight=4 if total else 3, uniform="tile")
             if i:
                 row.columnconfigure(2 * i - 1, minsize=px(8))
-            card = Card(row, self.scale, radius=14, pad=6)
+            live = color not in (C["muted"], C["dim"])
+            card = Card(row, self.scale, radius=14, pad=6, fill=mix(color, C["surface"], 0.1) if live else None,
+                        border=mix(color, C["surface"], 0.4) if live else None)
             card.grid(row=0, column=2 * i, sticky="nsew")
             body = card.body
             top = tk.Frame(body, bg=card.fill)
             top.pack(fill="x", padx=px(12), pady=(px(8), 0))
             number = tk.Label(top, text="0", font=self.fonts["number"], fg=color, bg=card.fill)
             number.pack(side="left")
-            glyph = tk.Label(top, text=icon, font=self.fonts["icon_small"], fg=mix(color, card.fill, 0.7), bg=card.fill)
-            glyph.pack(side="right", anchor="n", pady=(px(6), 0))
+            if total:
+                side = Ring(top, px(44), self.scale, self.animator, self.fonts["pill"])
+                side_pack = {"side": "right", "anchor": "n", "pady": (px(2), 0)}
+                side.set(value / total, delay=0.15 + i * 0.07)
+            else:
+                side = tk.Label(top, text=icon, font=self.fonts["icon_small"], fg=mix(color, card.fill, 0.7), bg=card.fill)
+                side_pack = {"side": "right", "anchor": "n", "pady": (px(6), 0)}
+            side.pack(**side_pack)
             # bd and padx are 0: then the wrap width matches the text area width and the line is not clipped
             caption = tk.Label(body, text=self.t(key), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
                                anchor="w", justify="left", wraplength=px(110), bd=0, padx=0)
             caption.pack(fill="x", padx=px(12), pady=(0, px(10)))
 
-            def fit_tile(event, caption=caption, glyph=glyph, number=number):
+            def fit_tile(event, caption=caption, side=side, side_pack=side_pack, number=number):
                 caption.configure(wraplength=max(px(60), event.width - px(24)))
-                # On a narrow tile the icon hides so it does not overlap the number
-                if event.width < px(118):
-                    glyph.pack_forget()
-                elif not glyph.winfo_ismapped():
-                    glyph.pack(side="right", anchor="n", pady=(px(6), 0), before=number)
+                # On a narrow tile the icon or ring hides so it does not overlap the number
+                if event.width < px(118 if isinstance(side, tk.Label) else 136):
+                    side.pack_forget()
+                elif not side.winfo_ismapped():
+                    side.pack(**side_pack, before=number)
 
             body.bind("<Configure>", fit_tile)
 
