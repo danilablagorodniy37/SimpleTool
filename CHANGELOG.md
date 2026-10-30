@@ -2,6 +2,10 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.13.2
+
+A new build of 0.13.1, with no other changes. Microsoft Defender mistakenly took the 0.13.1 file for unwanted software (Program:Win32/Contebrew.A!ml) and could remove SimpleTool while it updated itself. If that happened to you, download SimpleTool again from [blagotech.uk/simpletool](https://blagotech.uk/simpletool/).
+
 ## 0.13.1
 
 - New names for some context menu items: **Block in the firewall** and **Unblock in the firewall** (they were Block and Allow internet access) and **Checksum** (it was Get hash); in Russian and Ukrainian the take ownership item is now «Получить права владельца» / «Отримати права власника». Menus added earlier keep their old names until the tweak is applied again.

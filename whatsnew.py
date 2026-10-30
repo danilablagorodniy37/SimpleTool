@@ -6,6 +6,20 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.13.2": {
+        "en": [
+            "A new build of 0.13.1: Microsoft Defender mistakenly took the previous file for unwanted software and "
+            "could remove SimpleTool while it updated itself.",
+        ],
+        "ru": [
+            "Новая сборка 0.13.1: Microsoft Defender по ошибке принимал прежний файл за нежелательную программу и мог "
+            "удалить SimpleTool во время обновления.",
+        ],
+        "uk": [
+            "Нова збірка 0.13.1: Microsoft Defender помилково вважав попередній файл небажаною програмою й міг "
+            "видалити SimpleTool під час оновлення.",
+        ],
+    },
     "0.13.1": {
         "en": [
             "Some context menu items have new names: Block in the firewall, Unblock in the firewall and Checksum. "
