@@ -8,6 +8,5 @@ dist/
 # IDE settings: they contain local account data
 .idea/
 
-# Local materials: third-party content,
-# it must not be published without the author's consent
+# Local materials: notes and third-party content that must not be published
 docs/

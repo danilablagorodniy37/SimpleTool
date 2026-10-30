@@ -37,7 +37,7 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, Ring, ScanRings,
                      Segmented, Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in, round_points)
 
-VERSION = "0.13"
+VERSION = "0.13.1"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))

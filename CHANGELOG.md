@@ -2,6 +2,11 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.13.1
+
+- New names for some context menu items: **Block in the firewall** and **Unblock in the firewall** (they were Block and Allow internet access) and **Checksum** (it was Get hash); in Russian and Ukrainian the take ownership item is now «Получить права владельца» / «Отримати права власника». Menus added earlier keep their old names until the tweak is applied again.
+- Clearer titles for a few tweaks: File checksums, Block a program in the firewall, Command Prompt from the desktop menu, and Notepad for .nfo files and files without a program; in Russian and Ukrainian also AutoPlay and ownership.
+
 ## 0.13
 
 **Programs** (new page)

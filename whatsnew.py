@@ -6,6 +6,22 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.13.1": {
+        "en": [
+            "Some context menu items have new names: Block in the firewall, Unblock in the firewall and Checksum. "
+            "Menus added before keep their old names until you apply the tweak again.",
+        ],
+        "ru": [
+            "У некоторых пунктов контекстного меню новые названия: «Заблокировать в брандмауэре», «Разблокировать в "
+            "брандмауэре», «Контрольная сумма» и «Получить права владельца». Меню, добавленные раньше, сохранят "
+            "старые названия, пока вы не примените твик снова.",
+        ],
+        "uk": [
+            "Деякі пункти контекстного меню мають нові назви: «Заблокувати в брандмауері», «Розблокувати в "
+            "брандмауері», «Контрольна сума» та «Отримати права власника». Меню, додані раніше, збережуть старі "
+            "назви, доки ви не застосуєте твік знову.",
+        ],
+    },
     "0.13": {
         "en": [
             "New Programs page: every installed program with its own icon. Uninstall runs the program's own "

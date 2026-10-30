@@ -663,23 +663,23 @@ TEXTS = {
             "files can break Windows or its updates, so use it on your own data and only when you know why access "
             "is denied."),
         "firewall": (
-            "Block or allow internet access",
+            "Block a program in the firewall",
             "Shift + right-click an .exe to add or remove Windows Firewall rules that block it.",
-            "Adds two items to the Shift + right-click menu of .exe files. Block internet access creates Windows "
-            "Defender Firewall rules that block the program's inbound and outbound connections; Allow internet "
-            "access deletes those rules. Both need administrator rights (a UAC prompt). The rules are named "
+            "Adds two items to the Shift + right-click menu of .exe files. Block in the firewall creates Windows "
+            "Defender Firewall rules that block the program's inbound and outbound connections; Unblock in the "
+            "firewall deletes those rules. Both need administrator rights (a UAC prompt). The rules are named "
             "“SimpleTool - <path>”, so you can find them in wf.msc. Useful for programs that should work offline, "
             "for example to stop them updating."),
         "cmd_desktop": (
-            "Command Prompt on the desktop",
+            "Command Prompt from the desktop menu",
             "Right-click the desktop to open Command Prompt in the Desktop folder.",
             "Adds Command Prompt to the menu you get when you right-click an empty spot on the desktop. It opens "
             "cmd.exe in the Desktop folder without administrator rights. On Windows 11 the item is under “Show more "
             "options”."),
         "file_hash": (
-            "Get file hash",
+            "File checksums",
             "Copies a file's MD5, SHA1, SHA256, SHA384 or SHA512 checksum to the clipboard.",
-            "Adds a Get hash submenu to every file. Pick an algorithm (MD5, SHA1, SHA256, SHA384 or SHA512) and the "
+            "Adds a Checksum submenu to every file. Pick an algorithm (MD5, SHA1, SHA256, SHA384 or SHA512) and the "
             "checksum is copied to the clipboard in lowercase. Compare it with the checksum on the download page to "
             "make sure the file is complete and has not been tampered with. It uses PowerShell's Get-FileHash, so "
             "large files take a few seconds."),
@@ -702,7 +702,7 @@ TEXTS = {
             "a folder. It shows or hides hidden files and folders in one click, the same as View → Show → Hidden "
             "items. Protected operating system files stay hidden."),
         "notepad": (
-            "Open unknown files and .nfo in Notepad",
+            "Notepad for .nfo files and files without a program",
             "Adds Edit with Notepad for files without an associated program and opens .nfo files as text.",
             "Files without an associated program bring up the “How do you want to open this file?” dialog. This "
             "tweak adds Edit to their right-click menu, which opens them in Notepad. It also makes .nfo files (text "
@@ -719,10 +719,10 @@ TEXTS = {
     },
     "menu": {
         "take_ownership": "Take ownership",
-        "firewall_block": "Block internet access",
-        "firewall_allow": "Allow internet access",
+        "firewall_block": "Block in the firewall",
+        "firewall_allow": "Unblock in the firewall",
         "cmd": "Command Prompt",
-        "hash": "Get hash",
+        "hash": "Checksum",
         "hash_copy": "Copy {}",
         "copy_image": "Copy image",
         "control_panel": "Control Panel",
@@ -803,7 +803,7 @@ TEXTS = {
                       "installed, which turns Defender off by itself. SimpleTool does not change it."),
         "mpssvc": ("Windows Defender Firewall",
                    "Filters network connections. Keep it running: without it firewall rules do not work, including "
-                   "the ones created by Block internet access."),
+                   "the ones created by Block in the firewall."),
         "wuauserv": ("Windows Update",
                      "Downloads and installs Windows updates. Usually starts manually when needed. Turning it off "
                      "leaves the PC without security updates."),

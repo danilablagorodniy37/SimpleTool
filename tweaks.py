@@ -1,5 +1,4 @@
-"""Tweak catalog. Registry values are checked against Microsoft's documentation,
-and tested on Windows 10/11."""
+"""Tweak catalog. Registry values are checked against Microsoft's documentation and tested on Windows 10/11."""
 import os
 from winreg import REG_DWORD, REG_EXPAND_SZ, REG_SZ
 
