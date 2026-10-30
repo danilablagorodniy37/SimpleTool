@@ -187,6 +187,51 @@ class Leftovers(unittest.TestCase):
                          "a shortcut that still works stays, and so does one with another name")
 
 
+class Location(unittest.TestCase):
+    """Where "Open file location" goes: the program's own folder, never Windows' own folders."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="simpletool-location-test-")
+        self.windows = os.path.join(self.root, "Windows")
+        self.patch = mock.patch.dict(os.environ, {"SystemRoot": self.windows})
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def file(self, *parts):
+        path = os.path.join(self.root, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "wb").close()
+        return path
+
+    def test_the_install_folder_with_the_program_selected(self):
+        exe = self.file("Apps", "Good Tool", "goodtool.exe")
+        folder = os.path.dirname(exe)
+        self.assertEqual(uninstaller.program_location(Program("k", "Good Tool", location=folder, icon=(exe, 0))),
+                         (folder, exe))
+        other = self.file("Windows", "System32", "shell32.exe")
+        self.assertEqual(uninstaller.program_location(Program("k", "Good Tool", location=folder, icon=(other, 3))),
+                         (folder, None), "an icon from elsewhere is not the program")
+
+    def test_without_an_install_folder(self):
+        exe = self.file("Apps", "Tool", "tool.exe")
+        self.assertEqual(uninstaller.program_location(Program("k", "Tool", icon=(exe, 0))), (os.path.dirname(exe), exe))
+        # A Windows Installer product: its icon is in Windows' cache, its uninstaller in its own folder
+        cached = self.file("Windows", "Installer", "{GUID}", "icon.exe")
+        unins = self.file("Apps", "Other", "unins000.exe")
+        program = Program("k", "Other", icon=(cached, 0), uninstall=f'"{unins}" /SILENT')
+        self.assertEqual(uninstaller.program_location(program), (os.path.dirname(unins), None))
+
+    def test_unknown_or_gone(self):
+        self.assertIsNone(uninstaller.program_location(Program("k", "Tool")))
+        self.assertIsNone(uninstaller.program_location(Program("k", "Tool", location=os.path.join(self.root, "gone"))))
+        self.assertIsNone(uninstaller.program_location(Program("k", "Tool", location=self.windows)))
+        self.assertIsNone(uninstaller.program_location(Program("k", "Tool", location=r"\\server\share\Tool",
+                                                               uninstall="MsiExec.exe /X{GUID}")))
+
+
 class RemovedElsewhere(unittest.TestCase):
     """Programs removed through Windows' settings or their own uninstaller, found by the list kept from last time."""
 

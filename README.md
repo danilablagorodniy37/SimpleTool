@@ -92,6 +92,12 @@ there could keep the list waiting.
 An entry whose uninstaller is already gone gets **Remove leftovers**. Programs Windows marks as not removable
 (Microsoft Edge) have no button.
 
+Tick several programs to uninstall them together with **Uninstall selected**: after one restore point check their
+uninstallers run one after another in a window that shows each program's state and can stop after the current
+one, and then everything they left is shown in one list, under each program's name. **Open file location** opens a
+program's folder in File Explorer with its exe selected. After an uninstall or a refresh the list stays where it
+was scrolled to.
+
 SimpleTool remembers the list it read (`%LOCALAPPDATA%\SimpleTool\programs.json`, never sent anywhere). When a
 program disappears from it because it was removed through Windows settings or its own uninstaller, SimpleTool
 looks for what it left, and if something is there, lists the program at the top of the page with **Remove

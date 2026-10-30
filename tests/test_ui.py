@@ -54,10 +54,12 @@ class UiSmoke(unittest.TestCase):
         # Programs: made-up entries; the icon and the "uninstaller" of the first are an existing Windows file
         self.notepad = notepad = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "notepad.exe")
         uninstall = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+        self.good_folder = os.path.join(self.tmp, "Good Tool")  # its install folder, for "Open file location"
+        os.makedirs(self.good_folder)
         self.programs = [
             uninstaller.Program(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoodTool", "Good Tool",
-                                "Acme", "2.1", 5 * 2 ** 20, datetime.date(2026, 10, 1), icon=(notepad, 0),
-                                uninstall=f'"{notepad}" /uninstall', user=True),
+                                "Acme", "2.1", 5 * 2 ** 20, datetime.date(2026, 10, 1), location=self.good_folder,
+                                icon=(notepad, 0), uninstall=f'"{notepad}" /uninstall', user=True),
             uninstaller.Program(uninstall + r"\Edge", "Microsoft Edge", "Microsoft Corporation", "130.0",
                                 removable=False),
             uninstaller.Program(uninstall + r"\OldTool", "Old Tool", size=40 * 2 ** 20,
@@ -572,6 +574,11 @@ class UiSmoke(unittest.TestCase):
             self.assertEqual(self.shown_programs(app), ["Good Tool", "Microsoft Edge", "Old Tool"])
             self.assertEqual(app.nav["programs"]["count"].cget("text"), "3")
             self.assertIn(self.programs[0].key, app.program_icons, "its own icon")
+            # "Open file location": the folder of a program whose place is known; none for one whose place is not
+            good = self.program_card(app, "Good Tool")
+            self.assertNotIn(ui["prog_location"], self.texts(self.program_card(app, "Microsoft Edge")))
+            self.click_text(good, ui["prog_location"])
+            self.assertEqual(self.started[-1], (self.good_folder, None))
             self.assertEqual(app.program_count.cget("text"),
                              ui["prog_count"].format(n=3, size=app.size_text(45 * 2 ** 20)))
             edge = self.program_card(app, "Microsoft Edge")
@@ -699,6 +706,78 @@ class UiSmoke(unittest.TestCase):
             app.load_programs(force=True)
             self.wait(root, lambda: not app.programs_loading)
             self.assertEqual(app.programs_gone, [])
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_several_programs_at_once(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_programs(admin=True)
+        try:
+            recent = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)
+            good, edge, old = self.programs
+            # Ticked by the check box or the name; Edge cannot be removed, so it cannot be ticked
+            self.assertFalse(app.program_boxes[edge.key].enabled)
+            self.click_text(self.program_card(app, "Good Tool"), "Good Tool")
+            app.program_boxes[old.key].event_generate("<Button-1>")
+            self.assertEqual(app.program_selected, {good.key, old.key})
+            self.assertIn(ui["prog_selected"].format(n=2) + "  ·  " + app.size_text(45 * 2 ** 20),
+                          self.texts(app.list_frame))
+            calls, removed = [], []
+            left = {good.key: [{"kind": "folder", "path": rf"{PROFILE}\AppData\Roaming\Good Tool", "name": "",
+                                "size": 2048}],
+                    old.key: [{"kind": "key", "path": r"HKCU\Software\Old Tool", "name": "", "size": 0},
+                              {"kind": "folder", "path": rf"{PROFILE}\AppData\Local\Old Tool", "name": "",
+                               "size": 4096}]}
+
+            def run(program):
+                calls.append(program.name)
+                self.programs.remove(program)
+                return 0
+
+            self.button(app.list_frame, ui["prog_batch_remove"])._click(None)
+            dialog = self.dialogs(root)[0]
+            self.assertEqual(dialog.title(), ui["prog_batch_title"])
+            self.assertTrue({"Good Tool", "Old Tool"} <= set(self.texts(dialog)))
+            done = ui["prog_batch_finished"].format(removed=2, n=2)
+            with mock.patch.object(engine, "recent_restore_point", lambda: recent), \
+                    mock.patch.object(uninstaller, "run_uninstaller", run), \
+                    mock.patch.object(uninstaller, "still_installed", lambda program: False), \
+                    mock.patch.object(uninstaller, "find_leftovers", lambda program, others: left.get(program.key, [])):
+                self.button(dialog, ui["prog_batch_go"].format(n=2))._click(None)
+                self.wait(root, lambda: self.dialogs(root) and done in self.texts(self.dialogs(root)[0]))
+            self.assertEqual(calls, ["Good Tool"], "the uninstaller of Old Tool is gone: only its leftovers")
+            progress = self.dialogs(root)[0]
+            self.assertEqual(self.texts(progress).count(ui["prog_state_removed"]), 2)
+            # Everything both left, in one list; what is unticked stays
+            self.button(progress, ui["prog_batch_next"])._click(None)
+            dialog = self.dialogs(root)[0]
+            self.assertIn(ui["prog_batch_left_heading"].format(n=2), self.texts(dialog))
+            self.click_text(dialog, r"HKCU\Software\Old Tool")
+            with mock.patch.object(uninstaller, "remove_leftovers",
+                                   lambda program, items: removed.append((program.name, items)) or (self.tmp, [])):
+                self.button(dialog, ui["prog_left_remove"])._click(None)
+                self.wait(root, lambda: removed and not app.busy and not app.programs_loading)
+            self.assertEqual(removed, [("Good Tool", left[good.key]), ("Old Tool", left[old.key][1:])])
+            self.assertEqual(app.program_selected, set())
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_the_programs_page_keeps_its_place(self):
+        # Reading the list again (after an uninstall) does not throw the page back to its top
+        self.programs += [uninstaller.Program(f"k{i}", f"Tool {i:02}", uninstall=f'"{self.notepad}"', user=True)
+                          for i in range(40)]
+        root, app, errors = self.open_programs(admin=True)
+        try:
+            app.canvas.yview_moveto(0.5)
+            self.pump(root, 0.2)
+            top = app.canvas.canvasy(0)
+            self.assertGreater(top, 0)
+            app.load_programs(force=True)
+            self.wait(root, lambda: not app.programs_loading)
+            self.pump(root, 0.3)
+            self.assertAlmostEqual(app.canvas.canvasy(0), top, delta=app.px(4))
             self.assertEqual(errors, [])
         finally:
             root.destroy()

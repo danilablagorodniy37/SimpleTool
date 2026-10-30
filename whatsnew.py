@@ -6,6 +6,23 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.14": {
+        "en": [
+            "Programs: tick several programs and uninstall them together. The uninstallers run one after another in "
+            "their own window, and everything they left is shown in one list.",
+            "Open file location shows a program's folder, and the list keeps its place after an uninstall.",
+        ],
+        "ru": [
+            "«Программы»: отметьте несколько программ и удалите их разом. Деинсталляторы запускаются по очереди в "
+            "отдельном окне, а всё, что они оставили, показывается одним списком.",
+            "«Расположение файла» открывает папку программы, а список больше не прыгает в начало после удаления.",
+        ],
+        "uk": [
+            "«Програми»: позначте кілька програм і видаліть їх разом. Деінсталятори запускаються по черзі в окремому "
+            "вікні, а все, що вони залишили, показується одним списком.",
+            "«Розташування файлу» відкриває теку програми, а список більше не стрибає на початок після видалення.",
+        ],
+    },
     "0.13.2": {
         "en": [
             "A new build of 0.13.1: Microsoft Defender mistakenly took the previous file for unwanted software and "

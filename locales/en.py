@@ -328,6 +328,32 @@ TEXTS = {
         "prog_admin": "Programs installed for every account are removed with administrator rights: restart "
                       "SimpleTool as administrator to remove them.",
         "prog_saved": "Saved copies",
+        "prog_location": "Open file location",
+        "prog_location_missing": "The program's folder is no longer there",
+        "prog_selected": "Selected: {n}",
+        "prog_batch_remove": "Uninstall selected",
+        "prog_batch_title": "Uninstall programs",
+        "prog_batch_heading": "Uninstall the selected programs ({n})?",
+        "prog_batch_text": "SimpleTool makes sure there is a restore point, then runs the uninstallers one after "
+                           "another: answer their questions as usual. When they have all finished, SimpleTool looks "
+                           "for what the programs left behind and shows it before removing anything.",
+        "prog_batch_go": "Uninstall ({n})",
+        "prog_batch_running": "Uninstalling programs: {done} of {n}",
+        "prog_batch_running_text": "The uninstallers run one after another. If a program asks something, answer in "
+                                   "its own window.",
+        "prog_batch_finished": "Done: {removed} of {n} uninstalled",
+        "prog_batch_stop": "Stop after this one",
+        "prog_batch_next": "Show leftovers",
+        "prog_batch_close": "Close",
+        "prog_batch_working": "The uninstallers are running…",
+        "prog_batch_left_title": "Leftovers",
+        "prog_batch_left_heading": "What the uninstalled programs left behind ({n})",
+        "prog_state_waiting": "Waiting",
+        "prog_state_running": "Uninstalling…",
+        "prog_state_removed": "Uninstalled",
+        "prog_state_kept": "Still installed",
+        "prog_state_failed": "Failed",
+        "prog_state_skipped": "Skipped",
         "prog_gone_title": "Left by programs removed without SimpleTool",
         "prog_gone_text": "These programs were removed through Windows settings or their own uninstaller, and left "
                           "things behind.",

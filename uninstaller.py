@@ -248,6 +248,30 @@ def _program(path, subkey, key, user):
                    removable)
 
 
+def program_location(program):
+    """Where the program is: (its folder, its exe to select or None), as Explorer's "Open file location" shows it;
+    None when it is not known or no longer there. The icon of a Windows Installer product lives in Windows' own cache,
+    and DisplayIcon or the uninstaller sometimes point into Windows itself: neither is taken for the program's folder."""
+    windows = _norm(os.environ.get("SystemRoot", r"C:\Windows"))
+
+    def usable(path):
+        path = _norm(path)
+        return bool(path) and path != windows and not path.startswith(windows + "\\") and _local(path)
+
+    exe = program.icon[0] if program.icon else ""
+    exe = exe if exe.lower().endswith(".exe") and usable(exe) and os.path.isfile(exe) else ""
+    location = program.location if usable(program.location) and os.path.isdir(program.location) else ""
+    if location:
+        return location, exe if exe and _inside(exe, [location]) else None
+    if exe:
+        return os.path.dirname(exe), exe
+    command = command_program(program.uninstall)
+    if command and os.path.isabs(command) and "msiexec" not in command.lower() and usable(command) \
+            and os.path.isfile(command):
+        return os.path.dirname(command), None
+    return None
+
+
 def still_installed(program):
     """Whether the program is still there after its uninstaller ran: its entry and its uninstaller remain (the
     user cancelled), or Windows Installer still knows the product."""

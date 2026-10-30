@@ -2,6 +2,13 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.14
+
+**Programs**
+- **Several programs at once**: tick programs in the list and press **Uninstall selected**. After one restore point check, their uninstallers run one after another in a window that shows each program's state (waiting, uninstalling, uninstalled, still installed) and can stop after the current one; then everything they left is shown in one list, under each program's name.
+- **Open file location** opens a program's folder in File Explorer with its exe selected. Windows Installer's cache and Windows' own folders are never taken for a program's folder.
+- The page keeps its place: after an uninstall or a refresh the list stays where it was scrolled to, and the ticks stay on the programs still installed.
+
 ## 0.13.2
 
 A new build of 0.13.1, with no other changes. Microsoft Defender mistakenly took the 0.13.1 file for unwanted software (Program:Win32/Contebrew.A!ml) and could remove SimpleTool while it updated itself. If that happened to you, download SimpleTool again from [blagotech.uk/simpletool](https://blagotech.uk/simpletool/).
