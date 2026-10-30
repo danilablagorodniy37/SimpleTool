@@ -2,6 +2,11 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.14.1
+
+- The buttons for the ticked programs, **Uninstall selected** and **Clear selection**, are now in the bar at the bottom of the window, in sight wherever the list is scrolled; the bar also says how many programs are ticked and how much space they take.
+- On the Programs page the bottom bar no longer counts tweaks ticked on other pages.
+
 ## 0.14
 
 **Programs**

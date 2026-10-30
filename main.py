@@ -37,7 +37,7 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, Ring, ScanRings,
                      Segmented, Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in, round_points)
 
-VERSION = "0.14"
+VERSION = "0.14.1"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -460,6 +460,11 @@ class App:
         self.revert_button = GradientButton(inner, self.t("revert"), self.revert_selected, self.fonts["button"], self.scale,
                                             self.animator, primary=False)
         self.revert_button.pack(side="right", padx=(0, px(10)))
+        # On the Programs page the footer acts on the ticked programs (update_footer swaps the pairs)
+        self.program_remove_button = GradientButton(inner, self.t("prog_batch_remove"), self.confirm_batch_uninstall,
+                                                    self.fonts["button"], self.scale, self.animator)
+        self.program_clear_button = GradientButton(inner, self.t("clear"), self.clear_program_selection,
+                                                   self.fonts["button"], self.scale, self.animator, primary=False)
         self.spinner = Spinner(inner, px(18), self.scale)
         self.message_label = tk.Label(inner, font=self.fonts["body"], fg=C["muted"], bg=C["surface"], anchor="w",
                                       justify="left")
@@ -1404,17 +1409,6 @@ class App:
                             bg=card.fill, anchor="w", justify="left")
             note.pack(fill="x", padx=px(12), pady=(px(8), px(12)))
             self.wrap(note, px(62))
-        # The ticked programs: how many, and the button that uninstalls them together
-        self.program_bar = tk.Frame(card.body, bg=card.fill)
-        self.program_bar_label = tk.Label(self.program_bar, text="", font=self.fonts["small_bold"], fg=C["text"],
-                                          bg=card.fill, anchor="w")
-        self.program_bar_label.pack(side="left")
-        remove = GradientButton(self.program_bar, self.t("prog_batch_remove"), self.confirm_batch_uninstall,
-                                self.fonts["button"], self.scale, self.animator, pad=(14, 6))
-        remove.pack(side="right")
-        self.action_buttons.append((remove, False))
-        self.link(self.program_bar, self.t("clear"), self.clear_program_selection, font="small",
-                  color=C["dim"]).pack(side="right", padx=(0, px(14)))
         self.page_cards.append(card)
         if self.programs_gone:
             self.build_gone_programs()
@@ -1424,7 +1418,6 @@ class App:
         for program in self.programs:
             self.program_rows.append((program, self.build_program_card(program)))
         self.arrange_programs()
-        self.update_program_bar()
 
     def build_gone_programs(self):
         """Programs removed through Windows' settings or their own uninstaller that left things behind."""
@@ -1703,26 +1696,17 @@ class App:
         box = self.program_boxes.get(program.key)
         if box:
             box.set(program.key in self.program_selected, True)
-        self.update_program_bar()
+        self.message = None
+        self.update_footer()  # it says how many are ticked and offers to uninstall them
 
     def clear_program_selection(self):
+        if self.busy:
+            return
         self.program_selected.clear()
         for box in self.program_boxes.values():
             box.set(False, box.enabled)
-        self.update_program_bar()
-
-    def update_program_bar(self):
-        """The bar of the ticked programs shows while any is ticked, with how many and how much space they take."""
-        chosen = self.chosen_programs()
-        if chosen:
-            size = sum(program.size for program in chosen)
-            text = self.t("prog_selected", n=len(chosen)) + (f"  ·  {self.size_text(size)}" if size else "")
-            self.program_bar_label.configure(text=text)
-            if not self.program_bar.winfo_manager():
-                self.program_bar.pack(fill="x", padx=self.px(12), pady=(0, self.px(12)))
-        elif self.program_bar.winfo_manager():
-            self.program_bar.pack_forget()
-        self.root.after_idle(self.layout)
+        self.message = None
+        self.update_footer()
 
     def program_row(self, rows, program, note="", image=None):
         """A line of a dialog's list: the program's icon and name, and a note on the right. Returns the note label."""
@@ -2811,17 +2795,22 @@ class App:
         self.update_footer()
 
     def update_footer(self):
+        programs = self.page == "programs"
+        chosen = self.chosen_programs() if programs else []
         if self.message:
             key, kw = self.message
             text = self.t(key, **kw)
+        elif chosen:
+            size = sum(program.size for program in chosen)
+            text = self.t("prog_selected", n=len(chosen)) + (f"  ·  {self.size_text(size)}" if size else "")
+        elif programs:
+            text = self.t("prog_footer")
         elif self.selected:
             text = self.t("selected", n=len(self.selected))
         elif self.page == "memory":
             text = self.t("mem_on" if self.limiter.active() else "mem_off")
         elif self.page == "diagnostics":
             text = self.t("diag_running" if self.diag_running else "diag_footer")
-        elif self.page == "programs":
-            text = self.t("prog_footer")
         else:
             text = self.t("hint_select")
         self.message_label.configure(text=text)
@@ -2832,9 +2821,20 @@ class App:
         else:
             self.spinner.stop()
             self.spinner.pack_forget()
+        # The footer buttons act on the ticked tweaks, and on the Programs page on the ticked programs
+        tweak_pair = (self.apply_button, self.revert_button)
+        program_pair = (self.program_remove_button, self.program_clear_button)
+        shown, hidden = (program_pair, tweak_pair) if programs else (tweak_pair, program_pair)
+        if not shown[0].winfo_manager():
+            for button in hidden:
+                button.pack_forget()
+            shown[0].pack(side="right", before=self.message_label)
+            shown[1].pack(side="right", padx=(0, self.px(10)), before=self.message_label)
         enabled = not self.busy and bool(self.selected)
         self.apply_button.set_enabled(enabled)
         self.revert_button.set_enabled(enabled)
+        self.program_remove_button.set_enabled(not self.busy and bool(chosen))
+        self.program_clear_button.set_enabled(not self.busy and bool(chosen))
         for button, needs_admin in self.action_buttons:
             try:
                 button.set_enabled(not self.busy and (self.admin or not needs_admin))

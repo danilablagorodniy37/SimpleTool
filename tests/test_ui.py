@@ -721,8 +721,11 @@ class UiSmoke(unittest.TestCase):
             self.click_text(self.program_card(app, "Good Tool"), "Good Tool")
             app.program_boxes[old.key].event_generate("<Button-1>")
             self.assertEqual(app.program_selected, {good.key, old.key})
-            self.assertIn(ui["prog_selected"].format(n=2) + "  ·  " + app.size_text(45 * 2 ** 20),
-                          self.texts(app.list_frame))
+            # The footer, in sight wherever the list is scrolled, says how many and offers to uninstall them
+            self.assertEqual(app.message_label.cget("text"),
+                             ui["prog_selected"].format(n=2) + "  ·  " + app.size_text(45 * 2 ** 20))
+            self.assertTrue(app.program_remove_button.winfo_manager() and app.program_remove_button.enabled)
+            self.assertFalse(app.apply_button.winfo_manager(), "Apply is for tweaks")
             calls, removed = [], []
             left = {good.key: [{"kind": "folder", "path": rf"{PROFILE}\AppData\Roaming\Good Tool", "name": "",
                                 "size": 2048}],
@@ -735,7 +738,7 @@ class UiSmoke(unittest.TestCase):
                 self.programs.remove(program)
                 return 0
 
-            self.button(app.list_frame, ui["prog_batch_remove"])._click(None)
+            app.program_remove_button._click(None)
             dialog = self.dialogs(root)[0]
             self.assertEqual(dialog.title(), ui["prog_batch_title"])
             self.assertTrue({"Good Tool", "Old Tool"} <= set(self.texts(dialog)))
@@ -760,6 +763,11 @@ class UiSmoke(unittest.TestCase):
                 self.wait(root, lambda: removed and not app.busy and not app.programs_loading)
             self.assertEqual(removed, [("Good Tool", left[good.key]), ("Old Tool", left[old.key][1:])])
             self.assertEqual(app.program_selected, set())
+            self.assertFalse(app.program_remove_button.enabled, "nothing is ticked any more")
+            # Other pages get Apply and Revert back
+            app.show_page("privacy", animate=False)
+            self.assertTrue(app.apply_button.winfo_manager())
+            self.assertFalse(app.program_remove_button.winfo_manager())
             self.assertEqual(errors, [])
         finally:
             root.destroy()

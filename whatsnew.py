@@ -6,6 +6,18 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.14.1": {
+        "en": [
+            "The buttons for the ticked programs are now at the bottom of the window, in sight wherever the list is "
+            "scrolled.",
+        ],
+        "ru": [
+            "Кнопки для отмеченных программ теперь внизу окна и видны, как бы далеко ни был прокручен список.",
+        ],
+        "uk": [
+            "Кнопки для позначених програм тепер унизу вікна й видні, хоч куди прокручено список.",
+        ],
+    },
     "0.14": {
         "en": [
             "Programs: tick several programs and uninstall them together. The uninstallers run one after another in "
