@@ -6,6 +6,23 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.12.1": {
+        "en": [
+            "Troubleshooting without administrator rights is more careful: the Microsoft Defender check no longer "
+            "reports on exclusions it could not read, and Drive connection no longer shows a PCIe generation it "
+            "could not measure.",
+        ],
+        "ru": [
+            "«Поиск проблем» без прав администратора стал аккуратнее: проверка Microsoft Defender больше не говорит "
+            "об исключениях, которые не смогла прочитать, а «Подключение дисков» не показывает поколение PCIe, "
+            "которое не удалось измерить.",
+        ],
+        "uk": [
+            "«Пошук проблем» без прав адміністратора став обережнішим: перевірка Microsoft Defender більше не каже "
+            "про виключення, які не змогла прочитати, а «Підключення дисків» не показує покоління PCIe, яке не "
+            "вдалося виміряти.",
+        ],
+    },
     "0.12": {
         "en": [
             "Troubleshooting checks protection and recovery: threats Microsoft Defender did not remove and risky "

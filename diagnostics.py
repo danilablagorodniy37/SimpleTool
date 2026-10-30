@@ -1235,7 +1235,7 @@ def drive_links(disks, paths):
             continue
         if link[0] < link[2] or link[1] < link[3]:
             if not engine.is_admin():
-                link[0] = link[2]  # the generation at rest says nothing without reading the drive: not judged
+                link[0] = None  # the generation at rest says nothing without reading the drive: not judged
             else:
                 reader = threading.Thread(target=_busy_reads, args=(kernel32, number, 0.3), daemon=True)
                 reader.start()
@@ -4189,21 +4189,27 @@ def check_drive_link(facts):
     if not links:
         return None  # no NVMe drive, or its link could not be read
     names = {d.get("id"): d.get("name") or "?" for d in facts.get("disks") or []}
-    items, severity, slow = [], "ok", None
+    items, found, unjudged = [], [], False
     for number, (speed, width, top_speed, top_width) in sorted(links.items()):
         params = {"name": names.get(number, "?"), "speed": speed, "width": width, "max_speed": top_speed,
                   "max_width": top_width}
-        if width < top_width:  # half its lanes: a slot shared with another device, or an adapter
+        if speed is None:  # without administrator rights only the lanes can be judged
+            unjudged = True
+            items.append(("item_link_lanes", params))
+            if width < top_width:
+                found.append(("warning", "drive_link_narrow", params))
+        elif width < top_width:  # half its lanes: a slot shared with another device, or an adapter
             items.append(("item_link_narrow", params))
-            severity, slow = "warning", slow or params
+            found.append(("warning", "drive_link_slow", params))
         elif speed < top_speed:  # the slot or the board is an older generation
             items.append(("item_link_slower", params))
-            severity, slow = _worse(severity, "info"), slow or params
+            found.append(("info", "drive_link_slow", params))
         else:
             items.append(("item_link_full", params))
-    if slow:
-        return Finding("drive_link", severity, "drive_link_slow", slow, items)
-    return Finding("drive_link", "ok", "drive_link_ok", {}, items)
+    if found:
+        severity, line, params = min(found, key=lambda f: SEVERITIES.index(f[0]))
+        return Finding("drive_link", severity, line, params, items)
+    return Finding("drive_link", "ok", "drive_link_lanes_ok" if unjudged else "drive_link_ok", {}, items)
 
 
 VOLUME_HEALTH = {1: ("item_volume_scan", "info"), 2: ("item_volume_fix", "warning"),
@@ -4354,8 +4360,9 @@ def check_defender(facts):
     if not defender or not defender["mode"].lower().startswith("normal"):
         return None  # another antivirus is at work, or Defender is not there: the antivirus check tells which
     exclusions, threats = facts.get("defender_exclusions"), facts.get("threats")
+    unreadable = "unknown_admin" if facts.get("admin") is False else "unknown_read"
     if exclusions is None and threats is None:
-        return unknown("defender", "unknown_admin" if facts.get("admin") is False else "unknown_read")
+        return unknown("defender", unreadable)
     items, severity = [], "ok"
     for threat in threats or []:
         name = threat.get("name") or "?"
@@ -4380,8 +4387,14 @@ def check_defender(facts):
     if total > len(broad):
         items.append(("item_exclusions", {"n": total}))
         severity = _worse(severity, "info")
+    # Without administrator rights the threats can be read but not the exclusions: "no risky exclusions" would be a
+    # guess, so the check says it could not look instead, or says so next to what it found
     if severity == "ok":
+        if exclusions is None:
+            return unknown("defender", unreadable)
         return Finding("defender", "ok", "defender_ok", actions=["security"])
+    if exclusions is None:
+        items.append(("item_exclusions_unknown", {}))
     line = "defender_threats" if any(key == "item_threat" for key, _ in items) else \
         "defender_weakened" if severity == "warning" else "defender_notes"
     return Finding("defender", severity, line, {"n": len(items)}, items, ["security"])

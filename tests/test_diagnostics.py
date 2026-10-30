@@ -1179,6 +1179,13 @@ class DrivesAndStarts(unittest.TestCase):
         self.assertEqual(slower.params["max_speed"], 4)
         self.assertFinding(verdict("drive_link", drive_links={"0": (4, 2, 4, 4)}), "warning")
         self.assertIsNone(verdict("drive_link", drive_links={}))
+        # Without administrator rights the generation is not judged, and not shown as the best one either
+        lanes = verdict("drive_link", drive_links={"0": (None, 4, 4, 4)})
+        self.assertFinding(lanes, "ok", "drive_link_lanes_ok")
+        self.assertEqual(lanes.items[0][0], "item_link_lanes")
+        self.assertFinding(verdict("drive_link", drive_links={"0": (None, 2, 4, 4)}), "warning", "drive_link_narrow")
+        both = verdict("drive_link", drive_links={"0": (4, 2, 4, 4), "1": (3, 4, 4, 4)})
+        self.assertEqual((both.severity, both.params["name"]), ("warning", "Samsung SSD 980"), "the worse first")
         self.assertEqual(diagnostics.disk_instance(
             "\\\\?\\scsi#disk&ven_nvme&prod_wd_black_sn850x#5&18a29b35&0&000000#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}"),
             "SCSI\\DISK&VEN_NVME&PROD_WD_BLACK_SN850X\\5&18A29B35&0&000000")
@@ -1343,6 +1350,12 @@ class ProtectionAndRecovery(unittest.TestCase):
                           "another antivirus is at work")
         self.assertEqual(verdict("defender", defender_exclusions=None, threats=None, admin=False).line,
                          "unknown_admin")
+        # Without administrator rights only the threats can be read: no claim about the exclusions
+        self.assertEqual(verdict("defender", defender_exclusions=None, admin=False).line, "unknown_admin")
+        partial = verdict("defender", defender_exclusions=None, admin=False,
+                          threats=[{"name": "SettingsModifier:Win32/PossibleHostsFileHijack", "severity": 2}])
+        self.assertFinding(partial, "info", "defender_notes")
+        self.assertEqual(partial.items[-1], ("item_exclusions_unknown", {}))
 
     def test_broad_exclusions(self):
         broad = diagnostics.broad_exclusion

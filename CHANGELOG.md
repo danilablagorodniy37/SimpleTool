@@ -2,6 +2,12 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.12.1
+
+**Troubleshooting without administrator rights**
+- **Microsoft Defender**: only administrators can read Defender's exclusions. Without the rights the check no longer says "no risky exclusions": it lists the threats it can see and notes that the exclusions could not be read, or says that it needs administrator rights.
+- **Drive connection**: without the rights the PCIe generation of a drive is not judged, and the details no longer show the drive's best generation as the one it runs at. The lanes are still checked.
+
 ## 0.12
 
 **Troubleshooting: protection and recovery**
