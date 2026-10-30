@@ -6,6 +6,28 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.12": {
+        "en": [
+            "Troubleshooting checks protection and recovery: threats Microsoft Defender did not remove and risky "
+            "exclusions, browser settings forced by adware, added root certificates, risky accounts, the firewall, "
+            "SMB1 and Remote Desktop, remote control programs scammers ask for, BitLocker and its recovery key, the "
+            "recovery environment, the clock and the new Secure Boot certificates.",
+        ],
+        "ru": [
+            "«Поиск проблем» проверяет защиту и восстановление: угрозы, которые Microsoft Defender не удалил, и "
+            "опасные исключения, навязанные рекламными программами настройки браузеров, добавленные корневые "
+            "сертификаты, опасные учётные записи, брандмауэр, SMB1 и удалённый рабочий стол, программы удалённого "
+            "управления, о которых просят мошенники, BitLocker и ключ восстановления, среду восстановления, часы и "
+            "новые сертификаты безопасной загрузки.",
+        ],
+        "uk": [
+            "«Пошук проблем» перевіряє захист і відновлення: загрози, які Microsoft Defender не видалив, і небезпечні "
+            "виключення, нав’язані рекламними програмами налаштування браузерів, додані кореневі сертифікати, "
+            "небезпечні облікові записи, брандмауер, SMB1 і віддалений робочий стіл, програми віддаленого керування, "
+            "про які просять шахраї, BitLocker і ключ відновлення, середовище відновлення, годинник і нові "
+            "сертифікати безпечного завантаження.",
+        ],
+    },
     "0.11": {
         "en": [
             "Troubleshooting finds what other tweaking tools broke: programs blocked from starting (such as Windows "

@@ -88,9 +88,25 @@ def healthy():
                             "paused_until": None},
         "windows": {"product": "Windows 11", "version": "25H2", "build": 26200, "edition": "Professional",
                     "update": 7000, "server": False, "media": True},
-        "firmware": {"uefi": True, "secure_boot": True, "tpm": 2, "anti_cheat": False},
+        "firmware": {"uefi": True, "secure_boot": True, "tpm": 2, "anti_cheat": False, "ca2023": "Updated",
+                     "ca2023_error": None},
         "security": {"uac_off": False, "mitigations_off": False, "smartscreen_off": False, "zone_off": False,
-                     "defender_policies": [], "notifications_off": False, "hidden_pages": []},
+                     "defender_policies": [], "notifications_off": False, "hidden_pages": [], "blocklist_off": False},
+        "recovery": {"enabled": True},
+        "time_events": [event("Microsoft-Windows-Time-Service", 37, days_ago=2, level=4)],
+        "defender_exclusions": {"paths": [], "extensions": [], "processes": []},
+        "threats": [],
+        "firewall": {"domain": True, "private": True, "public": True},
+        "firewall_products": [],
+        "smb1": [],
+        "remote_desktop": {"on": False, "nla_off": False, "wrapper": False},
+        "browser_policies": [],
+        "added_roots": [],
+        "local_users": [{"name": "Administrator", "enabled": False, "sid": "S-1-5-21-1-2-3-500"},  # made-up test data, secret-scan: allow
+                        {"name": "Guest", "enabled": False, "sid": "S-1-5-21-1-2-3-501"},  # made-up test data, secret-scan: allow
+                        {"name": "Player", "enabled": True, "sid": "S-1-5-21-1-2-3-1001"}],  # made-up test data, secret-scan: allow
+        "account_settings": {"hidden": [], "autologon_password": False},
+        "bitlocker": {"conversion": 0, "protection": 0, "recovery": []},
         "defender": {"mode": "Normal", "realtime": True, "tamper": True},
         "managed": {"domain": False, "entra": False, "mdm": False},
         "blocked": {"programs": [], "locks": [], "disallowed": [], "firewall": []},
@@ -139,7 +155,7 @@ def nvme(**changes):
 
 # Checks that have nothing to say about the healthy desktop above
 SILENT = {"battery", "memory_test", "memory_integrity", "cpu_microcode", "x3d_cores", "gpu_preference",
-          "rgb_software", "throttling", "media_pack", "video_memory"}
+          "rgb_software", "throttling", "media_pack", "video_memory", "remote_tools"}
 
 
 def event(provider, event_id, days_ago=1, level=2, args=(), minutes=0):
@@ -1266,6 +1282,199 @@ class DrivesAndStarts(unittest.TestCase):
         render_all([finding])
 
 
+class ProtectionAndRecovery(unittest.TestCase):
+    """Defender, browser policies, trusted roots, accounts, network exposure, encryption, recovery and the clock."""
+
+    def assertFinding(self, finding, severity, line=None, msg=None):
+        self.assertIsNotNone(finding, msg)
+        self.assertEqual(finding.severity, severity, msg or finding)
+        if line:
+            self.assertEqual(finding.line, line, msg)
+        render_all([finding])
+
+    def test_recovery_environment(self):
+        self.assertFinding(verdict("recovery_env"), "ok", "recovery_ok")
+        self.assertFinding(verdict("recovery_env", recovery={"enabled": False}), "warning", "recovery_off")
+        self.assertEqual(verdict("recovery_env", recovery=None).severity, "unknown")
+        self.assertIsNone(verdict("recovery_env", windows=dict(healthy()["windows"], server=True)))
+        with tempfile.TemporaryDirectory() as root:
+            folder = os.path.join(root, "System32", "Recovery")
+            os.makedirs(folder)
+            with open(os.path.join(folder, "ReAgent.xml"), "w", encoding="utf-8") as f:
+                f.write("<?xml version='1.0' encoding='utf-8'?><WindowsRE version=\"2.0\">"
+                        "<InstallState state=\"0\"/></WindowsRE>")
+            with mock.patch.dict(os.environ, {"SystemRoot": root}):
+                self.assertEqual(diagnostics.recovery_environment(), {"enabled": False})
+            with mock.patch.dict(os.environ, {"SystemRoot": os.path.join(root, "missing")}):
+                self.assertIsNone(diagnostics.recovery_environment())
+
+    def test_clock(self):
+        time_service = "Microsoft-Windows-Time-Service"
+        self.assertFinding(verdict("time_sync"), "ok", "time_ok")
+        stuck = verdict("time_sync", time_events=[event(time_service, 37, days_ago=6, level=4),
+                                                  event(time_service, 36, days_ago=2, level=3)])
+        self.assertFinding(stuck, "warning", "time_stuck")
+        self.assertEqual(verdict("time_sync", time_events=[event(time_service, 36, days_ago=3, level=3),
+                                                           event(time_service, 37, days_ago=1, level=4)]).line,
+                         "time_ok", "synchronised again since")
+        self.assertFinding(verdict("time_sync", time_events=[]), "ok", "time_quiet")
+        self.assertEqual(verdict("time_sync", time_events=None).severity, "unknown")
+
+    def test_defender(self):
+        self.assertFinding(verdict("defender"), "ok", "defender_ok")
+        severe = verdict("defender", threats=[{"name": "Trojan:Win32/Wacatac.B!ml", "severity": 5}])
+        self.assertFinding(severe, "problem", "defender_threats")
+        self.assertFinding(verdict("defender", threats=[{"name": "PUA:Win32/Presenoker", "severity": 2}]), "warning")
+        hosts = verdict("defender", threats=[{"name": "SettingsModifier:Win32/PossibleHostsFileHijack",
+                                              "severity": 2}])
+        self.assertFinding(hosts, "info", "defender_notes")
+        broad = verdict("defender", defender_exclusions={"paths": ["C:\\", "D:\\Games"], "extensions": [],  # made-up test data, secret-scan: allow
+                                                         "processes": []})
+        self.assertFinding(broad, "warning", "defender_weakened")
+        self.assertEqual(broad.items, [("item_exclusion_broad", {"name": "C:\\"}), ("item_exclusions", {"n": 2})])
+        self.assertFinding(verdict("defender", defender_exclusions={"paths": ["D:\\Games"], "extensions": [],  # made-up test data, secret-scan: allow
+                                                                    "processes": []}), "info", "defender_notes")
+        self.assertFinding(verdict("defender", defender={"mode": "Normal", "realtime": True, "tamper": False}),
+                           "warning", "defender_weakened")
+        self.assertFinding(verdict("defender", defender={"mode": "Normal", "realtime": True, "tamper": False},
+                                   managed={"domain": True, "entra": False, "mdm": False}), "ok",
+                           msg="an organization manages Tamper Protection")
+        self.assertIsNone(verdict("defender", defender={"mode": "Passive Mode", "realtime": False, "tamper": False}),
+                          "another antivirus is at work")
+        self.assertEqual(verdict("defender", defender_exclusions=None, threats=None, admin=False).line,
+                         "unknown_admin")
+
+    def test_broad_exclusions(self):
+        broad = diagnostics.broad_exclusion
+        for kind, value in (("paths", "C:\\"), ("paths", "c:"), ("paths", "%TEMP%"), ("paths", "*"),
+                            ("paths", os.path.expandvars("%USERPROFILE%\\Downloads")), ("extensions", ".exe"),
+                            ("extensions", "PS1"), ("processes", r"C:\Windows\System32\WindowsPowerShell\v1.0"
+                                                                 r"\powershell.exe")):
+            self.assertTrue(broad(kind, value), (kind, value))
+        for kind, value in (("paths", r"D:\Games\Steam"), ("paths", os.path.expandvars("%TEMP%\\build")),  # made-up test data, secret-scan: allow
+                            ("extensions", "log"), ("processes", "game.exe")):
+            self.assertFalse(broad(kind, value), (kind, value))
+
+    def test_browser_policies(self):
+        forced = [{"browser": "Google Chrome", "kind": "extensions", "value": "abcdefghijklmnopabcdefghijklmnop"},
+                  {"browser": "Microsoft Edge", "kind": "search", "value": "https://search.example/?q={searchTerms}"}]
+        finding = verdict("browser_policies", browser_policies=forced)
+        self.assertFinding(finding, "warning", "browser_forced")
+        self.assertEqual([key for key, _ in finding.items], ["item_policy_extensions", "item_policy_search"])
+        work = verdict("browser_policies", browser_policies=forced, managed={"domain": True, "entra": False,
+                                                                            "mdm": False})
+        self.assertFinding(work, "info")
+        self.assertIn(("item_managed", {}), work.items)
+        self.assertFinding(verdict("browser_policies"), "ok", "browser_ok")
+        self.assertEqual(verdict("browser_policies", browser_policies=None).severity, "unknown")
+
+    def test_browser_policy_facts(self):
+        chrome, edge = diagnostics.BROWSER_POLICY_KEYS[0][1], diagnostics.BROWSER_POLICY_KEYS[1][1]
+        values = {
+            (winreg.HKEY_LOCAL_MACHINE, chrome + r"\ExtensionInstallForcelist"):
+                [("1", "abcdefghijklmnopabcdefghijklmnop;https://clients2.google.com/service/update2/crx")],
+            (winreg.HKEY_LOCAL_MACHINE, chrome): [("ExtensionSettings", '{"ponmlkjihgfedcbaponmlkjihgfedcba": '
+                                                                        '{"installation_mode": "force_installed"}}')],
+            (winreg.HKEY_CURRENT_USER, edge): [("HomepageLocation", "https://start.example"),
+                                               ("DefaultSearchProviderEnabled", 0),
+                                               ("DefaultSearchProviderSearchURL", "https://ignored.example")],
+        }
+        with mock.patch.object(diagnostics, "_values", lambda hive, path: values.get((hive, path), [])), \
+                mock.patch.object(diagnostics, "firefox_policies", lambda: []):
+            found = diagnostics.browser_policies()
+        self.assertEqual(found, [
+            {"browser": "Google Chrome", "kind": "extensions",
+             "value": "abcdefghijklmnopabcdefghijklmnop, ponmlkjihgfedcbaponmlkjihgfedcba"},
+            {"browser": "Microsoft Edge", "kind": "homepage", "value": "https://start.example"}])
+
+    def test_root_certificates(self):
+        self.assertFinding(verdict("root_certificates"), "ok", "roots_ok")
+        added = verdict("root_certificates", added_roots=[{"name": "Example Ad Injector Root", "user": True}])
+        self.assertFinding(added, "info", "roots_added")
+        self.assertEqual(added.items, [("item_root_user", {"name": "Example Ad Injector Root"})])
+        self.assertEqual(verdict("root_certificates", added_roots=None).severity, "unknown")
+        self.assertIsNone(diagnostics.certificate_name(bytes(8)), "no certificate in the blob")
+
+    def test_accounts(self):
+        users = healthy()["local_users"]
+        guest = [dict(u, enabled=True) if u["sid"].endswith("-501") else u for u in users]
+        finding = verdict("accounts", local_users=guest)
+        self.assertFinding(finding, "warning", "accounts_risky")
+        self.assertEqual(finding.items, [("item_guest_on", {"name": "Guest"})])
+        admin = [dict(u, enabled=True) if u["sid"].endswith("-500") else u for u in users]
+        self.assertFinding(verdict("accounts", local_users=admin), "warning")
+        self.assertFinding(verdict("accounts", local_users=admin, managed={"domain": True, "entra": False,
+                                                                          "mdm": False}), "info")
+        hidden = verdict("accounts", account_settings={"hidden": ["Player", "Old"], "autologon_password": False})
+        self.assertEqual(hidden.items, [("item_account_hidden", {"name": "Player"})], "only an account in use")
+        self.assertFinding(verdict("accounts", account_settings={"hidden": [], "autologon_password": True}),
+                           "warning")
+        self.assertEqual(verdict("accounts", local_users=None, account_settings=None).severity, "unknown")
+
+    def test_network_exposure(self):
+        self.assertFinding(verdict("network_exposure"), "ok", "exposure_ok")
+        public = dict(healthy()["firewall"], public=False)
+        self.assertFinding(verdict("network_exposure", firewall=public), "problem", "exposure_open")
+        self.assertFinding(verdict("network_exposure", firewall=dict(healthy()["firewall"], private=False)),
+                           "warning")
+        self.assertFinding(verdict("network_exposure", firewall=public, firewall_products=["ESET Firewall"]), "ok",
+                           msg="another firewall does the job")
+        self.assertFinding(verdict("network_exposure", firewall=dict(healthy()["firewall"], domain=False)), "ok",
+                           msg="the domain profile of a PC outside a domain")
+        self.assertFinding(verdict("network_exposure", smb1=["SMB1Protocol", "SMB1Protocol-Server"]), "warning")
+        self.assertFinding(verdict("network_exposure", smb1=["SMB1Protocol-Client"]), "info")
+        desktop = healthy()["remote_desktop"]
+        self.assertFinding(verdict("network_exposure", remote_desktop=dict(desktop, on=True)), "info")
+        self.assertFinding(verdict("network_exposure", remote_desktop=dict(desktop, on=True, nla_off=True)),
+                           "warning")
+        self.assertFinding(verdict("network_exposure", remote_desktop=dict(desktop, wrapper=True)), "info")
+        self.assertEqual(verdict("network_exposure", firewall=None, remote_desktop=None).severity, "unknown")
+
+    def test_remote_tools(self):
+        programs = {"anydesk": ("AnyDesk", "9.5"), "parsec": ("Parsec", "150"),
+                    "teamviewer": ("TeamViewer", "15.60")}
+        finding = verdict("remote_tools", software=dict(healthy()["software"], programs=programs))
+        self.assertFinding(finding, "info", "remote_installed")
+        self.assertEqual(finding.params["names"], "AnyDesk, TeamViewer")
+        self.assertIsNone(verdict("remote_tools", software=dict(healthy()["software"],
+                                                                programs={"parsec": ("Parsec", "150")})))
+
+    def test_drive_encryption(self):
+        self.assertFinding(verdict("bitlocker"), "ok", "bitlocker_off")
+        protected = {"conversion": 1, "protection": 1, "recovery": ["{1a2b3c4d-1111-2222-3333-444455556666}"]}
+        finding = verdict("bitlocker", bitlocker=protected)
+        self.assertFinding(finding, "info", "bitlocker_key")
+        self.assertEqual(finding.params["id"], "1A2B3C4D")
+        self.assertFinding(verdict("bitlocker", bitlocker=dict(protected, protection=0)), "info",
+                           "bitlocker_suspended")
+        self.assertFinding(verdict("bitlocker", bitlocker=dict(protected, recovery=[])), "warning",
+                           "bitlocker_no_key")
+        self.assertEqual(verdict("bitlocker", bitlocker=None, admin=False).line, "unknown_admin")
+
+    def test_secure_boot_certificates(self):
+        firmware = healthy()["firmware"]
+        pending = verdict("secure_boot", firmware=dict(firmware, ca2023="InProgress"))
+        self.assertFinding(pending, "info", "secure_ca")
+        self.assertEqual(pending.items, [("item_ca2023_pending", {})])
+        failed = verdict("secure_boot", firmware=dict(firmware, ca2023="NotStarted", ca2023_error=0x80070057))
+        self.assertFinding(failed, "warning", "secure_ca")
+        self.assertEqual(failed.items, [("item_ca2023_failed", {"code": "0x80070057"})])
+        off = verdict("secure_boot", firmware=dict(firmware, secure_boot=False, ca2023="NotStarted"))
+        self.assertEqual(off.items, [("item_secure_boot_off", {})], "with Secure Boot off the certificates wait")
+
+    def test_driver_blocklist(self):
+        security = dict(healthy()["security"], blocklist_off=True)
+        finding = verdict("security_settings", security=security)
+        self.assertFinding(finding, "warning", "security_off")
+        self.assertEqual(finding.items[0][0], "item_blocklist_off")
+        hvci = dict(healthy()["boot"], integrity=diagnostics.CI_ENABLED | diagnostics.CI_HVCI)
+        self.assertFinding(verdict("security_settings", security=security, boot=hvci), "ok",
+                           msg="memory integrity enforces the list anyway")
+        self.assertFinding(verdict("security_settings", security=security,
+                                   windows=dict(healthy()["windows"], build=19045)), "ok",
+                           msg="Windows 10 had it off by default")
+
+
 class Facts(unittest.TestCase):
     def test_hosts_file(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1338,8 +1547,11 @@ class Facts(unittest.TestCase):
         self.assertEqual(diagnostics.finish_powershell(Process(b"not json")), {})
 
     def test_the_script_only_reads(self):
-        # The one cmdlet with a changing verb only reports the health Windows has already recorded
+        # The cmdlets with a changing verb only read: the health Windows has already recorded, and the list of a
+        # volume's BitLocker key protectors
         script = diagnostics.POWERSHELL_SCRIPT.replace("Repair-WindowsImage -Online -CheckHealth", "")
+        self.assertEqual(script.count("Invoke-CimMethod"), script.count("-MethodName GetKeyProtectors"))
+        script = script.replace("Invoke-CimMethod", "")
         cmdlets = set(re.findall(r"\b([A-Z][a-z]+)-([A-Z][A-Za-z]+)\b", script))
         changing = {"Set", "Remove", "Stop", "Start", "Restart", "Invoke", "Enable", "Disable", "Clear", "Add",
                     "Register", "Unregister", "Install", "Uninstall", "Update", "Rename", "Move", "Copy", "Out",
@@ -1348,8 +1560,10 @@ class Facts(unittest.TestCase):
                     "Sync"}
         self.assertEqual({verb for verb, _ in cmdlets} & changing, set())
         self.assertEqual({noun for verb, noun in cmdlets if verb == "New"}, {"Object"})
+        # COM objects only read: the last update's date, and whether the firewall is on (FirewallEnabled)
         self.assertEqual(re.findall(r"New-Object\s+(?:-ComObject\s+)?([\w.]+)", diagnostics.POWERSHELL_SCRIPT),
-                         ["Text.UTF8Encoding", "Microsoft.Update.AutoUpdate"])
+                         ["Text.UTF8Encoding", "Microsoft.Update.AutoUpdate", "HNetCfg.FwPolicy2"])
+        self.assertNotRegex(diagnostics.POWERSHELL_SCRIPT, r"\$fw\.\w+\s*=", "the firewall is never set")
         # The script is passed as the command line itself: quotes or backslashes would need escaping
         self.assertNotIn('"', diagnostics.POWERSHELL_SCRIPT)
         self.assertNotIn("\\", diagnostics.POWERSHELL_SCRIPT)

@@ -2,6 +2,23 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.12
+
+**Troubleshooting: protection and recovery**
+- **Microsoft Defender** (new): threats Defender found and could not remove; exclusions Microsoft names as mistakes (whole drives, system, user and temporary folders, every file of a common type, the programs that run scripts) and how many there are; Tamper Protection off on a PC no organization manages. Only where Defender is the antivirus at work. Defender's reports about an edited hosts file are a note.
+- **Browser policies** (new): extensions installed by force, the start page, the new tab page, the search engine, the pages opened at start and the proxy, forced by policies in Chrome, Edge, Brave, Chromium, Vivaldi, Yandex Browser and Firefox ("Managed by your organization").
+- **Trusted certificates** (new): root certificates added beyond Microsoft's root program, compared with the list Windows keeps and updates.
+- **Accounts** (new): the Guest account or the built-in Administrator turned on, an account in use hidden from the sign-in screen, a password for automatic sign-in kept in plain text (only whether it exists; it is never read).
+- **Network exposure** (new): the firewall off for private or public networks (unless another firewall is registered), SMB1 installed, Remote Desktop on, without Network Level Authentication, or running another library than Windows' own (RDP Wrapper).
+- **Remote control programs** (new, a note): AnyDesk, TeamViewer, RustDesk and others, with a warning about scammers who call "from support".
+- **Drive encryption** (new): BitLocker or device encryption of the Windows drive: encrypted but not protected yet, without a recovery password, or protected, with the ID of the recovery key to look up at aka.ms/myrecoverykey.
+- **Recovery environment** (new): WinRE turned off, which leaves a PC that does not start without Startup Repair and restore points.
+- **Clock** (new): Windows unable to synchronise the clock.
+- **Secure Boot** also notes the certificates of 2023 that replace those of 2011, which expired in 2026: a replacement not finished yet, or failed with its error code.
+- **Security settings** note the blocklist of vulnerable drivers turned off where memory integrity is off (Windows 11 22H2 and later).
+
+On a PC an organization manages, its policies are notes. Like every check, these only read.
+
 ## 0.11
 
 **Troubleshooting: what other tweaking tools left behind**

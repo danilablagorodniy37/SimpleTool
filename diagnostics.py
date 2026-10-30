@@ -45,12 +45,14 @@ CHECKS = [
     ("live_kernel", "stability"), ("whea", "stability"),
     ("memory_test", "stability"), ("devices", "stability"), ("services", "stability"),
     ("core_services", "stability"), ("app_platform", "stability"), ("system_files", "stability"),
-    ("wmi_health", "stability"), ("vc_runtime", "stability"),
+    ("recovery_env", "stability"), ("wmi_health", "stability"), ("time_sync", "stability"), ("vc_runtime", "stability"),
     ("media_pack", "stability"), ("battery", "stability"),
-    ("antivirus", "security"), ("security_settings", "security"), ("blocked_tools", "security"),
-    ("memory_integrity", "security"),
+    ("antivirus", "security"), ("defender", "security"), ("security_settings", "security"),
+    ("blocked_tools", "security"), ("memory_integrity", "security"),
     ("secure_boot", "security"), ("windows_update", "security"), ("pending_restart", "security"),
-    ("windows_support", "security"), ("network", "security"), ("proxy", "security"), ("hosts", "security"),
+    ("windows_support", "security"), ("network", "security"), ("network_exposure", "security"),
+    ("proxy", "security"), ("hosts", "security"), ("browser_policies", "security"), ("root_certificates", "security"),
+    ("accounts", "security"), ("remote_tools", "security"), ("bitlocker", "security"),
 ]
 GROUP_OF = dict(CHECKS)
 SEVERITIES = ["problem", "warning", "info", "ok", "unknown"]  # from the most serious
@@ -84,6 +86,10 @@ ACTIONS = {
     "network_status": ("open", "ms-settings:network-status", None),
     "proxy": ("open", "ms-settings:network-proxy", None),
     "hosts": ("open", "notepad.exe", "%HOSTS%"),
+    "date_time": ("open", "ms-settings:dateandtime", None),
+    "accounts": ("open", "ms-settings:otherusers", None),
+    "firewall": ("open", "windowsdefender://network", None),
+    "encryption": ("open", "ms-settings:deviceencryption", None),
 }
 
 EVENT_DAYS = 30      # crashes, drive and hardware errors are looked for this far back
@@ -389,6 +395,39 @@ TEREDO_DISABLED = 4
 IPV6_DELAY = 0xFFFFFFFF
 IPV6_TUNNELS_OFF = 0x01 | 0x08  # tunnel interfaces, Teredo
 SVCHOST_SPLIT, SVCHOST_DEFAULT = "SvcHostSplitThresholdInKB", 3670016
+# Microsoft Defender exclusions Microsoft names as mistakes: whole drives and the system, user and temporary
+# folders, every file of a common type, and the programs that run scripts and system code
+BROAD_FOLDERS = ("%SystemRoot%", r"%SystemRoot%\System32", r"%SystemRoot%\Temp", "%ProgramFiles%",
+                 "%ProgramFiles(x86)%", "%ProgramData%", r"%SystemDrive%\Users", "%USERPROFILE%", "%APPDATA%",
+                 "%LOCALAPPDATA%", "%TEMP%", r"%USERPROFILE%\Downloads", r"%USERPROFILE%\Desktop")
+BROAD_EXTENSIONS = {"exe", "dll", "sys", "ps1", "bat", "cmd", "com", "js", "jse", "vbs", "vbe", "wsf", "hta", "scr",
+                    "msi", "jar", "lnk", "zip", "rar", "7z", "iso"}
+BROAD_PROCESSES = {"powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe",
+                   "regsvr32.exe", "svchost.exe", "explorer.exe", "msiexec.exe", "schtasks.exe"}
+# Threats Defender reports about settings the user may have changed on purpose: the hosts file has its own check
+HOSTS_THREAT = re.compile(r"HostsFileHijack", re.IGNORECASE)
+# Browsers' policy keys under HKLM and HKCU: forced extensions, start page, search engine and proxy
+BROWSER_POLICY_KEYS = [("Google Chrome", r"SOFTWARE\Policies\Google\Chrome"),
+                       ("Microsoft Edge", r"SOFTWARE\Policies\Microsoft\Edge"),
+                       ("Brave", r"SOFTWARE\Policies\BraveSoftware\Brave"),
+                       ("Chromium", r"SOFTWARE\Policies\Chromium"),
+                       ("Vivaldi", r"SOFTWARE\Policies\Vivaldi"),
+                       ("Yandex Browser", r"SOFTWARE\Policies\YandexBrowser")]
+# Old roots Windows ships in its own store outside Microsoft's root program, for old signatures
+WINDOWS_ROOTS = {"245C97DF7514E7CF2DF8BE72AE957B9E04741E85", "7F88CD7223F3C813818C994614A89C99FA3B5247",
+                 "BE36A4562FB2EE05DBB3D32323ADF445084ED656", "A43489159A520F0D93D032CCAF37E7FE20A8B419"}
+# Remote control programs: scammers who call "from support" ask to install one of these. Game streaming (Parsec,
+# Sunshine, Steam Link) and Windows' own Quick Assist are not listed
+REMOTE_TOOLS = [(re.compile(pattern, re.IGNORECASE), name) for pattern, name in (
+    (r"^anydesk", "AnyDesk"), (r"^teamviewer", "TeamViewer"), (r"^rustdesk", "RustDesk"),
+    (r"screenconnect|connectwise control", "ScreenConnect"), (r"^splashtop", "Splashtop"),
+    (r"^logmein", "LogMeIn"), (r"^ultraviewer", "UltraViewer"), (r"^supremo", "Supremo"),
+    (r"^aeroadmin", "AeroAdmin"), (r"^ammyy", "Ammyy Admin"), (r"netsupport", "NetSupport"),
+    (r"^atera", "Atera"), (r"mesh ?agent", "MeshAgent"), (r"^tightvnc", "TightVNC"), (r"^ultravnc", "UltraVNC"),
+    (r"^vnc server|realvnc server", "RealVNC Server"), (r"chrome remote desktop host", "Chrome Remote Desktop"),
+    (r"^remote utilities.*host", "Remote Utilities"), (r"^radmin server", "Radmin Server"),
+    (r"^dwagent|dwservice", "DWService"), (r"^zoho assist", "Zoho Assist"))]
+TIME_DAYS = 14  # the clock: Windows synchronises it at least weekly
 
 
 class Size(int):
@@ -1478,8 +1517,13 @@ def firmware():
     except OSError:
         pass
     anti_cheat = any(_service_start(name) is not None for name in ANTI_CHEAT_TPM)
+    # The Secure Boot certificates of 2023 that replace those of 2011, which expired in 2026: Windows updates them
+    # itself and keeps the state here (NotStarted, InProgress, Updated) with an error code when it failed
+    servicing = r"HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing"
+    status, error = _read(servicing, "UEFICA2023Status"), _read(servicing, "UEFICA2023Error")
     return {"uefi": uefi, "secure_boot": None if secure is None else secure == 1, "tpm": tpm,
-            "anti_cheat": anti_cheat}
+            "anti_cheat": anti_cheat, "ca2023": status if isinstance(status, str) else None,
+            "ca2023_error": error if isinstance(error, int) and error else None}
 
 
 def security_settings():
@@ -1496,7 +1540,10 @@ def security_settings():
             "defender_policies": [name for path, name in DEFENDER_POLICIES if _read(path, name) == 1],
             "notifications_off": _read(r"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender Security Center"
                                        r"\Notifications", "DisableNotifications") == 1,
-            "hidden_pages": hidden_pages()}
+            "hidden_pages": hidden_pages(),
+            # Microsoft's list of vulnerable drivers Windows refuses to load (on by default since Windows 11 22H2)
+            "blocklist_off": _read(r"HKLM\SYSTEM\CurrentControlSet\Control\CI\Config",
+                                   "VulnerableDriverBlocklistEnable") == 0}
 
 
 def hidden_pages():
@@ -1736,6 +1783,275 @@ def wmi_repository():
     except (OSError, subprocess.TimeoutExpired):
         return None
     return done.returncode & 0xFFFFFFFF
+
+
+# --- Protection and recovery: Defender's exclusions, browser policies, trusted roots, accounts, exposure, WinRE ---
+
+def recovery_environment():
+    """Whether the Windows Recovery Environment is turned on, from the settings file reagentc keeps (its own output
+    is in the language of Windows). None when the file cannot be read."""
+    path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "Recovery", "ReAgent.xml")
+    try:
+        with open(path, "rb") as f:
+            state = ElementTree.fromstring(f.read()).find("InstallState")
+    except (OSError, SyntaxError):
+        return None
+    if state is None or state.get("state") not in ("0", "1"):
+        return None
+    return {"enabled": state.get("state") == "1"}
+
+
+def defender_exclusions():
+    """{"paths", "extensions", "processes"} Microsoft Defender does not scan, its own settings and policies together.
+    None when they cannot be read: only administrators may."""
+    found = {"paths": [], "extensions": [], "processes": []}
+    for root in (r"SOFTWARE\Microsoft\Windows Defender\Exclusions",
+                 r"SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions"):
+        for kind, sub in (("paths", "Paths"), ("extensions", "Extensions"), ("processes", "Processes")):
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf"{root}\{sub}", 0,
+                                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                    found[kind] += [winreg.EnumValue(key, i)[0] for i in range(winreg.QueryInfoKey(key)[1])]
+            except PermissionError:
+                return None
+            except OSError:
+                continue  # nothing excluded this way
+    return {kind: list(dict.fromkeys(names)) for kind, names in found.items()}
+
+
+def broad_exclusion(kind, value):
+    """Whether an exclusion leaves out what Microsoft names as never to exclude: whole drives, the system, user and
+    temporary folders, everything of a common file type, or the programs scripts run in."""
+    value = os.path.expandvars((value or "").strip()).lower().rstrip("\\")
+    if not value or value in ("*", "*.*"):
+        return True
+    if kind == "extensions":
+        return value.lstrip("*.").lstrip(".") in BROAD_EXTENSIONS
+    if kind == "processes":
+        return os.path.basename(value) in BROAD_PROCESSES
+    if re.fullmatch(r"[a-z]:(\\\*)?", value):
+        return True
+    folders = {os.path.normcase(os.path.expandvars(folder)).rstrip("\\") for folder in BROAD_FOLDERS}
+    return os.path.normcase(value) in folders
+
+
+def browser_policies():
+    """Browser settings forced by policies: extensions installed by force, the start page, the search engine and
+    the proxy ("Managed by your organization"). Adware sets these so that the user cannot change them back."""
+    found = []
+    for hive, hive_name in ((winreg.HKEY_LOCAL_MACHINE, "HKLM"), (winreg.HKEY_CURRENT_USER, "HKCU")):
+        for browser, path in BROWSER_POLICY_KEYS:
+            values = dict(_values(hive, path))
+            ids = [str(data).split(";")[0] for _, data in _values(hive, path + r"\ExtensionInstallForcelist")]
+            settings = values.get("ExtensionSettings")
+            if isinstance(settings, str):
+                try:
+                    parsed = json.loads(settings)
+                except ValueError:
+                    parsed = {}
+                ids += [ext for ext, rules in (parsed.items() if isinstance(parsed, dict) else [])
+                        if isinstance(rules, dict) and rules.get("installation_mode") in ("force_installed",
+                                                                                            "normal_installed")]
+            if ids:
+                found.append({"browser": browser, "kind": "extensions", "value": ", ".join(dict.fromkeys(ids))})
+            startup = [str(data) for _, data in _values(hive, path + r"\RestoreOnStartupURLs")]
+            for kind, value in (("homepage", values.get("HomepageLocation")),
+                                ("newtab", values.get("NewTabPageLocation")),
+                                ("search", values.get("DefaultSearchProviderSearchURL")
+                                 if values.get("DefaultSearchProviderEnabled") != 0 else None),
+                                ("startup", ", ".join(startup) if startup and values.get("RestoreOnStartup") == 4
+                                 else None),
+                                ("proxy", values.get("ProxyServer") or values.get("ProxyPacUrl"))):
+                if isinstance(value, str) and value.strip():
+                    found.append({"browser": browser, "kind": kind, "value": value.strip()})
+    found += firefox_policies()
+    return [dict(f, value=f["value"][:120]) for f in found]
+
+
+def firefox_policies():
+    """The same for Firefox, whose policies are a policies.json file next to it or a registry key."""
+    found = []
+    for folder in ("%ProgramFiles%", "%ProgramFiles(x86)%"):
+        path = os.path.join(os.path.expandvars(folder), "Mozilla Firefox", "distribution", "policies.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                policies = json.load(f).get("policies") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        if not isinstance(policies, dict):
+            continue
+        settings = policies.get("ExtensionSettings") if isinstance(policies.get("ExtensionSettings"), dict) else {}
+        ids = [ext for ext, rules in settings.items()
+               if isinstance(rules, dict) and rules.get("installation_mode") in ("force_installed", "normal_installed")]
+        install = (policies.get("Extensions") or {}).get("Install") if isinstance(policies.get("Extensions"), dict) \
+            else None
+        ids += [str(item) for item in install or []]
+        if ids:
+            found.append({"browser": "Firefox", "kind": "extensions", "value": ", ".join(ids)})
+        homepage = policies.get("Homepage") if isinstance(policies.get("Homepage"), dict) else {}
+        if isinstance(homepage.get("URL"), str) and homepage["URL"].strip():
+            found.append({"browser": "Firefox", "kind": "homepage", "value": homepage["URL"].strip()})
+        engines = policies.get("SearchEngines") if isinstance(policies.get("SearchEngines"), dict) else {}
+        if isinstance(engines.get("Default"), str) and engines["Default"].strip():
+            found.append({"browser": "Firefox", "kind": "search", "value": engines["Default"].strip()})
+    return found
+
+
+class _Blob(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+class _CtlEntry(ctypes.Structure):
+    _fields_ = [("SubjectIdentifier", _Blob), ("cAttribute", wintypes.DWORD), ("rgAttribute", ctypes.c_void_p)]
+
+
+class _CtlUsage(ctypes.Structure):  # CTL_USAGE: nested, so that it is aligned as in C
+    _fields_ = [("cUsageIdentifier", wintypes.DWORD), ("rgpszUsageIdentifier", ctypes.c_void_p)]
+
+
+class _AlgorithmId(ctypes.Structure):  # CRYPT_ALGORITHM_IDENTIFIER
+    _fields_ = [("pszObjId", ctypes.c_char_p), ("Parameters", _Blob)]
+
+
+class _CtlInfo(ctypes.Structure):  # CTL_INFO
+    _fields_ = [("dwVersion", wintypes.DWORD), ("SubjectUsage", _CtlUsage), ("ListIdentifier", _Blob),
+                ("SequenceNumber", _Blob), ("ThisUpdate", wintypes.FILETIME), ("NextUpdate", wintypes.FILETIME),
+                ("SubjectAlgorithm", _AlgorithmId), ("cCTLEntry", wintypes.DWORD),
+                ("rgCTLEntry", ctypes.POINTER(_CtlEntry)), ("cExtension", wintypes.DWORD),
+                ("rgExtension", ctypes.c_void_p)]
+
+
+class _CtlContext(ctypes.Structure):  # CTL_CONTEXT
+    _fields_ = [("dwMsgAndCertEncodingType", wintypes.DWORD), ("pbCtlEncoded", ctypes.c_void_p),
+                ("cbCtlEncoded", wintypes.DWORD), ("pCtlInfo", ctypes.POINTER(_CtlInfo)),
+                ("hCertStore", ctypes.c_void_p), ("hCryptMsg", ctypes.c_void_p), ("pbCtlContent", ctypes.c_void_p),
+                ("cbCtlContent", wintypes.DWORD)]
+
+
+ENCODING = 0x10001  # X509_ASN_ENCODING | PKCS_7_ASN_ENCODING
+
+
+def trusted_roots():
+    """SHA-1 thumbprints of the root certificates Microsoft's root program trusts: the list (a CTL) Windows keeps
+    in the registry and updates itself. None when it is missing, as on a PC that never updated it."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\SystemCertificates\AuthRoot\AutoUpdate") as key:
+            encoded = winreg.QueryValueEx(key, "EncodedCtl")[0]
+    except OSError:
+        return None
+    crypt32 = ctypes.WinDLL("crypt32")
+    crypt32.CertCreateCTLContext.restype = ctypes.POINTER(_CtlContext)
+    crypt32.CertCreateCTLContext.argtypes = [wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    crypt32.CertFreeCTLContext.argtypes = [ctypes.POINTER(_CtlContext)]
+    buffer = ctypes.create_string_buffer(encoded, len(encoded))
+    context = crypt32.CertCreateCTLContext(ENCODING, buffer, len(encoded))
+    if not context:
+        return None
+    try:
+        info = context.contents.pCtlInfo.contents
+        thumbprints = set()
+        for i in range(info.cCTLEntry):
+            entry = info.rgCTLEntry[i].SubjectIdentifier
+            thumbprints.add(bytes(entry.pbData[:entry.cbData]).hex().upper())
+        return thumbprints
+    finally:
+        crypt32.CertFreeCTLContext(context)
+
+
+def certificate_name(blob):
+    """The display name of a certificate kept in the registry: its "Blob" is a list of properties (id, reserved,
+    length, data) and the certificate itself is property 32."""
+    position = 0
+    while position + 12 <= len(blob):
+        prop, _, length = struct.unpack_from("<III", blob, position)
+        data = blob[position + 12:position + 12 + length]
+        position += 12 + length
+        if prop != 32:
+            continue
+        crypt32 = ctypes.WinDLL("crypt32")
+        crypt32.CertCreateCertificateContext.restype = ctypes.c_void_p
+        crypt32.CertCreateCertificateContext.argtypes = [wintypes.DWORD, ctypes.c_char_p, wintypes.DWORD]
+        crypt32.CertGetNameStringW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                               ctypes.c_wchar_p, wintypes.DWORD]
+        crypt32.CertFreeCertificateContext.argtypes = [ctypes.c_void_p]
+        context = crypt32.CertCreateCertificateContext(ENCODING, data, len(data))
+        if not context:
+            return None
+        try:
+            name = ctypes.create_unicode_buffer(256)
+            crypt32.CertGetNameStringW(context, 4, 0, None, name, 256)  # CERT_NAME_SIMPLE_DISPLAY_TYPE
+            return name.value or None
+        finally:
+            crypt32.CertFreeCertificateContext(context)
+    return None
+
+
+def added_roots():
+    """Root certificates added to this PC beyond Microsoft's root program: [{"name", "user"}]. Antivirus HTTPS
+    scanning, AdGuard, Fiddler and developers' own certificates are legitimate; a root nobody knows about lets a
+    program read encrypted traffic (Superfish). None when Microsoft's list is not on this PC."""
+    trusted = trusted_roots()
+    if trusted is None:
+        return None
+    found = []
+    for hive, path, user in ((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\SystemCertificates\ROOT\Certificates",
+                              False),
+                             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\SystemCertificates\Root"
+                                                         r"\Certificates", False),
+                             (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\SystemCertificates\Root\Certificates",
+                              True)):
+        try:
+            root = winreg.OpenKey(hive, path)
+        except OSError:
+            continue
+        with root:
+            for thumbprint in programs._subkeys(root):
+                if thumbprint.upper() in trusted or thumbprint.upper() in WINDOWS_ROOTS:
+                    continue
+                try:
+                    with winreg.OpenKey(root, thumbprint) as key:
+                        name = certificate_name(winreg.QueryValueEx(key, "Blob")[0])
+                except OSError:
+                    name = None
+                if name and "microsoft" in name.lower():
+                    continue  # roots Windows itself ships outside the program, for old signatures
+                found.append({"name": name or thumbprint, "user": user})
+    return found
+
+
+def _value_exists(path, name):
+    """Whether a registry value exists, without reading it (a stored password stays unread)."""
+    hive, _, sub = path.partition("\\")
+    hkey = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}[hive]
+    size = wintypes.DWORD()
+    advapi32 = ctypes.WinDLL("advapi32")
+    advapi32.RegGetValueW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                                      ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+    # RRF_RT_ANY | RRF_SUBKEY_WOW6464KEY, no buffer: only the size comes back
+    return advapi32.RegGetValueW(ctypes.c_void_p(hkey), sub, name, 0x0000FFFF | 0x00010000, None, None,
+                                 ctypes.byref(size)) == 0
+
+
+def account_settings():
+    """Accounts hidden from the sign-in screen and a password for automatic sign-in kept in plain text."""
+    hidden = [name for name, data in _values(winreg.HKEY_LOCAL_MACHINE,
+                                                    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+                                                    r"\SpecialAccounts\UserList") if data == 0]
+    winlogon = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    return {"hidden": hidden,
+            "autologon_password": str(_read(winlogon, "AutoAdminLogon") or "") == "1" and
+            _value_exists(winlogon, "DefaultPassword")}
+
+
+def remote_desktop():
+    """Remote Desktop: whether it accepts connections, whether it asks for credentials first (Network Level
+    Authentication), and whether its service runs another library than Windows' own (RDP Wrapper)."""
+    server = r"HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server"
+    library = _read(r"HKLM\SYSTEM\CurrentControlSet\Services\TermService\Parameters", "ServiceDll")
+    return {"on": _read(server, "fDenyTSConnections") == 0,
+            "nla_off": _read(server + r"\WinStations\RDP-Tcp", "UserAuthentication") == 0,
+            "wrapper": isinstance(library, str) and library.strip() != "" and
+            os.path.basename(os.path.expandvars(library)).lower() != "termsrv.dll"}
 
 
 # One PowerShell run for what has no simple Windows call: drives' health, devices with problems, antivirus, the
@@ -2061,6 +2377,29 @@ try {
       if ($keep -contains $item.Name) { $data[$item.Name] = [string]$item.'#text' } }
     @{ id = $_.Id; time = $_.TimeCreated.ToString('s'); data = $data } })
 } catch { if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { $r.perf_events = @() } }
+# Threats Microsoft Defender found and that are still there
+try { $r.threats = @(Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpThreat |
+  Where-Object { $_.IsActive } | ForEach-Object { @{ name = [string]$_.ThreatName; severity = [int]$_.SeverityID } })
+} catch {}
+# The firewall as Windows applies it (policies included), for the domain, private and public networks
+try { $fw = New-Object -ComObject HNetCfg.FwPolicy2
+  $r.firewall = @{ domain = [bool]$fw.FirewallEnabled(1); private = [bool]$fw.FirewallEnabled(2);
+                   public = [bool]$fw.FirewallEnabled(4) } } catch {}
+try { $r.firewall_products = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct |
+  ForEach-Object { [string]$_.displayName }) } catch {}
+try { $r.smb1 = @(Get-CimInstance -ClassName Win32_OptionalFeature -Filter 'Name LIKE ''SMB1Protocol%%''' |
+  Where-Object { $_.InstallState -eq 1 } | ForEach-Object { [string]$_.Name }) } catch {}
+try { $r.local_users = @(Get-LocalUser | ForEach-Object { @{ name = [string]$_.Name; enabled = [bool]$_.Enabled;
+  sid = [string]$_.SID.Value } }) } catch {}
+# BitLocker on the Windows drive: encrypted or not, protected or not, and the IDs of its recovery passwords
+try { $v = @(Get-CimInstance -Namespace root/cimv2/Security/MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume `
+    -Filter ('DriveLetter=''' + $env:SystemDrive + ''''))
+  if ($v.Count) { $keys = Invoke-CimMethod -InputObject $v[0] -MethodName GetKeyProtectors -Arguments @{ KeyProtectorType = [uint32]3 }
+    $r.bitlocker = @{ conversion = [int]$v[0].ConversionStatus; protection = [int]$v[0].ProtectionStatus;
+                      recovery = @($keys.VolumeKeyProtectorID | ForEach-Object { [string]$_ }) } }
+} catch {}
+try { $r.time_events = Events @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Time-Service'; Id = 35, 36, 37;
+  StartTime = (Get-Date).AddDays(-%(time_days)d) } } catch {}
 $since = (Get-Date).AddDays(-%(event_days)d)
 try { $r.events = Events @{ LogName = 'System'; StartTime = $since; Level = 1, 2, 3;
   Id = 41, 1001, 2004, 4101, 4199, 6008 } } catch {}
@@ -2084,10 +2423,11 @@ try { $r.app_events = Events @{ LogName = 'Application'; Id = 1000, 1002;
   StartTime = (Get-Date).AddDays(-%(app_days)d) } } catch {}
 $r | ConvertTo-Json -Depth 5 -Compress
 """ % {"event_days": EVENT_DAYS, "app_days": APP_EVENT_DAYS, "service_days": SERVICE_DAYS,
-       "throttle_days": THROTTLE_DAYS, "disk_providers": "', '".join(DISK_PROVIDERS), "perf_days": PERF_DAYS}
+       "throttle_days": THROTTLE_DAYS, "disk_providers": "', '".join(DISK_PROVIDERS), "perf_days": PERF_DAYS,
+       "time_days": TIME_DAYS}
 
 EVENT_KEYS = ("events", "disk_events", "nvidia_events", "throttle_events", "shutdowns", "service_events",
-              "update_events", "memory_tests", "live_events", "whea", "app_events")
+              "update_events", "memory_tests", "live_events", "whea", "app_events", "time_events")
 
 
 def _list(value):
@@ -2166,6 +2506,18 @@ def finish_powershell(process, timeout=POWERSHELL_TIMEOUT):
     for key in ("disk_paths", "volumes"):
         if key in raw:
             facts[key] = [item for item in _list(raw[key]) if isinstance(item, dict)]
+    for key in ("threats", "local_users"):
+        if key in raw:
+            facts[key] = [item for item in _list(raw[key]) if isinstance(item, dict)]
+    for key in ("firewall_products", "smb1"):
+        if key in raw:
+            facts[key] = [str(item) for item in _list(raw[key]) if item]
+    if isinstance(raw.get("firewall"), dict):
+        facts["firewall"] = {key: bool(raw["firewall"].get(key)) for key in ("domain", "private", "public")}
+    if isinstance(raw.get("bitlocker"), dict):
+        locker = raw["bitlocker"]
+        facts["bitlocker"] = {"conversion": locker.get("conversion"), "protection": locker.get("protection"),
+                              "recovery": [str(k) for k in _list(locker.get("recovery")) if k]}
     cycles = [c for c in _list(raw.get("cycles")) if isinstance(c, int) and c > 0]
     if cycles:
         facts["battery_cycles"] = max(cycles)
@@ -2248,6 +2600,7 @@ def gather(report=lambda step: None, api=None):
     read("disabled_services", disabled_services)
     read("app_platform", app_platform)
     read("wmi_repository", wmi_repository)
+    read("recovery", recovery_environment)
     read("wer_off", wer_off)
     read("crash_files", lambda: crash_files(facts["now"]))
     read("local_dumps", local_dumps)
@@ -2263,6 +2616,11 @@ def gather(report=lambda step: None, api=None):
     read("security", security_settings)
     read("managed", managed)
     read("blocked", blocked_tools)
+    read("defender_exclusions", defender_exclusions)
+    read("browser_policies", browser_policies)
+    read("added_roots", added_roots)
+    read("account_settings", account_settings)
+    read("remote_desktop", remote_desktop)
     read("proxy", proxy)
     read("hosts", hosts)
     report("security")
@@ -3378,6 +3736,10 @@ def check_security_settings(facts):
     found += [("item_hidden_" + page, {}, "info") for page in state.get("hidden_pages") or []]
     if state.get("notifications_off"):
         found.append(("item_defender_quiet", {}, "info"))
+    # The blocklist of vulnerable drivers: memory integrity enforces it anyway, and Windows 10 had it off
+    integrity = (facts.get("boot") or {}).get("integrity") or 0
+    if state.get("blocklist_off") and not integrity & CI_HVCI and (facts.get("windows") or {}).get("build", 0) >= 22621:
+        found.append(("item_blocklist_off", {}, "warning"))
     if not found:
         return Finding("security_settings", "ok", "security_ok")
     severity = min((f[2] for f in found), key=SEVERITIES.index)
@@ -3411,11 +3773,23 @@ def check_secure_boot(facts):
         items.append(("item_secure_boot_off", {}))
     if state["tpm"] < 2:
         items.append(("item_tpm_missing", {}))
+    # With Secure Boot on, the certificates of 2023 must replace those of 2011 for the boot process to get new
+    # protections; Windows does it by itself, so only a failure or a long wait is worth saying
+    certificates = None
+    if state["secure_boot"] and state.get("ca2023") and state["ca2023"].lower() != "updated":
+        error = state.get("ca2023_error")
+        certificates = ("warning", ("item_ca2023_failed", {"code": f"0x{error & 0xFFFFFFFF:08X}"})) if error else \
+            ("info", ("item_ca2023_pending", {}))
     if not items:
+        if certificates:
+            return Finding("secure_boot", certificates[0], "secure_ca", {}, [certificates[1]], ["update"])
         return Finding("secure_boot", "ok", "secure_ok")
     # Riot Vanguard refuses to start on Windows 11 without them; others such as Battlefield's and Call of Duty's
     # anti-cheats need them too
     severity = "warning" if state["anti_cheat"] else "info"
+    if certificates:
+        items.append(certificates[1])
+        severity = _worse(severity, certificates[0])
     return Finding("secure_boot", severity, "secure_off", {"n": len(items)}, items)
 
 
@@ -3946,6 +4320,178 @@ def check_blocked_tools(facts):
         items.append(("item_managed", {}))
     return Finding("blocked_tools", severity, "blocked_protection" if severity == "warning" else "blocked_windows",
                    {"n": count}, items)
+
+
+def check_recovery_env(facts):
+    if (facts.get("windows") or {}).get("server"):
+        return None
+    state = facts.get("recovery")
+    if state is None:
+        return unknown("recovery_env")
+    if state["enabled"]:
+        return Finding("recovery_env", "ok", "recovery_ok")
+    return Finding("recovery_env", "warning", "recovery_off", actions=["recovery"])
+
+
+def check_time_sync(facts):
+    events = facts.get("time_events")
+    if events is None:
+        return unknown("time_sync")
+    week = _days_ago(facts, 7)
+    # Event 36: none of the time sources gave a usable time for a while; 35 and 37 are successful syncs
+    stuck = [e for e in events if e["id"] == 36 and e["time"] >= week]
+    synced = [e for e in events if e["id"] in (35, 37)]
+    if stuck and not any(e["time"] > max(s["time"] for s in stuck) for e in synced):
+        return Finding("time_sync", "warning", "time_stuck", {"date": max(e["time"] for e in stuck).date()},
+                       actions=["date_time"])
+    if synced:
+        return Finding("time_sync", "ok", "time_ok", {"date": max(e["time"] for e in synced).date()})
+    return Finding("time_sync", "ok", "time_quiet", {"days": TIME_DAYS})
+
+
+def check_defender(facts):
+    defender = facts.get("defender")
+    if not defender or not defender["mode"].lower().startswith("normal"):
+        return None  # another antivirus is at work, or Defender is not there: the antivirus check tells which
+    exclusions, threats = facts.get("defender_exclusions"), facts.get("threats")
+    if exclusions is None and threats is None:
+        return unknown("defender", "unknown_admin" if facts.get("admin") is False else "unknown_read")
+    items, severity = [], "ok"
+    for threat in threats or []:
+        name = threat.get("name") or "?"
+        if HOSTS_THREAT.search(name):  # an edited hosts file: the hosts check looks at what it blocks
+            items.append(("item_threat_hosts", {"name": name}))
+            severity = _worse(severity, "info")
+        else:
+            items.append(("item_threat", {"name": name}))
+            severity = _worse(severity, "problem" if (threat.get("severity") or 0) >= 4 else "warning")
+    broad = []
+    for kind in ("paths", "extensions", "processes"):
+        for value in (exclusions or {}).get(kind) or []:
+            if broad_exclusion(kind, value):
+                broad.append(value)
+    items += [("item_exclusion_broad", {"name": value}) for value in broad[:8]]
+    if broad:
+        severity = _worse(severity, "info" if _is_managed(facts) else "warning")
+    if not defender["tamper"] and not _is_managed(facts):
+        items.append(("item_tamper_off", {}))
+        severity = _worse(severity, "warning")
+    total = sum(len((exclusions or {}).get(kind) or []) for kind in ("paths", "extensions", "processes"))
+    if total > len(broad):
+        items.append(("item_exclusions", {"n": total}))
+        severity = _worse(severity, "info")
+    if severity == "ok":
+        return Finding("defender", "ok", "defender_ok", actions=["security"])
+    line = "defender_threats" if any(key == "item_threat" for key, _ in items) else \
+        "defender_weakened" if severity == "warning" else "defender_notes"
+    return Finding("defender", severity, line, {"n": len(items)}, items, ["security"])
+
+
+def check_browser_policies(facts):
+    found = facts.get("browser_policies")
+    if found is None:
+        return unknown("browser_policies")
+    if not found:
+        return Finding("browser_policies", "ok", "browser_ok")
+    items = [("item_policy_" + f["kind"], {"browser": f["browser"], "value": f["value"]}) for f in found[:8]]
+    if _is_managed(facts):
+        return Finding("browser_policies", "info", "browser_forced", {"n": len(found)},
+                       items + [("item_managed", {})])
+    return Finding("browser_policies", "warning", "browser_forced", {"n": len(found)}, items)
+
+
+def check_root_certificates(facts):
+    found = facts.get("added_roots")
+    if found is None:
+        return unknown("root_certificates")
+    if not found:
+        return Finding("root_certificates", "ok", "roots_ok")
+    items = [("item_root_user" if f["user"] else "item_root", {"name": f["name"]}) for f in found[:8]]
+    return Finding("root_certificates", "info", "roots_added", {"n": len(found)}, items)
+
+
+def check_accounts(facts):
+    users, settings = facts.get("local_users"), facts.get("account_settings")
+    if users is None and settings is None:
+        return unknown("accounts")
+    managed_pc = _is_managed(facts)
+    items, severity = [], "ok"
+    enabled = {u.get("name", "").lower(): u for u in users or [] if u.get("enabled")}
+    for user in enabled.values():
+        rid = (user.get("sid") or "").rpartition("-")[2]
+        if rid == "501":
+            items.append(("item_guest_on", {"name": user.get("name") or "?"}))
+            severity = _worse(severity, "warning")
+        elif rid == "500":
+            items.append(("item_builtin_admin_on", {"name": user.get("name") or "?"}))
+            severity = _worse(severity, "info" if managed_pc else "warning")
+    for name in (settings or {}).get("hidden") or []:
+        if name.lower() in enabled:  # an account in use that the sign-in screen does not show
+            items.append(("item_account_hidden", {"name": name}))
+            severity = _worse(severity, "warning")
+    if (settings or {}).get("autologon_password"):
+        items.append(("item_autologon_password", {}))
+        severity = _worse(severity, "warning")
+    if not items:
+        return Finding("accounts", "ok", "accounts_ok")
+    return Finding("accounts", severity, "accounts_risky", {"n": len(items)}, items, ["accounts"])
+
+
+def check_network_exposure(facts):
+    firewall, desktop = facts.get("firewall"), facts.get("remote_desktop")
+    if firewall is None and desktop is None:
+        return unknown("network_exposure")
+    items, severity = [], "ok"
+    # Profiles turned off, unless another firewall registered with Security Center does the job. The domain profile
+    # applies only to PCs in a domain
+    others = [name for name in facts.get("firewall_products") or [] if "windows" not in name.lower()]
+    profiles = ["private", "public"] + (["domain"] if (facts.get("managed") or {}).get("domain") else [])
+    off = [p for p in profiles if firewall and firewall.get(p) is False]
+    if off and not others:
+        items += [("item_firewall_off_" + p, {}) for p in off]
+        severity = _worse(severity, "problem" if "public" in off else "warning")
+    if facts.get("smb1"):
+        items.append(("item_smb1", {}))
+        severity = _worse(severity, "warning" if any("server" in name.lower() for name in facts["smb1"]) else "info")
+    if desktop and desktop["on"]:
+        items.append(("item_rdp_nla_off" if desktop["nla_off"] else "item_rdp_on", {}))
+        severity = _worse(severity, "warning" if desktop["nla_off"] else "info")
+    if desktop and desktop["wrapper"]:
+        items.append(("item_rdp_wrapper", {}))
+        severity = _worse(severity, "info")
+    if not items:
+        return Finding("network_exposure", "ok", "exposure_ok", actions=["firewall"])
+    return Finding("network_exposure", severity, "exposure_open", {"n": len(items)}, items, ["firewall"])
+
+
+def check_remote_tools(facts):
+    software_found = facts.get("software")
+    if software_found is None:
+        return None
+    names = []
+    for title, _ in software_found["programs"].values():
+        for pattern, name in REMOTE_TOOLS:
+            if pattern.search(title) and name not in names:
+                names.append(name)
+    if not names:
+        return None  # nothing to point out
+    return Finding("remote_tools", "info", "remote_installed", {"names": ", ".join(names)}, actions=["apps"])
+
+
+def check_bitlocker(facts):
+    state = facts.get("bitlocker")
+    if state is None:
+        return unknown("bitlocker", "unknown_admin" if facts.get("admin") is False else "unknown_read")
+    conversion, protection, keys = state.get("conversion"), state.get("protection"), state.get("recovery") or []
+    if conversion in (None, 0):
+        return Finding("bitlocker", "ok", "bitlocker_off")
+    # Encrypted without protection: device encryption waiting for a Microsoft account, or BitLocker suspended
+    if protection != 1:
+        return Finding("bitlocker", "info", "bitlocker_suspended", actions=["encryption"])
+    if not keys:
+        return Finding("bitlocker", "warning", "bitlocker_no_key", actions=["encryption"])
+    key_id = keys[0].strip("{}")[:8].upper()
+    return Finding("bitlocker", "info", "bitlocker_key", {"id": key_id}, actions=["encryption"])
 
 
 VERDICTS = {check: globals()["check_" + check] for check, _ in CHECKS}

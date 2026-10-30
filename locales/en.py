@@ -339,6 +339,10 @@ TEXTS = {
         "act_apps": "Installed apps",
         "act_system_properties": "Startup and Recovery",
         "act_uac": "UAC settings",
+        "act_date_time": "Date & time",
+        "act_accounts": "Other users",
+        "act_firewall": "Firewall",
+        "act_encryption": "Device encryption",
     },
     "themes": {"navy": "Navy", "midnight": "Midnight", "light": "Light"},
     "categories": {
@@ -1089,13 +1093,18 @@ TEXTS = {
                               "“downloaded from the internet” mark off, Windows and Office stop treating downloaded "
                               "files with care. Policies that turn Microsoft Defender off, hide Windows Security in "
                               "Settings or silence its notifications are noted too; on a PC no organization manages, "
-                              "Tamper Protection keeps Defender on despite them."),
+                              "Tamper Protection keeps Defender on despite them. "
+                              "With the blocklist of vulnerable drivers off, Windows loads drivers known to let "
+                              "malware into the kernel; some RGB and fan tools ask to turn it off."),
         "secure_boot": ("Secure Boot and TPM",
                         "Windows 11 and the anti-cheats of some games need UEFI boot, Secure Boot and TPM 2.0: Riot "
                         "Vanguard (Valorant, League of Legends) and the anti-cheats of the latest Battlefield and "
                         "Call of Duty refuse to start without them. All three are turned on in the BIOS: boot mode "
                         "UEFI (if the disk is MBR, convert it with mbr2gpt first), Secure Boot, and fTPM or PTT for "
-                        "the TPM."),
+                        "the TPM. "
+                        "Secure Boot's Microsoft certificates of 2011 expired in 2026; Windows replaces them with "
+                        "those of 2023 by itself, and a PC that has not finished it gets no new protections of the "
+                        "boot process. A failed replacement is listed with its error code."),
         "video_memory": ("Video memory",
                          "Windows reported that the desktop ran out of video memory and had to keep moving graphics "
                          "out of it and back, which makes windows, videos and games stutter. It happens when games, a "
@@ -1155,6 +1164,71 @@ TEXTS = {
                           "a password. Delete the “Debugger” value under HKLM\\SOFTWARE\\Microsoft\\Windows "
                           "NT\\CurrentVersion\\Image File Execution Options\\<program>, or undo the change in the "
                           "tool that made it, and scan the PC with an antivirus if you did not make it yourself."),
+        "recovery_env": ("Recovery environment",
+                         "The Windows Recovery Environment starts when Windows cannot: it repairs the start, rolls "
+                         "back to a restore point or an earlier update, and resets the PC. When it is turned off, a "
+                         "PC that does not start can only be repaired from a USB stick, and the restore point "
+                         "SimpleTool makes before changes cannot be used then. Turn it back on with “reagentc "
+                         "/enable” in a command prompt run as administrator; if that fails, the recovery partition is "
+                         "missing or too small."),
+        "time_sync": ("Clock",
+                      "Whether Windows keeps its clock right through the internet time service. A clock minutes off "
+                      "breaks secure websites, sign-in to accounts, Windows Update and online games, and logs and "
+                      "files show wrong times. Windows synchronises at least once a week; when it reports that it "
+                      "could not, press Sync now in Settings → Time & language → Date & time, and check that the "
+                      "Windows Time service is not disabled."),
+        "defender": ("Microsoft Defender",
+                     "Threats Microsoft Defender found and could not remove, the folders, file types and programs it "
+                     "was told not to scan, and Tamper Protection, which stops other programs from turning Defender "
+                     "off. Microsoft warns against excluding whole drives, user and temporary folders, every file of "
+                     "a common type, or the programs that run scripts: malware hides exactly there, and malware with "
+                     "administrator rights adds such exclusions itself. Review them in Windows Security → Virus & "
+                     "threat protection → Manage settings → Exclusions, remove what you do not recognise, and run a "
+                     "full scan if threats remain."),
+        "network_exposure": ("Network exposure",
+                             "What other devices on the network can reach on this PC. With the firewall off for "
+                             "public networks, anyone in a café or hotel network can connect to the PC's services. "
+                             "SMB1, the old file sharing protocol WannaCry spread through, is no longer installed "
+                             "with Windows: remove it in Windows features unless a very old device needs it. Remote "
+                             "Desktop without Network Level Authentication shows the sign-in screen to anyone and "
+                             "lets them try passwords. Windows Security shows the firewall of each network."),
+        "browser_policies": ("Browser policies",
+                             "Browser settings forced through policies: extensions installed so that they cannot be "
+                             "removed, the start page, the new tab page, the search engine and the proxy. The browser "
+                             "then says “Managed by your organization”. Workplaces do this on purpose; on a home PC "
+                             "it is how adware and browser hijackers keep their extension and search page after every "
+                             "attempt to change them back. Remove what you do not recognise from HKLM and "
+                             "HKCU\\SOFTWARE\\Policies\\<browser> and from Firefox's policies.json (Malwarebytes "
+                             "AdwCleaner does this), uninstall the program that put them there and scan the PC with "
+                             "an antivirus."),
+        "root_certificates": ("Trusted certificates",
+                              "Root certificates added to this PC beyond those of Microsoft's root program. A root "
+                              "certificate lets its owner issue certificates for any website, so a program that "
+                              "installs one can read the PC's encrypted connections. Antiviruses that scan HTTPS, ad "
+                              "blockers such as AdGuard, Fiddler and developers' own certificates add one on purpose; "
+                              "adware has done the same to inject ads (Superfish). If you do not recognise one, "
+                              "remove it in certmgr.msc → Trusted Root Certification Authorities, or uninstall the "
+                              "program it came with."),
+        "accounts": ("Accounts",
+                     "Accounts that weaken protection: the Guest account, which signs in without a password; the "
+                     "built-in Administrator, which runs everything with full rights and without UAC prompts; "
+                     "accounts in use that are hidden from the sign-in screen; and a password for automatic sign-in "
+                     "kept in plain text in the registry, where any program can read it. Turn off the accounts you do "
+                     "not use in Settings → Accounts or with “net user <name> /active:no”, and set up automatic "
+                     "sign-in with Sysinternals Autologon, which keeps the password encrypted."),
+        "remote_tools": ("Remote control programs",
+                         "Programs that let someone control this PC over the internet. They are useful when people "
+                         "you know help you, but scammers who call “from Microsoft”, a bank or support ask to install "
+                         "exactly these, then empty accounts or install malware. Nobody genuine calls first and asks "
+                         "for remote access. Uninstall the ones you do not use; an open session is always visible and "
+                         "can be closed at any moment."),
+        "bitlocker": ("Drive encryption",
+                      "BitLocker or device encryption of the Windows drive. Encryption protects files if the PC is "
+                      "lost or stolen, but after a firmware update, a new motherboard or a reset of the TPM Windows "
+                      "asks for the 48-digit recovery key, and without it nobody can read the files. Windows 11 turns "
+                      "device encryption on by itself after a Microsoft account signs in. Find the key at "
+                      "aka.ms/myrecoverykey (its ID is shown here) or save it from Settings → Privacy & security → "
+                      "Device encryption; an encrypted drive without protection is not protected until a key is set."),
     },
     "diag_lines": {
         "unknown_read": "Could not read this on this PC.",
@@ -1570,6 +1644,56 @@ TEXTS = {
         "item_firewall_block": "The firewall blocks {name}: it cannot update or report",
         "item_untrusted_vendor": "Certificates of {name} are marked as untrusted: its programs cannot start",
         "item_battery_cycles": "Charge cycles: {n}",
+        "recovery_ok": "The recovery environment is on",
+        "recovery_off": "The recovery environment is turned off",
+        "time_ok": "The clock last synchronised on {date}",
+        "time_quiet": "No synchronisation problems in the last {days} days",
+        "time_stuck": "Windows could not set the clock from the internet ({date})",
+        "defender_ok": "No threats left and no risky exclusions",
+        "defender_threats": "Microsoft Defender found threats it did not remove",
+        "defender_weakened": "Microsoft Defender is weakened: {n}",
+        "defender_notes": "Worth knowing about Microsoft Defender: {n}",
+        "item_threat": "Threat not removed: {name}",
+        "item_threat_hosts": "Defender keeps reporting the edited hosts file ({name})",
+        "item_exclusion_broad": "Excluded from scanning: {name}",
+        "item_exclusions": "Exclusions in all: {n}",
+        "item_tamper_off": "Tamper Protection is off: other programs can turn Defender off",
+        "exposure_ok": "The firewall is on; nothing old or open is exposed",
+        "exposure_open": "Open to the network: {n}",
+        "item_firewall_off_private": "The firewall is off for private networks",
+        "item_firewall_off_public": "The firewall is off for public networks",
+        "item_firewall_off_domain": "The firewall is off for the domain network",
+        "item_smb1": "SMB1, the old file sharing protocol, is installed",
+        "item_rdp_on": "Remote Desktop accepts connections",
+        "item_rdp_nla_off": "Remote Desktop accepts connections without Network Level Authentication",
+        "item_rdp_wrapper": "The Remote Desktop service runs another library than Windows' own (RDP Wrapper)",
+        "browser_ok": "No browser settings are forced by policies",
+        "browser_forced": "Browser settings forced by policies: {n}",
+        "item_policy_extensions": "{browser}: extensions installed by force: {value}",
+        "item_policy_homepage": "{browser}: start page {value}",
+        "item_policy_newtab": "{browser}: new tab page {value}",
+        "item_policy_search": "{browser}: search engine {value}",
+        "item_policy_startup": "{browser}: pages opened at start: {value}",
+        "item_policy_proxy": "{browser}: proxy {value}",
+        "roots_ok": "Only root certificates of Microsoft's program",
+        "roots_added": "Root certificates added: {n}",
+        "item_root": "{name}",
+        "item_root_user": "{name} (for this account)",
+        "accounts_ok": "No risky accounts and no stored sign-in password",
+        "accounts_risky": "Account settings that weaken protection: {n}",
+        "item_guest_on": "The Guest account ({name}) is on",
+        "item_builtin_admin_on": "The built-in Administrator ({name}) is on",
+        "item_account_hidden": "{name} is in use but hidden from the sign-in screen",
+        "item_autologon_password": "The password for automatic sign-in is kept in plain text",
+        "remote_installed": "Remote control programs installed: {names}",
+        "bitlocker_off": "The Windows drive is not encrypted",
+        "bitlocker_suspended": "The Windows drive is encrypted but not protected yet",
+        "bitlocker_no_key": "The Windows drive is encrypted without a recovery password",
+        "bitlocker_key": "The Windows drive is encrypted; recovery key ID {id}…",
+        "secure_ca": "Secure Boot certificates of 2023 are not in place yet",
+        "item_ca2023_pending": "Windows has not finished replacing the certificates of 2011",
+        "item_ca2023_failed": "Replacing the certificates failed (error {code})",
+        "item_blocklist_off": "The blocklist of vulnerable drivers is turned off",
     },
     "reasons": {
         "access_denied": ("Not enough rights to read some settings.",
