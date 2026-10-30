@@ -17,10 +17,21 @@ description: How to run and drive the SimpleTool exe to verify a change in the r
 - Clicks: Tk ignores posted WM_LBUTTON messages (it uses the real pointer), so menus and buttons need a real
   click (SetCursorPos + mouse_event, cursor put back). Ask the user before taking the mouse. A Tk popup menu
   is a `#32768` window; its rectangle gives the item positions (first item about 48 px below the top).
+- Never click blind: a real click goes to whatever window is on top at that point. A copy started with `runas`
+  opened behind the user's maximised IDE and three clicks landed in the IDE. `drive.ps1` raises the test copy's
+  windows first and clicks only when the window under the point belongs to the test copy (it says NOT clicked
+  otherwise); keep it that way in any new helper.
+- Without administrator rights: `drive.ps1 startlimited` (runas /trustlevel:0x20000 through a .cmd that sets
+  LOCALAPPDATA). The app first asks to restart as administrator in a modal dialog ("Continue without rights" on
+  the left); while a modal dialog is open the main window ignores clicks and menus do not open. Source pictures
+  of the non-admin path: run shots.py from a .cmd through the same runas.
+- Dialog titles are in the app's language ("Доступно обновление", "Что нового", "Нужны права администратора"):
+  `drive.ps1 windows` lists the test copy's windows by process id, `pidwins <pid>` lists everything of one process.
 - Onefile processes: a healthy copy is a launcher without python312.dll plus a child app with python312.dll
   from its own `%TEMP%\_MEI*`. Check modules with `(Get-Process -Id <pid>).Modules`.
 - Clean up: `taskkill /T /F` the launcher (a forced kill leaves its `_MEI` folder: delete it), never touch
-  `%TEMP%\_MEI000021202` or the user's own copy.
+  `%TEMP%\_MEI000021202` or the user's own copy. Take the folder from the app process's python312.dll module
+  before the kill and delete only that one: deleting `_MEI*` by a pattern is refused as a sweep of shared temp.
 - Save .ps1 helpers as UTF-8 with BOM: Windows PowerShell 5.1 reads them as ANSI otherwise and breaks Cyrillic.
 - Pictures of pages without the mouse (new cards, texts in ru/uk): `python .claude/skills/verify/shots.py <lang> <out dir> context:classic_menu system:registry_backup:1` builds the window from source with its own LOCALAPPDATA, waits for the scan, switches pages, expands cards, scrolls, and saves PNGs.
-- `drive.ps1 <start|procs|shot NAME|click DX DY|clickabs X Y|windows|shotwin TITLE NAME|kill>` in this folder drives the test exe: copy it next to `verify-src\dist\SimpleTool.exe` and `verify-data` (its LOCALAPPDATA). Pitfalls: PowerShell passes `$null` to a .NET string parameter as an empty string, so `FindWindowW($null, title)` finds nothing (the script wraps it in C#); a minimised window gives a black PrintWindow; while the user works at the PC, windows get minimised or closed under the test, so take pictures without the mouse where possible.
+- `drive.ps1 <start|startlimited|procs|shot NAME|click DX DY|clickabs X Y|wheel X,Y [N]|windows|pidwins PID|menushot NAME|shotwin TITLE NAME|kill>` in this folder drives the test exe: copy it next to `verify-src\dist\SimpleTool.exe` and `verify-data` (its LOCALAPPDATA). Pitfalls: PowerShell passes `$null` to a .NET string parameter as an empty string, so `FindWindowW($null, title)` finds nothing (the script wraps it in C#); a minimised window gives a black PrintWindow; while the user works at the PC, windows get minimised or closed under the test, so take pictures without the mouse where possible.
