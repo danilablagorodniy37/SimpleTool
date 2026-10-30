@@ -276,6 +276,7 @@ TEXTS = {
         "mem_pick_empty": "No other programs are running.",
         "mem_size_mb": "{n} MB",
         "mem_size_gb": "{n} GB",
+        "mem_size_tb": "{n} TB",
         "tray_open": "Open SimpleTool",
         "tray_limiter": "Memory limiter",
         "tray_exit": "Exit",
@@ -778,14 +779,21 @@ TEXTS = {
                      "How busy the processor was during the second SimpleTool measured it. A constant load above 80% "
                      "while nothing heavy is running means a program works in the background: the list shows which. "
                      "Check a program you do not know with your antivirus. Updates and indexing keep the processor "
-                     "busy for a while after the PC starts, so check again in a few minutes."),
+                     "busy for a while after the PC starts, so check again in a few minutes. "
+                     "SimpleTool also measures how much time drivers spend on hardware interrupts: a driver that "
+                     "keeps one processor busy with them makes sound crackle and games stutter while the total load "
+                     "looks low. LatencyMon names the driver; most often it is a network, sound, USB or storage "
+                     "driver that needs an update."),
         "power_plan": ("Power plan",
                        "The Power saver plan and the Windows 11 power mode “Best power efficiency” hold the processor "
                        "at lower speeds. That saves the battery of a laptop, but on a plugged-in PC everything gets "
                        "slower, games most of all. Choose the Balanced or High performance plan, and on Windows 11 the "
                        "Balanced or Best performance power mode. "
                        "The same happens when the plan turns turbo boost off or caps the processor's frequency or "
-                       "maximum state."),
+                       "maximum state. "
+                       "A plan that never lets the processor rest (idle turned off, as some tweaking tools set it) "
+                       "keeps it at 100% in Task Manager, hot and loud. Sleep can disappear too: when a tool turns "
+                       "Modern Standby off on a PC that has no other sleep state, or a policy forbids standby."),
         "refresh_rate": ("Display refresh rate",
                          "How many times a second each display draws a new picture. Many monitors support 120 or "
                          "144 Hz and more but run at 60 Hz after a driver update or with the wrong cable: motion is "
@@ -796,7 +804,10 @@ TEXTS = {
                          "Programs that start by themselves when you sign in to Windows. Each one makes the start "
                          "slower and keeps using memory and the processor in the background. More than ten is a lot: "
                          "turn off the ones you do not need right away in Startup apps. They still work when you open "
-                         "them yourself."),
+                         "them yourself. "
+                         "From the last starts Windows measured, the check also names the programs that cost the "
+                         "most, as Task Manager's “Startup impact” counts it: more than a second of processor time or "
+                         "more than 3 MB read from the drive is high."),
         "game_dvr": ("Background game recording",
                      "Xbox Game Bar can record the last minutes of every game all the time, so that a clip can be saved "
                      "afterwards. The constant recording takes graphics and drive resources and lowers FPS, especially "
@@ -817,7 +828,10 @@ TEXTS = {
                         "take your files with it. Copy your important files somewhere else now, then replace the "
                         "drive. "
                         "Run as administrator, SimpleTool also reads how worn each SSD is: at 100% it has reached "
-                        "the wear its maker rates it for."),
+                        "the wear its maker rates it for. "
+                        "NVMe drives and hard disks are read directly, as CrystalDiskInfo does: an NVMe drive's "
+                        "critical warning, spare blocks, data errors and how much of its rated endurance is used; a "
+                        "hard disk's reallocated, pending and unreadable sectors."),
         "system_drive": ("Windows drive",
                          "The type of drive Windows is on. A hard disk (HDD) is many times slower than an SSD at the "
                          "small reads Windows does all the time: a slow start, freezes when programs open and the disk "
@@ -843,7 +857,9 @@ TEXTS = {
                     "Monitor shows every event and what came before it; the stop code helps to find the cause. "
                     "When Windows hangs while shutting down and the PC is then turned off, it also counts as turned "
                     "off without shutting down: the list says when that happened. A driver or program that does not "
-                    "let Windows finish is the usual cause."),
+                    "let Windows finish is the usual cause. "
+                    "Next to each stop code the list says what it usually points to: a driver, the memory, the "
+                    "graphics, the drive, the hardware or sleep."),
         "app_crashes": ("Program crashes",
                         "Programs that closed with an error or stopped responding over the last 14 days, according to "
                         "the Windows log. One program crashing again and again usually needs an update or a reinstall; "
@@ -899,7 +915,8 @@ TEXTS = {
         "battery": ("Battery wear",
                     "How much charge the battery holds compared with when it was new. Every battery wears out; below "
                     "60% the laptop runs noticeably shorter on battery, and below 40% it may turn off suddenly under "
-                    "load. The only fix is a new battery."),
+                    "load. The only fix is a new battery. "
+                    "Laptops that report it also show the number of charge cycles."),
         "antivirus": ("Antivirus",
                       "Which antiviruses Windows Security Center sees. Without real-time protection the PC is open to "
                       "malware. Two active antiviruses at once conflict: they scan the same files twice, slow the PC "
@@ -911,7 +928,10 @@ TEXTS = {
                            "optimization tools often leave this behind), Windows stops getting fixes. Open Windows "
                            "Update and install what it offers. "
                            "An update that keeps failing is listed with its error code, which Microsoft's support "
-                           "site explains."),
+                           "site explains. "
+                           "Also noted: updates taken from another server (WSUS) on a PC no organization manages, "
+                           "policies that block Windows Update, and updates paused far beyond the five weeks Settings "
+                           "allows. Tools that “stop updates” leave these behind."),
         "pending_restart": ("Restart pending",
                             "Windows has installed updates that are finished only after a restart. Until then old and "
                             "new files live side by side, which can cause errors and slow the PC down, and new updates "
@@ -1037,7 +1057,10 @@ TEXTS = {
                           "without them, but what they are for breaks: updates, installing programs, sound, the "
                           "firewall, the clock or Xbox. Set their startup type back to Automatic or Manual in "
                           "Services, as Windows has it, and restart the PC. Services that only take away one feature "
-                          "are noted."),
+                          "are noted. "
+                          "Among them: Delivery Optimization, without which Windows Update and the Store fail with "
+                          "error 0x80004002, the service that repairs Windows Update, and the Security Center service "
+                          "Windows Security relies on."),
         "system_files": ("System files",
                          "Whether Windows has recorded damage in its own system files (the component store). Damaged "
                          "files cause errors, updates that do not install and features that do not work. Run “DISM "
@@ -1061,13 +1084,77 @@ TEXTS = {
                               "back on: set EnableLUA to 1 under "
                               "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System and restart. For "
                               "Spectre and Meltdown delete FeatureSettingsOverride and FeatureSettingsOverrideMask "
-                              "under HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management."),
+                              "under HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management. "
+                              "With SmartScreen off, unknown downloaded programs run without a warning, and with the "
+                              "“downloaded from the internet” mark off, Windows and Office stop treating downloaded "
+                              "files with care. Policies that turn Microsoft Defender off, hide Windows Security in "
+                              "Settings or silence its notifications are noted too; on a PC no organization manages, "
+                              "Tamper Protection keeps Defender on despite them."),
         "secure_boot": ("Secure Boot and TPM",
                         "Windows 11 and the anti-cheats of some games need UEFI boot, Secure Boot and TPM 2.0: Riot "
                         "Vanguard (Valorant, League of Legends) and the anti-cheats of the latest Battlefield and "
                         "Call of Duty refuse to start without them. All three are turned on in the BIOS: boot mode "
                         "UEFI (if the disk is MBR, convert it with mbr2gpt first), Secure Boot, and fTPM or PTT for "
                         "the TPM."),
+        "video_memory": ("Video memory",
+                         "Windows reported that the desktop ran out of video memory and had to keep moving graphics "
+                         "out of it and back, which makes windows, videos and games stutter. It happens when games, a "
+                         "browser with many tabs, video editors and other programs that use the graphics card are "
+                         "open together. Close what you do not need while playing, lower the texture quality in games "
+                         "and update the graphics driver; a card with more video memory helps for good."),
+        "boot_time": ("Startup time",
+                      "How long Windows takes to start, as Windows measures it itself, and the drivers, services and "
+                      "devices it named as slowing several starts down. A driver that delays every start by seconds "
+                      "usually belongs to an anti-cheat, an old utility or a device: update it, or remove the program "
+                      "it came with if you no longer use it. What slows the shutdown is listed too. Windows keeps "
+                      "these measurements for administrators only, through the Diagnostic Policy Service."),
+        "xbox_network": ("Network for games",
+                         "Settings that tweaking tools change and that networking in games relies on. Xbox party chat "
+                         "and many multiplayer games connect through Teredo, which runs in the IP Helper service; "
+                         "without it the Xbox app reports “Teredo is unable to qualify”. Merging services into shared "
+                         "processes breaks the Game Bar and Xbox controllers. Turning IPv6 off with the value "
+                         "0xFFFFFFFF delays every start by five seconds, and Microsoft does not recommend turning "
+                         "IPv6 off at all. Undo these in the tool that changed them, or set them back as Windows has "
+                         "them."),
+        "drive_link": ("Drive connection",
+                       "How the NVMe drives are connected: the PCI Express generation and the number of lanes, "
+                       "compared with what each drive supports. A drive on half its lanes or in a slot of an older "
+                       "generation works, but reads and writes large files slower: a PCIe 4.0 drive in a PCIe 3.0 "
+                       "slot reaches about half its speed. Motherboards often have one slower M.2 slot, or share "
+                       "lanes between slots and SATA ports: the board's manual says which. Move the drive to the "
+                       "fastest M.2 slot if that matters to you."),
+        "volume_health": ("File system",
+                          "Whether Windows found errors in the file system of a drive (NTFS or ReFS), or marked it to "
+                          "be checked at the next start. File system errors cause files that do not open, folders "
+                          "that disappear and programs that crash. Windows scans drives in the background by itself; "
+                          "when it asks for a repair, open the drive's Properties → Tools → Check, or run “chkdsk C: "
+                          "/f” as administrator and restart. Copy important files first if the drive also reports "
+                          "errors of its own."),
+        "app_platform": ("Parts of Windows",
+                         "Parts of Windows that “debloat” tools remove although Windows needs them: the Microsoft "
+                         "Store (installing and updating Store apps, some games), the Windows Security app, the "
+                         "package Start, the taskbar and Settings are built from on Windows 11, App Installer (winget "
+                         "and .msix installers), the Xbox sign-in of PC Game Pass games, and the WebView2 runtime "
+                         "that Widgets, the new Teams and Outlook and many other programs run on. Bring back what is "
+                         "missing: the Store with “wsreset -i” as administrator, WebView2 from Microsoft's website, "
+                         "the others from the Store or with a repair install of Windows that keeps your files."),
+        "wmi_health": ("WMI",
+                       "WMI is how programs, the tools of drivers and Windows itself read information about the PC. "
+                       "When its repository or a provider is damaged, Task Manager, device tools, antiviruses, game "
+                       "launchers and this check show errors or empty data. Windows' own check of the repository runs "
+                       "when SimpleTool runs as administrator. To repair it, run “winmgmt /salvagerepository” as "
+                       "administrator and restart; if WMI keeps failing, a repair install of Windows that keeps your "
+                       "files fixes it."),
+        "blocked_tools": ("Blocked programs",
+                          "Programs blocked from starting through Image File Execution Options, tools locked by "
+                          "policies, and security software blocked in the firewall or by untrusted certificates. "
+                          "Tweaking tools block Windows programs this way, often with systray.exe, which starts and "
+                          "quits at once; blocking Windows Security or Defender takes protection away and makes their "
+                          "services fail. Malware does the same to antiviruses and Task Manager, and a program of the "
+                          "sign-in screen that starts something else lets anyone open a command prompt there without "
+                          "a password. Delete the “Debugger” value under HKLM\\SOFTWARE\\Microsoft\\Windows "
+                          "NT\\CurrentVersion\\Image File Execution Options\\<program>, or undo the change in the "
+                          "tool that made it, and scan the PC with an antivirus if you did not make it yourself."),
     },
     "diag_lines": {
         "unknown_read": "Could not read this on this PC.",
@@ -1377,6 +1464,112 @@ TEXTS = {
         "item_tpm_missing": "No TPM 2.0",
         "ethernet_slow": "{name} is connected at {speed} Mb/s",
         "system_slow_bus": "Windows is on a {bus} drive: {name}",
+        "unknown_dps": "Windows records this through the Diagnostic Policy Service, which is disabled.",
+        "effect_security": "Windows Security cannot see the antivirus and the firewall",
+        "effect_diagnostics": "Windows stops measuring the start and diagnosing problems",
+        "interrupts_high": "Hardware interrupts take {percent}% of a processor: a driver keeps it busy",
+        "item_interrupts": "Interrupts and deferred procedure calls: up to {percent}% of one processor",
+        "idle_off": "“{name}” never lets the processor rest",
+        "sleep_off": "This PC cannot sleep",
+        "item_sleep_aoac_override": "Modern Standby is turned off (PlatformAoAcOverride = 0) and the PC has no other "
+                                    "sleep state",
+        "item_sleep_standby_policy": "A policy forbids the standby states (S1–S3)",
+        "startup_heavy": "Programs that start with Windows: {n}; {names} slow the start the most",
+        "item_startup_heavy": "{name}: {seconds} s of processor time and {size} read at each start",
+        "item_disk_nvme": "{name} ({media}, {bus}): {health}, {wear}% of its rated endurance used, {hours} h on, "
+                          "{written} written, {unsafe} unsafe shutdowns",
+        "item_disk_hdd": "{name} ({media}, {bus}): {health}, {hours} h on",
+        "nvme_critical": "{name} reports a critical warning: it is failing",
+        "nvme_spare": "{name} has only {spare}% of its spare blocks left",
+        "nvme_media_errors": "{name} could not read or write data {n} times",
+        "nvme_hot": "{name} is overheating: {temperature} °C",
+        "hdd_sectors": "{name} has bad sectors: {reallocated} reallocated, {pending} pending, {uncorrectable} "
+                       "unreadable",
+        "kind_repair": "The volume needs a repair",
+        "item_bsod_cause": "{date}: stop code {code}, usually {cause}",
+        "stop_driver": "a driver",
+        "stop_memory": "the memory or a driver",
+        "stop_graphics": "the graphics driver or card",
+        "stop_hardware": "the hardware: overclocking, heat or the power supply",
+        "stop_disk": "the drive, its cable or its driver",
+        "stop_system": "damaged system files or the drive",
+        "stop_sleep": "a driver while the PC went to sleep or woke up",
+        "stop_usb": "a USB device or its driver",
+        "security_changed": "Security settings changed: {n}",
+        "item_smartscreen_off": "SmartScreen is turned off: downloaded programs run without a check",
+        "item_zone_off": "Downloaded files are not marked as coming from the internet",
+        "item_defender_policy": "Microsoft Defender's protection is turned off by a policy ({names})",
+        "item_defender_policy_ignored": "A policy tries to turn Microsoft Defender off ({names}); Tamper Protection "
+                                        "keeps it on",
+        "item_defender_policy_pending": "A policy turns Microsoft Defender off ({names}) and Tamper Protection is "
+                                        "off: it may stop after a restart",
+        "item_hidden_windowsdefender": "Windows Security is hidden in Settings",
+        "item_hidden_windowsupdate": "Windows Update is hidden in Settings",
+        "item_defender_quiet": "Windows Security notifications are turned off",
+        "item_managed": "An organization manages this PC: these may be its policies",
+        "wu_server": "Updates are taken from {server} instead of from Microsoft",
+        "wu_blocked": "Policies block Windows Update: {names}",
+        "wu_paused": "Updates are paused until {date}",
+        "vram_short": "The desktop ran out of video memory {n} times in the last {days} days, last on {date} ({name})",
+        "boot_time_ok": "Windows starts in about {seconds} s; nothing slows it down again and again",
+        "boot_slowed": "Windows starts in about {seconds} s; slowed down by {names}",
+        "item_slow_driver": "Driver {name}: +{seconds} s, in {n} starts",
+        "item_slow_service": "Service {name}: +{seconds} s, in {n} starts",
+        "item_slow_device": "Device {name}: +{seconds} s, in {n} starts",
+        "item_slow_shutdown_app": "Program {name} delays the shutdown: +{seconds} s, {n} times",
+        "item_slow_shutdown_device": "Device {name} delays the shutdown: +{seconds} s, {n} times",
+        "item_slow_shutdown_service": "Service {name} delays the shutdown: +{seconds} s, {n} times",
+        "xbox_ok": "IPv6 and Teredo are as Windows sets them",
+        "xbox_changed": "Network settings changed: {n}",
+        "item_ipv6_delay": "IPv6 is turned off with 0xFFFFFFFF: every start waits 5 seconds longer",
+        "item_teredo_off": "Teredo is turned off: Xbox party chat and some multiplayer games do not connect",
+        "item_ip_helper_off": "The IP Helper service (iphlpsvc) is disabled: Teredo cannot run",
+        "item_svchost_merged": "Services are merged into shared processes: the Game Bar and Xbox controllers may not "
+                               "work",
+        "item_ipv6_off": "IPv6 is turned off: some programs and Windows features need it",
+        "drive_link_ok": "NVMe drives are connected at their full speed",
+        "drive_link_slow": "{name} runs at PCIe {speed}.0 x{width}; it supports PCIe {max_speed}.0 x{max_width}",
+        "item_link_narrow": "{name}: x{width} of x{max_width} lanes (PCIe {speed}.0)",
+        "item_link_slower": "{name}: PCIe {speed}.0 instead of {max_speed}.0 (x{width})",
+        "item_link_full": "{name}: PCIe {speed}.0 x{width}",
+        "volumes_ok": "Drives without file system errors: {n}",
+        "volumes_damaged": "File system errors: {n}",
+        "item_volume_scan": "{drive} should be scanned for errors",
+        "item_volume_fix": "{drive} has errors Windows can fix while it runs",
+        "item_volume_repair": "{drive} needs a full repair (chkdsk /f)",
+        "item_volume_dirty": "{drive} will be checked at the next start",
+        "platform_ok": "The Store, Windows Security and WebView2 are in place",
+        "platform_missing": "Parts of Windows removed: {n}",
+        "item_no_store": "The Microsoft Store is removed",
+        "item_no_security_app": "The Windows Security app is removed",
+        "item_no_shell": "The Windows Feature Experience Pack (Start, taskbar, Settings) is removed",
+        "item_no_app_installer": "App Installer (winget) is removed",
+        "item_no_xbox_identity": "Xbox Identity Provider is removed: Game Pass games cannot sign in",
+        "item_no_webview2": "The WebView2 runtime is missing",
+        "item_removed_for_all": "removed for every account: Windows will not bring it back by itself",
+        "wmi_ok": "WMI answers",
+        "wmi_error": "WMI does not answer (error {code})",
+        "wmi_damaged": "The WMI repository is damaged (error {code})",
+        "blocked_ok": "No program is blocked from starting",
+        "blocked_protection": "Blocked or locked: {n}, protection among them",
+        "blocked_windows": "Windows programs blocked from starting: {n}",
+        "item_blocked_sign_in": "{name} on the sign-in screen starts {debugger} instead",
+        "item_blocked_hijack": "{name} starts {debugger} from a user folder instead",
+        "item_blocked_protection": "{name} is blocked: {debugger} starts instead",
+        "item_blocked_windows": "{name} is blocked: {debugger} starts instead",
+        "item_blocked_service": "so the service “{name}” cannot start",
+        "item_lock_taskmgr": "Task Manager is locked by a policy",
+        "item_lock_regedit": "Registry Editor is locked by a policy",
+        "item_lock_cmd": "The command prompt is locked by a policy",
+        "item_lock_run": "The Run dialog (Win+R) is removed by a policy",
+        "item_lock_control_panel": "Control Panel and Settings are locked by a policy",
+        "item_lock_folder_options": "Folder Options are locked by a policy",
+        "item_lock_disallow_run": "A policy forbids programs by name",
+        "item_lock_restrict_run": "A policy lets only listed programs run",
+        "item_lock_names": "Forbidden: {names}",
+        "item_firewall_block": "The firewall blocks {name}: it cannot update or report",
+        "item_untrusted_vendor": "Certificates of {name} are marked as untrusted: its programs cannot start",
+        "item_battery_cycles": "Charge cycles: {n}",
     },
     "reasons": {
         "access_denied": ("Not enough rights to read some settings.",

@@ -2,6 +2,32 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.11
+
+**Troubleshooting: what other tweaking tools left behind**
+- **Blocked programs** (new): programs blocked from starting through Image File Execution Options, and the service that fails because of it (Windows Security blocked with systray.exe makes its service fail at every start); tools locked by policies (Task Manager, Registry Editor, the command prompt, Run, Control Panel); security software blocked in the firewall or by untrusted certificates; a program of the sign-in screen that starts something else.
+- **Security settings** also look at SmartScreen, the "downloaded from the internet" mark of files, policies that turn Microsoft Defender off (and whether Tamper Protection ignores them), and Windows Security hidden in Settings or its notifications turned off. On a PC an organization manages these are notes.
+- **Windows Update** also notes updates taken from another server on a PC no organization manages (a server on the PC itself blocks them all), policies that block Windows Update, and updates paused far beyond the five weeks Settings allows.
+- **Disabled services** include Delivery Optimization, the Windows Update medic service and the Security Center, and note the Diagnostic Policy Service and the IP Helper service.
+- **Parts of Windows** (new): the Microsoft Store, the Windows Security app, the Windows 11 package of Start, the taskbar and Settings, App Installer, the Xbox sign-in of Game Pass games and the WebView2 runtime, removed by "debloat" tools. The Store is not expected on LTSC.
+- **Power plan** also notes a processor that never rests (idle turned off), and sleep taken away by turning Modern Standby off on a PC without another sleep state or by a policy.
+- **Network for games** (new): where Xbox gaming is installed, Teredo or the IP Helper service turned off and services merged into shared processes; on any PC, IPv6 turned off with 0xFFFFFFFF (every start waits 5 seconds longer) or at all.
+- **WMI** (new): WMI not answering, or its repository damaged according to Windows' own check (as administrator).
+
+**Troubleshooting: drives**
+- **Drive health** reads what NVMe drives and SATA hard disks report themselves, as CrystalDiskInfo does: an NVMe drive's critical warning, spare blocks, data errors and how much of its rated endurance is used; a hard disk's reallocated, pending and unreadable sectors (spun-down disks are not woken up). Windows' own counter could show no wear where the drive reports some. Each drive shows its hours on, the data written and its unsafe shutdowns.
+- **Drive connection** (new): an NVMe drive on fewer PCI Express lanes or an older generation than it supports, such as a PCIe 4.0 drive in a PCIe 3.0 slot. A slower link is read again while the drive is busy, so a link resting to save power is not taken for a slow slot.
+- **File system** (new): volumes Windows marked to be scanned, fixed or repaired, and drives to be checked at the next start. The NTFS event "the volume needs a repair" counts among drive errors.
+
+**Troubleshooting: starts and load**
+- **Startup time** (new): how long Windows takes to start, and the drivers, services and devices Windows itself names as slowing several starts or the shutdown down.
+- **Startup programs** name the programs that cost the most at the last starts, as Task Manager's "Startup impact" counts it.
+- **Processor load** also measures hardware interrupts and deferred procedure calls: a driver that keeps one processor busy with them makes sound crackle and games stutter while the total load looks low.
+- **Video memory** (new): the desktop running out of video memory, as Windows records it.
+- **Blue screens** say what each stop code usually points to; **battery wear** shows the charge cycles where the laptop reports them. Drive sizes of a terabyte and more are shown in TB.
+
+The check takes about a second longer.
+
 ## 0.10.3
 
 - **Smooth circles.** Tk draws circles and arcs without antialiasing, so the ring on the tweaks tile, the scan animation and the activity indicator in the footer looked jagged. The scan animation and the indicator are now drawn through Windows' own GDI+ (no extra library) into images, frame by frame and kept for the loop; the ring is computed pixel by pixel with soft edges, like the gradient buttons. Without GDI+ the old drawing stays as a fallback.

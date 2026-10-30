@@ -6,6 +6,32 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.11": {
+        "en": [
+            "Troubleshooting finds what other tweaking tools broke: programs blocked from starting (such as Windows "
+            "Security), protection turned off by policies, blocked updates, removed parts of Windows such as the "
+            "Store or WebView2, sleep taken away and the network settings Xbox games need.",
+            "Drives report their own health, as CrystalDiskInfo reads it, and an NVMe drive in a slower slot is "
+            "noticed. New checks show what slows the start of Windows down, the startup programs that cost the "
+            "most, interrupts that make sound crackle and file system errors Windows found.",
+        ],
+        "ru": [
+            "«Поиск проблем» находит, что сломали другие твикеры: программы, которым запрещён запуск (например, "
+            "«Безопасность Windows»), защиту, отключённую политиками, заблокированные обновления, удалённые части "
+            "Windows вроде Store или WebView2, отключённый сон и сетевые настройки, нужные играм Xbox.",
+            "Диски сообщают своё состояние напрямую, как в CrystalDiskInfo, и замечается NVMe-диск в более "
+            "медленном слоте. Новые проверки показывают, что замедляет запуск Windows, самые «дорогие» программы "
+            "автозагрузки, прерывания, из-за которых трещит звук, и ошибки файловой системы.",
+        ],
+        "uk": [
+            "«Пошук проблем» знаходить, що зламали інші твікери: програми, яким заборонено запуск (наприклад, "
+            "«Безпека Windows»), захист, вимкнений політиками, заблоковані оновлення, видалені частини Windows на "
+            "кшталт Store або WebView2, вимкнений сон і мережеві налаштування, потрібні іграм Xbox.",
+            "Диски повідомляють свій стан напряму, як у CrystalDiskInfo, і помічається NVMe-диск у повільнішому "
+            "слоті. Нові перевірки показують, що сповільнює запуск Windows, найбільш «дорогі» програми "
+            "автозавантаження, переривання, через які тріщить звук, і помилки файлової системи.",
+        ],
+    },
     "0.10.3": {
         "en": [
             "Smooth circles: the ring on the tweaks tile, the scan animation and the activity indicator are drawn "

@@ -36,7 +36,7 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, Ring, ScanRings,
                      Segmented, Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
 
-VERSION = "0.10.3"
+VERSION = "0.11"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -1399,6 +1399,9 @@ class App:
         mb = size / limiter.MB
         if mb < 1000:
             return self.t("mem_size_mb", n=round(mb))
+        if mb >= 1000 * 1024:  # what a drive has written over its life
+            tb = f"{mb / 1024 ** 2:.{digits}f}".rstrip("0").rstrip(".")
+            return self.t("mem_size_tb", n=tb if self.lang == "en" else tb.replace(".", ","))
         gb = f"{mb / 1024:.{digits}f}".rstrip("0").rstrip(".")
         return self.t("mem_size_gb", n=gb if self.lang == "en" else gb.replace(".", ","))
 

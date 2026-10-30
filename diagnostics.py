@@ -12,10 +12,13 @@ import glob
 import json
 import os
 import re
+import struct
 import subprocess
+import threading
 import time
 import uuid
 import winreg
+import xml.etree.ElementTree as ElementTree
 from ctypes import wintypes
 
 import engine
@@ -31,18 +34,21 @@ CHECKS = [
     ("kernel_memory", "performance"), ("pagefile", "performance"), ("cpu_load", "performance"),
     ("cpu_microcode", "performance"), ("x3d_cores", "performance"), ("power_plan", "performance"),
     ("graphics_driver", "performance"), ("display_output", "performance"), ("gpu_link", "performance"),
-    ("gpu_preference", "performance"), ("refresh_rate", "performance"), ("startup_apps", "performance"),
+    ("gpu_preference", "performance"), ("refresh_rate", "performance"), ("video_memory", "performance"),
+    ("startup_apps", "performance"), ("boot_time", "performance"),
     ("rgb_software", "performance"), ("conflicting_software", "performance"), ("game_dvr", "performance"),
-    ("boot_options", "performance"),
+    ("xbox_network", "performance"), ("boot_options", "performance"),
     ("throttling", "performance"), ("uptime", "performance"),
-    ("disk_space", "storage"), ("disk_health", "storage"), ("system_drive", "storage"), ("disk_errors", "storage"),
-    ("temp_files", "storage"),
+    ("disk_space", "storage"), ("disk_health", "storage"), ("system_drive", "storage"), ("drive_link", "storage"),
+    ("disk_errors", "storage"), ("volume_health", "storage"), ("temp_files", "storage"),
     ("crashes", "stability"), ("app_crashes", "stability"), ("crash_files", "stability"), ("gpu_resets", "stability"),
     ("live_kernel", "stability"), ("whea", "stability"),
     ("memory_test", "stability"), ("devices", "stability"), ("services", "stability"),
-    ("core_services", "stability"), ("system_files", "stability"), ("vc_runtime", "stability"),
+    ("core_services", "stability"), ("app_platform", "stability"), ("system_files", "stability"),
+    ("wmi_health", "stability"), ("vc_runtime", "stability"),
     ("media_pack", "stability"), ("battery", "stability"),
-    ("antivirus", "security"), ("security_settings", "security"), ("memory_integrity", "security"),
+    ("antivirus", "security"), ("security_settings", "security"), ("blocked_tools", "security"),
+    ("memory_integrity", "security"),
     ("secure_boot", "security"), ("windows_update", "security"), ("pending_restart", "security"),
     ("windows_support", "security"), ("network", "security"), ("proxy", "security"), ("hosts", "security"),
 ]
@@ -95,6 +101,14 @@ TEMP_FAMILY_MIN = 1000    # loose files with the same name pattern: one program 
 CBS_LOG_LIMIT = 1024 ** 3  # a servicing log this big is the known fault that fills the disk with cab_* files
 CRASH_FILE_DAYS = 14      # crash reports programs keep themselves: the same window as the Windows log
 LIVE_KERNEL_DAYS = 60     # live kernel dumps: rarer than program crashes, so a longer window
+PERF_DAYS = 60            # what slowed the starts: Windows keeps about two months in its small log
+SLOW_START_MS = 1000      # a driver, service or device that delays the start this much in several starts
+SLOW_START_TOTAL_MS = 5000
+SLOW_STARTS = 2           # in this many starts of the window: once can be a one-off (an update, a new device)
+VIDEO_MEMORY_EVENTS = 3   # times the desktop ran out of video memory in EVENT_DAYS before it is worth saying
+STARTUP_HIGH_MS, STARTUP_HIGH_DISK = 1000, 3 * 1024 ** 2  # Task Manager's "High" startup impact
+INTERRUPTS_HIGH, INTERRUPTS_NOW_HIGH = 5.0, 25.0  # % of one processor: since the start, during the sample
+NVME_WORN, NVME_WORN_OUT = 90, 100  # % of the rated endurance used (CrystalDiskInfo: Caution at 10% left)
 # Programs that catch their own crashes and keep the reports in files (Crashpad, Unreal Engine, Breakpad):
 # (program, pattern). * stands for any name in that segment; a pattern ending in \* counts entries, one per crash.
 # %STEAM% is Steam's install folder. These crashes never reach the Windows log
@@ -169,7 +183,9 @@ OVERLAY_EFFICIENCY = "961cc777-2547-4f9d-8174-7d86181b8a7a"
 PROCESSOR_SUBGROUP = "54533251-82be-4824-96c1-47b60b740d00"
 PROCESSOR_SETTINGS = {"max_cpu": "bc5038f7-23e0-4960-96da-33abaf5935ec", "max_cpu1": "bc5038f7-23e0-4960-96da-33abaf5935ed",
                       "boost": "be337238-0d82-4146-a960-4f3749d470c7", "max_mhz": "75b0ae3f-bce0-45a7-8c89-c9611c25e100",
-                      "max_mhz1": "75b0ae3f-bce0-45a7-8c89-c9611c25e101"}
+                      "max_mhz1": "75b0ae3f-bce0-45a7-8c89-c9611c25e101",
+                      # 1: the processor never rests (Atlas OS and similar "Disable Idle")
+                      "idle_disable": "5d76a2ca-e8c0-402f-a133-2158492d58ad"}
 
 # Boot options that limit or debug Windows (bcdedit, msconfig → Boot → Advanced options), as SystemStartOptions
 # lists them
@@ -241,8 +257,9 @@ DEVICE_IGNORED = (22, 45)  # disabled by the user, not connected right now
 
 # System log events (provider, id) -> kind of drive error
 DISK_EVENTS = {("disk", 7): "bad_block", ("disk", 11): "controller", ("disk", 51): "paging", ("disk", 153): "retry",
-               ("ntfs", 55): "ntfs", ("ntfs", 50): "write"}
-DISK_SERIOUS = ("bad_block", "controller", "paging", "ntfs", "write")
+               ("ntfs", 55): "ntfs", ("ntfs", 50): "write",
+               ("ntfs", 98): "repair"}  # a warning or an error: the volume needs an offline check (chkdsk)
+DISK_SERIOUS = ("bad_block", "controller", "paging", "ntfs", "write", "repair")
 DISK_PROVIDERS = ("disk", "Ntfs", "Microsoft-Windows-Ntfs", "storahci", "stornvme", "iaStorA", "iaStorAC", "iaStorAV",
                   "iaStorAVC", "storport")
 STORAGE_RESET_PROVIDERS = ("storahci", "stornvme", "iastora", "iastorac", "iastorav", "iastoravc", "storport")
@@ -275,13 +292,17 @@ RGB_PROGRAMS = {"armourycrate": "Armoury Crate", "armourycrate.service": "Armour
 
 # Services that "debloat" tools turn off. Disabled, they break what they are for: (service, effect)
 CORE_SERVICES = [("BITS", "updates"), ("UsoSvc", "updates"), ("TrustedInstaller", "updates"), ("CryptSvc", "updates"),
+                 # Delivery Optimization downloads updates and Store apps (0x80004002 without it); the medic service
+                 # repairs Windows Update
+                 ("DoSvc", "updates"), ("WaaSMedicSvc", "updates"),
                  ("msiserver", "install"), ("AppXSvc", "install"), ("ClipSVC", "install"), ("InstallService", "install"),
                  ("Audiosrv", "sound"), ("AudioEndpointBuilder", "sound"), ("BFE", "firewall"), ("mpssvc", "firewall"),
+                 ("wscsvc", "security"),
                  ("EventLog", "logs"), ("Winmgmt", "logs"), ("Schedule", "tasks"), ("Dhcp", "network"),
                  ("Dnscache", "network"), ("W32Time", "clock")]
 # Disabled, these only take a feature away: noted, not a problem
 OPTIONAL_SERVICES = [("XblAuthManager", "xbox"), ("XboxGipSvc", "xbox"), ("GamingServices", "xbox"),
-                     ("WSearch", "search"), ("WerSvc", "reports")]
+                     ("iphlpsvc", "xbox"), ("WSearch", "search"), ("WerSvc", "reports"), ("DPS", "diagnostics")]
 SMALL_MEMORY = 8 * GB  # with this much RAM or less SysMain also runs memory compression
 
 VC_RUNTIME_MIN = (14, 40)  # programs built with Visual Studio 2022 17.10 crash at start on an older runtime
@@ -294,6 +315,80 @@ UPDATE_FAMILIES_IGNORED = ("security intelligence update",)
 PER_USER_SERVICE = re.compile(r"_[0-9a-f]{4,}$", re.IGNORECASE)  # "Clipboard User Service_4a3b1"
 SERVICES_IGNORED = ("luafv",)  # fails at every start when UAC is off: that is reported by itself
 SHUTDOWN_GRACE = datetime.timedelta(minutes=2)  # services that stop badly while Windows shuts down
+
+# Image File Execution Options: a "Debugger" value starts another program instead of this one. Tweaking tools block
+# programs with it (often with systray.exe, which starts and quits at once), malware blocks protection with it, and a
+# debugger on a program of the sign-in screen opens a command prompt there (MITRE ATT&CK T1546.012, T1546.008)
+IFEO = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+PROTECTION_PROGRAMS = {
+    "msmpeng.exe", "mpcmdrun.exe", "nissrv.exe", "mpdefendercoreservice.exe", "securityhealthservice.exe",
+    "securityhealthsystray.exe", "securityhealthhost.exe", "smartscreen.exe", "mrt.exe", "wuauclt.exe",
+    "usoclient.exe", "mousocoreworker.exe", "taskmgr.exe", "regedit.exe", "mmc.exe", "msconfig.exe", "rstrui.exe",
+    "cmd.exe", "powershell.exe", "autoruns.exe", "autoruns64.exe", "procexp.exe", "procexp64.exe", "frst.exe",
+    "frst64.exe", "adwcleaner.exe", "mbam.exe", "mbamtray.exe", "mbamservice.exe", "malwarebytes.exe", "avp.exe",
+    "avpui.exe", "ekrn.exe", "egui.exe", "avastui.exe", "avastsvc.exe", "avgui.exe", "avgsvc.exe", "bdagent.exe",
+    "vsserv.exe", "mcshield.exe", "hitmanpro.exe", "hitmanpro_x64.exe", "tdsskiller.exe", "kvrt.exe", "zam.exe",
+    "sophosui.exe", "esetonlinescanner.exe", "cureit.exe"}
+SIGN_IN_PROGRAMS = {"sethc.exe", "utilman.exe", "osk.exe", "magnify.exe", "narrator.exe", "displayswitch.exe",
+                    "atbroker.exe"}
+# Programs that offer to replace a Windows tool through the same value, and debuggers developers use on purpose
+DEBUGGER_REPLACEMENTS = {"taskmgr.exe": re.compile(r"procexp|systeminformer|processhacker", re.IGNORECASE),
+                         "regedit.exe": re.compile(r"regworkshop|regcool", re.IGNORECASE)}
+DEVELOPER_DEBUGGERS = re.compile(r"vsjitdebugger|windbg|\bcdb\.exe|\bntsd\.exe|devenv|x64dbg|x32dbg|ollydbg",
+                                 re.IGNORECASE)
+USER_FOLDERS = re.compile(r"\\appdata\\|\\temp\\|\\users\\public\\|\\programdata\\", re.IGNORECASE)
+# Policies that lock Windows tools: (key under Software, value, values that lock, what it locks). Schools and
+# workplaces set some on purpose; malware sets them so the user cannot look for it
+TOOL_LOCKS = [(r"Microsoft\Windows\CurrentVersion\Policies\System", "DisableTaskMgr", (1,), "taskmgr"),
+              (r"Microsoft\Windows\CurrentVersion\Policies\System", "DisableRegistryTools", (1, 2), "regedit"),
+              (r"Policies\Microsoft\Windows\System", "DisableCMD", (1, 2), "cmd"),
+              (r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoRun", (1,), "run"),
+              (r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoControlPanel", (1,), "control_panel"),
+              (r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoFolderOptions", (1,), "folder_options"),
+              (r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "DisallowRun", (1,), "disallow_run"),
+              (r"Microsoft\Windows\CurrentVersion\Policies\Explorer", "RestrictRun", (1,), "restrict_run")]
+# Security software, by the names in its folders and certificates: malware blocks it in the firewall or marks its
+# certificates as untrusted so it cannot start or update (FRST reports both)
+SECURITY_VENDORS = re.compile(
+    r"windows defender|\bmsmpeng|\bmpcmdrun|malwarebytes|kaspersky|\beset\b|avast|\bavg\b|avira|bitdefender|"
+    r"norton|symantec|mcafee|sophos|trend ?micro|emsisoft|dr\.?web|doctor web|f-secure|withsecure|g data|"
+    r"panda security|webroot|comodo|hitmanpro|adwcleaner|\bqihoo|zillya|quick heal|ahnlab|vipre", re.IGNORECASE)
+FIREWALL_RULES = r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules"
+# Microsoft Defender settings set by a policy that turn its protection off. Tamper protection ignores them on a PC
+# that is not managed by an organization, so they only work where it is off
+DEFENDER_POLICY = r"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender"
+DEFENDER_POLICIES = [(DEFENDER_POLICY, "DisableAntiSpyware"), (DEFENDER_POLICY, "DisableAntiVirus"),
+                     (DEFENDER_POLICY + r"\Real-Time Protection", "DisableRealtimeMonitoring"),
+                     (DEFENDER_POLICY + r"\Real-Time Protection", "DisableBehaviorMonitoring"),
+                     (DEFENDER_POLICY + r"\Real-Time Protection", "DisableOnAccessProtection"),
+                     (DEFENDER_POLICY + r"\Real-Time Protection", "DisableIOAVProtection")]
+# Settings pages a policy can hide (SettingsPageVisibility "hide:a;b" or "showonly:a;b")
+HIDDEN_PAGES = ("windowsdefender", "windowsupdate")
+WU_POLICY = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+LOCAL_SERVERS = re.compile(r"^(https?://)?(localhost|127\.|0\.0\.0\.0|\[?::1\]?)", re.IGNORECASE)
+PAUSE_LIMIT_DAYS = 35  # Settings lets updates be paused for five weeks; a later date was set around it
+# Store packages Windows relies on: (package name prefix, what is lost without it). The per-user list of packages
+# is the one Windows itself keeps in the registry
+STORE_PACKAGE = "microsoft.windowsstore_"
+SECURITY_APP_PACKAGES = ("microsoft.sechealthui_", "microsoft.windows.sechealthui_")
+SHELL_PACKAGE = "microsoftwindows.client.cbs_"  # Windows 11: parts of Start, the taskbar, search and Settings
+APP_INSTALLER_PACKAGE = "microsoft.desktopappinstaller_"  # winget and .msix installers
+XBOX_IDENTITY_PACKAGE = "microsoft.xboxidentityprovider_"  # signs PC Game Pass games in to Xbox
+GAMING_PACKAGES = ("microsoft.gamingapp_", "microsoft.gamingservices_")
+WEBVIEW2 = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"  # the Evergreen WebView2 runtime, as EdgeUpdate registers it
+WEBVIEW2_KEYS = [rf"HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{WEBVIEW2}",
+                 rf"HKLM\SOFTWARE\Microsoft\EdgeUpdate\Clients\{WEBVIEW2}",
+                 rf"HKCU\Software\Microsoft\EdgeUpdate\Clients\{WEBVIEW2}"]
+NO_STORE_EDITIONS = ("EnterpriseS", "IoTEnterpriseS", "ServerRdsh")  # LTSC: no Store by design
+DEPROVISIONED = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Deprovisioned"
+# Power: the policy "Allow standby states (S1-S3) when sleeping"
+STANDBY_POLICY = r"HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings\abfc2519-3608-4c2a-94ea-171b0ed546ab"
+# Networking games need: Teredo (MSFT_NetTeredoConfiguration.Type 4 is Disabled), the IP Helper service and IPv6.
+# DisabledComponents 0xFFFFFFFF delays every start by 5 seconds; Microsoft recommends 0xFF to turn IPv6 off
+TEREDO_DISABLED = 4
+IPV6_DELAY = 0xFFFFFFFF
+IPV6_TUNNELS_OFF = 0x01 | 0x08  # tunnel interfaces, Teredo
+SVCHOST_SPLIT, SVCHOST_DEFAULT = "SvcHostSplitThresholdInKB", 3670016
 
 
 class Size(int):
@@ -434,14 +529,42 @@ def _system_times():
     return _filetime(idle), _filetime(kernel) + _filetime(user)  # kernel time includes the idle time
 
 
+class _ProcessorTimes(ctypes.Structure):  # SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION, in 100 ns
+    _fields_ = [("idle", ctypes.c_longlong), ("kernel", ctypes.c_longlong), ("user", ctypes.c_longlong),
+                ("dpc", ctypes.c_longlong), ("interrupt", ctypes.c_longlong), ("count", wintypes.ULONG)]
+
+
+def processor_times():
+    """[(time, time spent in hardware interrupts and deferred procedure calls)] of each logical processor of this
+    processor group since Windows started. Kernel time includes idle time and the interrupt time."""
+    found = (_ProcessorTimes * 256)()
+    size = wintypes.ULONG()
+    if ctypes.windll.ntdll.NtQuerySystemInformation(8, found, ctypes.sizeof(found), ctypes.byref(size)) != 0:
+        return None
+    return [(t.kernel + t.user, t.dpc + t.interrupt) for t in found[:size.value // ctypes.sizeof(_ProcessorTimes)]]
+
+
+def interrupt_share(before, after=None):
+    """The highest share (%) of one logical processor's time taken by interrupts: since Windows started, or between
+    two readings of processor_times()."""
+    if not before:
+        return None
+    pairs = zip(before, after) if after else (((0, 0), t) for t in before)
+    shares = [100.0 * (b[1] - a[1]) / (b[0] - a[0]) for a, b in pairs if b[0] > a[0]]
+    return round(max(shares), 1) if shares else None
+
+
 def cpu(api, seconds=CPU_SAMPLE):
-    """Processor load over a short interval and the programs that used it: {"load": %, "top": [(name, %)]}.
+    """Processor load over a short interval and the programs that used it: {"load": %, "top": [(name, %)]}, and the
+    highest share of a logical processor that interrupts take, since Windows started and over the interval.
     SimpleTool itself is left out of the programs."""
     start = _system_times()
+    times = processor_times()
     processes = [(pid, name) for pid, name in api.processes() if pid not in (0, os.getpid())]
     before = {pid: api.cpu_time(pid) for pid, _ in processes}
     time.sleep(seconds)
     end = _system_times()
+    times_after = processor_times()
     if not start or not end or end[1] <= start[1]:
         return None
     total = end[1] - start[1]
@@ -452,7 +575,9 @@ def cpu(api, seconds=CPU_SAMPLE):
         if after is not None and before.get(pid) is not None and after >= before[pid]:
             used[name] = used.get(name, 0) + after - before[pid]
     top = sorted(((process_title(n), 100.0 * t / total) for n, t in used.items()), key=lambda item: -item[1])
-    return {"load": max(0.0, min(100.0, load)), "top": [item for item in top if item[1] >= 1][:5]}
+    return {"load": max(0.0, min(100.0, load)), "top": [item for item in top if item[1] >= 1][:5],
+            "interrupts": interrupt_share(times_after or times),
+            "interrupts_now": interrupt_share(times, times_after) if times and times_after else None}
 
 
 CPU_KEY = r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0"
@@ -870,6 +995,281 @@ def system_disk():
         kernel32.CloseHandle(handle)
 
 
+IOCTL_STORAGE_QUERY_PROPERTY, SMART_RCV_DRIVE_DATA = 0x2D1400, 0x7C088
+GENERIC_READ, GENERIC_WRITE, FILE_FLAG_NO_BUFFERING = 0x80000000, 0x40000000, 0x20000000
+
+
+def _disk_api():
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                                         ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+                                         ctypes.c_void_p]
+    kernel32.GetDevicePowerState.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    kernel32.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+                                  ctypes.c_void_p]
+    kernel32.VirtualAlloc.restype = ctypes.c_void_p
+    kernel32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD, wintypes.DWORD]
+    kernel32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def _open_disk(kernel32, number, access=0, flags=0):
+    # FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
+    handle = kernel32.CreateFileW(rf"\\.\PhysicalDrive{number}", access, 3, None, 3, flags, None)
+    return None if not handle or handle == wintypes.HANDLE(-1).value else handle
+
+
+def parse_nvme_health(log):
+    """The NVMe "SMART / Health Information" log page (02h): what the drive itself says about its health."""
+    if len(log) < 200 or not any(log[:6]) and not any(log[128:144]):
+        return None  # an empty page: the driver did not fill it in
+
+    def counter(offset):  # 128-bit counters
+        return int.from_bytes(log[offset:offset + 16], "little")
+
+    kelvin = struct.unpack_from("<H", log, 1)[0]
+    return {"kind": "nvme", "critical": log[0], "temperature": kelvin - 273 if kelvin else None,
+            "spare": log[3], "spare_threshold": log[4], "used": log[5],
+            "written": counter(48) * 512_000,  # thousands of 512-byte units
+            "hours": counter(128), "unsafe": counter(144), "media_errors": counter(160),
+            "hot_minutes": struct.unpack_from("<I", log, 196)[0]}  # above the critical temperature
+
+
+def nvme_health(kernel32, handle):
+    # STORAGE_PROPERTY_QUERY for StorageDeviceProtocolSpecificProperty (50), followed by
+    # STORAGE_PROTOCOL_SPECIFIC_DATA: NVMe (3), a log page (2), page 02h, its 512 bytes right after these 40
+    query = struct.pack("<II", 50, 0) + struct.pack("<10I", 3, 2, 2, 0, 40, 512, 0, 0, 0, 0) + bytes(512)
+    buffer = ctypes.create_string_buffer(query, len(query))
+    returned = wintypes.DWORD()
+    if not kernel32.DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, buffer, len(query), buffer, len(query),
+                                    ctypes.byref(returned), None):
+        return None
+    # STORAGE_PROTOCOL_DATA_DESCRIPTOR: Version, Size, then the structure again; its data offset counts from itself
+    raw = buffer.raw
+    offset, length = struct.unpack_from("<II", raw, 8 + 16)
+    if length < 512 or 8 + offset + 512 > len(raw):
+        return None
+    return parse_nvme_health(raw[8 + offset:8 + offset + 512])
+
+
+ATA_REALLOCATED, ATA_PENDING, ATA_UNCORRECTABLE, ATA_HOURS = 0x05, 0xC5, 0xC6, 0x09
+
+
+def parse_ata_smart(data):
+    """{attribute: raw value} of SMART READ DATA: a 2-byte version, then 30 slots of 12 bytes (id, flags, value,
+    worst, 6 bytes raw, reserved)."""
+    found = {}
+    for slot in range(30):
+        entry = data[2 + slot * 12:14 + slot * 12]
+        if len(entry) == 12 and entry[0]:
+            found[entry[0]] = int.from_bytes(entry[5:11], "little")
+    if not found:
+        return None
+    return {"kind": "ata", "reallocated": found.get(ATA_REALLOCATED), "pending": found.get(ATA_PENDING),
+            "uncorrectable": found.get(ATA_UNCORRECTABLE),
+            "hours": found[ATA_HOURS] & 0xFFFFFFFF if ATA_HOURS in found else None}
+
+
+def ata_smart(kernel32, handle, number):
+    # SENDCMDINPARAMS without its 1-byte buffer: buffer size, IDEREGS for SMART READ DATA (features D0, the SMART
+    # signature 4F C2 in the cylinder registers, command B0), the drive number and reserved bytes
+    registers = bytes([0xD0, 1, 1, 0x4F, 0xC2, 0xA0 | ((number & 1) << 4), 0xB0, 0])
+    params = struct.pack("<I", 512) + registers + bytes([number & 0xFF]) + bytes(19)
+    out = ctypes.create_string_buffer(16 + 512)  # SENDCMDOUTPARAMS: size, DRIVERSTATUS, then the data
+    returned = wintypes.DWORD()
+    if not kernel32.DeviceIoControl(handle, SMART_RCV_DRIVE_DATA, params, len(params), out, len(out),
+                                    ctypes.byref(returned), None):
+        return None
+    return parse_ata_smart(out.raw[16:16 + 512])
+
+
+def drive_health(disks):
+    """{disk number: health} that NVMe drives and SATA hard disks report themselves, as CrystalDiskInfo reads it.
+    Windows' own counters (MSFT_StorageReliabilityCounter) leave out most of it and can report no wear at all.
+    USB drives are left alone (some bridges hang on these requests), and so are hard disks that are spun down:
+    reading them would wake them up."""
+    kernel32 = _disk_api()
+    found = {}
+    for disk in disks:
+        number, bus, media = disk.get("id"), (disk.get("bus") or "").upper(), (disk.get("media") or "").upper()
+        if not str(number).isdigit():
+            continue
+        if bus in ("NVME", "RAID"):
+            handle = _open_disk(kernel32, number)
+            if handle:
+                try:
+                    health = nvme_health(kernel32, handle)
+                finally:
+                    kernel32.CloseHandle(handle)
+                if health:
+                    found[str(number)] = health
+        elif bus in ("SATA", "ATA") and media == "HDD":
+            handle = _open_disk(kernel32, number, GENERIC_READ | GENERIC_WRITE)  # administrators only
+            if not handle:
+                continue
+            try:
+                awake = wintypes.BOOL(True)
+                if kernel32.GetDevicePowerState(handle, ctypes.byref(awake)) and not awake.value:
+                    continue
+                health = ata_smart(kernel32, handle, int(number))
+            finally:
+                kernel32.CloseHandle(handle)
+            if health:
+                found[str(number)] = health
+    return found
+
+
+def disk_instance(path):
+    """The device instance of a disk from its MSFT_Disk path:
+    \\\\?\\scsi#disk&ven_nvme&prod_x#5&1&0&000000#{guid} -> SCSI\\DISK&VEN_NVME&PROD_X\\5&1&0&000000."""
+    parts = (path or "").replace("\\\\?\\", "").split("#")
+    return "\\".join(parts[:3]).upper() if len(parts) >= 4 else None
+
+
+def _devnode(cfgmgr, instance):
+    node = wintypes.DWORD()
+    return node.value if not cfgmgr.CM_Locate_DevNodeW(ctypes.byref(node), instance, 0) else None
+
+
+def _cfgmgr():
+    cfgmgr = ctypes.WinDLL("cfgmgr32")
+    cfgmgr.CM_Locate_DevNodeW.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.LPCWSTR, wintypes.ULONG]
+    cfgmgr.CM_Get_Parent.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.ULONG]
+    cfgmgr.CM_Get_DevNode_PropertyW.argtypes = [wintypes.DWORD, ctypes.POINTER(_DevPropKey),
+                                                ctypes.POINTER(wintypes.ULONG), ctypes.c_void_p,
+                                                ctypes.POINTER(wintypes.ULONG), wintypes.ULONG]
+    return cfgmgr
+
+
+def _pci_properties(cfgmgr, node, pids):
+    values = []
+    for pid in pids:
+        key = _DevPropKey()
+        key.fmtid[:] = uuid.UUID(PCI_LINK).bytes_le
+        key.pid = pid
+        kind, value, size = wintypes.ULONG(), wintypes.ULONG(), wintypes.ULONG(4)
+        if cfgmgr.CM_Get_DevNode_PropertyW(node, ctypes.byref(key), ctypes.byref(kind), ctypes.byref(value),
+                                           ctypes.byref(size), 0):
+            return None
+        values.append(value.value)
+    return values if all(values) else None
+
+
+def _busy_reads(kernel32, number, seconds):
+    """Reads the drive from its start for a moment, so a link that saves power at rest runs at full speed."""
+    handle = _open_disk(kernel32, number, GENERIC_READ, FILE_FLAG_NO_BUFFERING)
+    if not handle:
+        return
+    size = 4 * MB
+    buffer = kernel32.VirtualAlloc(None, size, 0x3000, 0x04)  # MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE
+    try:
+        done, end = wintypes.DWORD(), time.monotonic() + seconds
+        while buffer and time.monotonic() < end:
+            if not kernel32.ReadFile(handle, buffer, size, ctypes.byref(done), None) or not done.value:
+                break
+    finally:
+        if buffer:
+            kernel32.VirtualFree(buffer, 0, 0x8000)  # MEM_RELEASE
+        kernel32.CloseHandle(handle)
+
+
+def drive_links(disks, paths):
+    """{disk number: (generation, lanes, highest generation, most lanes)} of the PCI Express link of each NVMe
+    drive (generation 3 is PCIe 3.0). A link below the drive's best is read again while the drive is busy, because
+    some links slow down at rest to save power; that needs administrator rights."""
+    cfgmgr, kernel32 = _cfgmgr(), _disk_api()
+    nvme = {str(d.get("id")) for d in disks if (d.get("bus") or "").upper() == "NVME"}
+    found = {}
+    for entry in paths:
+        number = str(entry.get("number"))
+        instance = disk_instance(entry.get("path"))
+        disk_node = _devnode(cfgmgr, instance) if number in nvme and instance else None
+        parent = wintypes.DWORD()
+        if disk_node is None or cfgmgr.CM_Get_Parent(ctypes.byref(parent), disk_node, 0):
+            continue
+        link = _pci_properties(cfgmgr, parent.value, (9, 10, 11, 12))  # current speed, width; maximum speed, width
+        if not link:
+            continue
+        if link[0] < link[2] or link[1] < link[3]:
+            if not engine.is_admin():
+                link[0] = link[2]  # the generation at rest says nothing without reading the drive: not judged
+            else:
+                reader = threading.Thread(target=_busy_reads, args=(kernel32, number, 0.3), daemon=True)
+                reader.start()
+                while reader.is_alive():
+                    again = _pci_properties(cfgmgr, parent.value, (9, 10)) or link[:2]
+                    link[0], link[1] = max(link[0], again[0]), max(link[1], again[1])
+                    time.sleep(0.02)
+        found[number] = tuple(link)
+    return found
+
+
+STARTUP_INFO = r"%SystemRoot%\System32\wdi\LogFiles\StartupInfo"
+
+
+def startup_trees(data):
+    """[(program, processor µs, bytes read)] of one StartupInfo file: each program that started with Windows,
+    with what the programs it started used."""
+    processes = {}
+    for process in ElementTree.fromstring(data).iter("Process"):
+        try:
+            processes[process.get("PID")] = {"name": process.get("Name") or "",
+                                             "parent": (process.findtext("ParentPID") or "").strip(),
+                                             "cpu": int(process.findtext("CpuUsage") or 0),
+                                             "disk": int(process.findtext("DiskUsage") or 0)}
+        except ValueError:
+            continue
+    sums = {}
+    for pid, process in processes.items():
+        top, seen = pid, {pid}
+        while processes[top]["parent"] in processes and processes[top]["parent"] not in seen:
+            top = processes[top]["parent"]
+            seen.add(top)
+        cpu_time, disk = sums.get(processes[top]["name"], (0, 0))
+        sums[processes[top]["name"]] = (cpu_time + process["cpu"], disk + process["disk"])
+    return [(name, cpu_time, disk) for name, (cpu_time, disk) in sums.items() if name]
+
+
+def startup_impact():
+    """[{"name", "cpu" (ms), "disk" (bytes), "starts"}] of the programs that start with Windows, on average over the
+    last starts Windows measured (up to five), as Task Manager's "Startup impact" counts them: the processor time
+    and the data read from the drive, the programs they started included. Windows' own programs are left out. The
+    files are per account; the newest are the account at the PC. Needs administrator rights."""
+    folder = os.path.expandvars(STARTUP_INFO)
+    try:
+        files = [os.path.join(folder, name) for name in os.listdir(folder) if name.lower().endswith(".xml")]
+    except OSError:
+        return None
+    accounts = {}
+    for path in files:
+        accounts.setdefault(os.path.basename(path).split("_")[0], []).append(path)
+    if not accounts:
+        return []
+    newest = max(accounts.values(), key=lambda group: max(os.path.getmtime(p) for p in group))
+    totals = {}
+    for path in newest:
+        try:
+            with open(path, "rb") as f:
+                trees = startup_trees(f.read())
+        except (OSError, SyntaxError):  # ElementTree.ParseError is a SyntaxError
+            continue
+        for name, cpu_time, disk in trees:
+            totals.setdefault(name, []).append((cpu_time, disk))
+    windows_folder = os.path.normcase(os.environ.get("SystemRoot", r"C:\Windows")) + os.sep
+    found = []
+    for path, runs in totals.items():
+        if os.path.normcase(path).startswith(windows_folder):
+            continue
+        found.append({"name": file_description(path) or os.path.splitext(os.path.basename(path))[0],
+                      "cpu": sum(r[0] for r in runs) // len(runs) // 1000, "disk": sum(r[1] for r in runs) // len(runs),
+                      "starts": len(runs)})
+    return sorted(found, key=lambda item: (-item["cpu"], -item["disk"]))
+
+
 def temp_dir():
     return os.environ.get("TEMP") or os.environ.get("TMP") or ""
 
@@ -886,9 +1286,33 @@ def restart_pending():
 
 
 def update_settings():
-    """Whether the Windows Update service is disabled or automatic updates are turned off by a policy."""
+    """Whether the Windows Update service is disabled, automatic updates are turned off by a policy, updates are
+    taken from another server (WSUS) or blocked by policies, and until when they are paused."""
+    server = _read(WU_POLICY, "WUServer") if _read(WU_POLICY + r"\AU", "UseWUServer") == 1 else None
     return {"disabled": _read(r"HKLM\SYSTEM\CurrentControlSet\Services\wuauserv", "Start") == 4,
-            "policy_off": _read(r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU", "NoAutoUpdate") == 1}
+            "policy_off": _read(WU_POLICY + r"\AU", "NoAutoUpdate") == 1,
+            "server": server.strip() if isinstance(server, str) and server.strip() else None,
+            "blocked": [name for name in ("DisableWindowsUpdateAccess", "DoNotConnectToWindowsUpdateInternetLocations",
+                                          "SetDisableUXWUAccess") if _read(WU_POLICY, name) == 1],
+            "paused_until": update_pause()}
+
+
+def update_pause():
+    """Until when quality updates are paused (local time), or None. Settings writes UTC times like
+    "2026-11-20T09:00:00Z"."""
+    latest = None
+    for name in ("PauseUpdatesExpiryTime", "PauseQualityUpdatesEndTime"):
+        value = _read(r"HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings", name)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            moment = datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if moment.tzinfo:
+            moment = moment.astimezone().replace(tzinfo=None)
+        latest = max(latest, moment) if latest else moment
+    return latest
 
 
 PACKAGES = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\Packages"
@@ -1007,6 +1431,26 @@ def file_version(path):
     return fixed[0] >> 16, fixed[0] & 0xFFFF, fixed[1] >> 16, fixed[1] & 0xFFFF
 
 
+def file_description(path):
+    """A program's description from its version information ("Proton Mail Bridge"), or None."""
+    version = ctypes.windll.version
+    size = version.GetFileVersionInfoSizeW(path, None)
+    if not size:
+        return None
+    buffer = ctypes.create_string_buffer(size)
+    if not version.GetFileVersionInfoW(path, 0, size, buffer):
+        return None
+    pointer, length = ctypes.c_void_p(), wintypes.UINT()
+    if not version.VerQueryValueW(buffer, "\\VarFileInfo\\Translation", ctypes.byref(pointer), ctypes.byref(length)) \
+            or length.value < 4 or not pointer.value:
+        return None
+    language, codepage = struct.unpack("<HH", ctypes.string_at(pointer.value, 4))
+    if not version.VerQueryValueW(buffer, f"\\StringFileInfo\\{language:04x}{codepage:04x}\\FileDescription",
+                                  ctypes.byref(pointer), ctypes.byref(length)) or not length.value or not pointer.value:
+        return None
+    return ctypes.wstring_at(pointer.value, length.value).rstrip("\0").strip() or None
+
+
 def vc_runtime():
     """The version of the Visual C++ runtime for 64-bit and 32-bit programs; None where it is not installed."""
     root = os.environ.get("SystemRoot", r"C:\Windows")
@@ -1039,10 +1483,259 @@ def firmware():
 
 
 def security_settings():
-    """Protections that "optimization" tools turn off: UAC, and the Spectre and Meltdown mitigations."""
+    """Protections that "optimization" tools turn off: UAC, the Spectre and Meltdown mitigations, SmartScreen, the
+    "downloaded from the internet" mark, Microsoft Defender through its policies, and Windows Security hidden."""
+    explorer = _read(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer", "SmartScreenEnabled")
     return {"uac_off": _read(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", "EnableLUA") == 0,
             "mitigations_off": _read(MEMORY_MANAGEMENT, "FeatureSettingsOverride") == 3 and
-            _read(MEMORY_MANAGEMENT, "FeatureSettingsOverrideMask") == 3}
+            _read(MEMORY_MANAGEMENT, "FeatureSettingsOverrideMask") == 3,
+            "smartscreen_off": _read(r"HKLM\SOFTWARE\Policies\Microsoft\Windows\System", "EnableSmartScreen") == 0 or
+            isinstance(explorer, str) and explorer.lower() == "off",
+            "zone_off": any(_read(rf"{hive}\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments",
+                                  "SaveZoneInformation") == 1 for hive in ("HKCU", "HKLM")),
+            "defender_policies": [name for path, name in DEFENDER_POLICIES if _read(path, name) == 1],
+            "notifications_off": _read(r"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender Security Center"
+                                       r"\Notifications", "DisableNotifications") == 1,
+            "hidden_pages": hidden_pages()}
+
+
+def hidden_pages():
+    """The pages of HIDDEN_PAGES that a policy hides in Settings: "hide:windowsdefender;..." or "showonly:...". """
+    hidden = []
+    for hive in ("HKLM", "HKCU"):
+        value = _read(rf"{hive}\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "SettingsPageVisibility")
+        if not isinstance(value, str):
+            continue
+        kind, _, pages = value.strip().lower().partition(":")
+        listed = {page.strip() for page in pages.split(";") if page.strip()}
+        if kind == "hide":
+            hidden += [page for page in HIDDEN_PAGES if page in listed]
+        elif kind == "showonly":
+            hidden += [page for page in HIDDEN_PAGES if page not in listed]
+    return list(dict.fromkeys(hidden))
+
+
+# --- Traces of tweaking tools and malware: blocked programs, locked tools, removed parts of Windows ---
+
+def managed():
+    """Whether an organization manages this PC: joined to a domain or to Microsoft Entra ID, or enrolled in device
+    management. A work or school account only added to Windows (the "workplace join") does not manage the PC."""
+    netapi = ctypes.WinDLL("netapi32")
+    domain = False
+    name, status = ctypes.c_wchar_p(), ctypes.c_int()
+    if netapi.NetGetJoinInformation(None, ctypes.byref(name), ctypes.byref(status)) == 0:
+        domain = status.value == 3  # NetSetupDomainName
+        netapi.NetApiBufferFree(name)
+    entra = False
+    try:
+        info = ctypes.POINTER(ctypes.c_int)()  # DSREG_JOIN_INFO starts with joinType
+        if netapi.NetGetAadJoinInformation(None, ctypes.byref(info)) == 0 and info:
+            entra = info.contents.value == 1  # DSREG_DEVICE_JOIN; 2 is a work account added
+            netapi.NetFreeAadJoinInformation(info)
+    except AttributeError:  # before Windows 10 1607
+        pass
+    enrolled = False
+    try:
+        # A buffer for the account name it enrolled with: without one the call fails on an enrolled PC
+        registered, account = wintypes.BOOL(), ctypes.create_unicode_buffer(256)
+        if ctypes.WinDLL("mdmregistration").IsDeviceRegisteredWithManagement(ctypes.byref(registered), 256,
+                                                                            account) == 0:
+            enrolled = bool(registered.value)
+    except (AttributeError, OSError):
+        pass
+    return {"domain": domain, "entra": entra, "mdm": enrolled}
+
+
+def _is_managed(facts):
+    return any((facts.get("managed") or {}).values())
+
+
+def command_program(command):
+    """The program a command line starts, with variables filled in: '"%windir%\\x.exe" /a' -> 'C:\\Windows\\x.exe'."""
+    command = os.path.expandvars((command or "").strip())
+    if command.startswith('"'):
+        return command[1:].split('"', 1)[0]
+    match = re.match(r"(.+?\.(?:exe|com|bat|cmd|scr))(?:\s|$)", command, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return command.split()[0] if command.split() else ""
+
+
+def _key_values(key, *names):
+    found = []
+    for name in names:
+        try:
+            found.append(winreg.QueryValueEx(key, name)[0])
+        except OSError:
+            found.append(None)
+    return found
+
+
+def ifeo_debuggers():
+    """[(program, debugger)] of Image File Execution Options in the 64-bit and the 32-bit registry. A program can
+    also have one filter per full path under its key (UseFilter), each with a debugger of its own."""
+    found = []
+    for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+        try:
+            root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, IFEO, 0, winreg.KEY_READ | view)
+        except OSError:
+            continue
+        with root:
+            for program in programs._subkeys(root):
+                try:
+                    with winreg.OpenKey(root, program) as key:
+                        debugger, use_filter = _key_values(key, "Debugger", "UseFilter")
+                        if isinstance(debugger, str) and debugger.strip():
+                            found.append((program.lower(), debugger.strip()))
+                        if use_filter == 1:
+                            for sub in programs._subkeys(key):
+                                with winreg.OpenKey(key, sub) as filtered:
+                                    debugger = _key_values(filtered, "Debugger")[0]
+                                    if isinstance(debugger, str) and debugger.strip():
+                                        found.append((program.lower(), debugger.strip()))
+                except OSError:
+                    continue
+    return list(dict.fromkeys(found))  # keys that are not redirected show up in both views
+
+
+def _windows_program(name):
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    return any(os.path.isfile(os.path.join(root, *parts, name)) for parts in ((), ("System32",), ("SysWOW64",)))
+
+
+def blocked_kind(program, debugger):
+    """What a debugger set for a program means: "sign_in" (a program of the sign-in screen starts something else),
+    "hijack" (a program from a user's folder starts instead), "protection" (protection or a tool to look for
+    problems cannot start), "windows" (a Windows program is blocked), or None (a debugger or a replacement on
+    purpose, or some other program)."""
+    path = command_program(debugger)
+    name = os.path.basename(path)
+    replacement = DEBUGGER_REPLACEMENTS.get(program)
+    if replacement and replacement.search(name) or DEVELOPER_DEBUGGERS.search(name):
+        return None
+    if program in SIGN_IN_PROGRAMS:
+        return "sign_in"
+    if USER_FOLDERS.search(path):
+        return "hijack"
+    if program in PROTECTION_PROGRAMS:
+        return "protection"
+    return "windows" if _windows_program(program) else None
+
+
+def _services_of(names):
+    """{program: [display names]} of the services that run one of these programs."""
+    found = {}
+    for service in _subkeys(winreg.HKEY_LOCAL_MACHINE, SERVICES_KEY):
+        image = _read(rf"HKLM\{SERVICES_KEY}\{service}", "ImagePath")
+        program = os.path.basename(command_program(image)).lower() if isinstance(image, str) else ""
+        if program in names:
+            found.setdefault(program, []).append(display_name(service))
+    return found
+
+
+def tool_locks():
+    """[tool] that policies lock (TOOL_LOCKS), and the programs DisallowRun names."""
+    locks, names = [], []
+    for hive in ("HKCU", "HKLM"):
+        for path, value, values, tool in TOOL_LOCKS:
+            if _read(rf"{hive}\Software\{path}", value) in values and tool not in locks:
+                locks.append(tool)
+        listed = _values(winreg.HKEY_CURRENT_USER if hive == "HKCU" else winreg.HKEY_LOCAL_MACHINE,
+                         r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")
+        names += [data for _, data in listed if isinstance(data, str) and data.strip()]
+    return locks, list(dict.fromkeys(names))
+
+
+def firewall_blocks():
+    """Programs of security software that an active rule of Windows Firewall blocks, by file name."""
+    found = []
+    for path in (FIREWALL_RULES, r"SOFTWARE\Policies\Microsoft\WindowsFirewall\FirewallRules"):
+        for _, data in _values(winreg.HKEY_LOCAL_MACHINE, path):
+            if not isinstance(data, str):
+                continue
+            fields = dict(part.split("=", 1) for part in data.split("|") if "=" in part)
+            app = fields.get("App", "")
+            if fields.get("Action") == "Block" and fields.get("Active", "").upper() == "TRUE" and \
+                    SECURITY_VENDORS.search(app):
+                found.append(os.path.basename(os.path.expandvars(app)))
+    return sorted(set(found), key=str.lower)
+
+
+def blocked_tools():
+    """Programs blocked through Image File Execution Options (with the services that run them), locked tools and
+    security software blocked in the firewall."""
+    programs_found = []
+    for program, debugger in ifeo_debuggers():
+        kind = blocked_kind(program, debugger)
+        if kind:
+            programs_found.append({"program": program, "debugger": debugger, "kind": kind})
+    services_by_program = _services_of({p["program"] for p in programs_found}) if programs_found else {}
+    for found in programs_found:
+        found["services"] = services_by_program.get(found["program"], [])
+    locks, disallowed = tool_locks()
+    return {"programs": programs_found, "locks": locks, "disallowed": disallowed, "firewall": firewall_blocks()}
+
+
+def app_platform():
+    """The Windows packages this account has, the ones removed for every new account, and the WebView2 runtime.
+    None when SimpleTool runs as another account than the one signed in: then HKCU is that account's."""
+    if engine.other_account():
+        return None
+    packages = [name.lower() for name in _subkeys(winreg.HKEY_CURRENT_USER, APP_PACKAGES)]
+    if not packages:
+        return None  # the list could not be read
+    webview = None
+    for path in WEBVIEW2_KEYS:
+        version = _read(path, "pv")
+        if isinstance(version, str) and version.strip() not in ("", "0.0.0.0"):
+            webview = version.strip()
+            break
+    return {"packages": packages, "webview2": webview,
+            "deprovisioned": [name.lower() for name in _subkeys(winreg.HKEY_LOCAL_MACHINE, DEPROVISIONED)],
+            "gaming": any(p.startswith(GAMING_PACKAGES) for p in packages)}
+
+
+def sleep_state():
+    """Whether the PC has any way to sleep (S1-S3 or Modern Standby), and the settings known to take it away."""
+    capabilities = ctypes.create_string_buffer(76)  # SYSTEM_POWER_CAPABILITIES
+    if not ctypes.windll.powrprof.GetPwrCapabilities(capabilities):
+        return None
+    raw = capabilities.raw
+    causes = []
+    if _read(r"HKLM\SYSTEM\CurrentControlSet\Control\Power", "PlatformAoAcOverride") == 0:
+        causes.append("aoac_override")  # Modern Standby turned off, on a PC that may have no S3 to fall back on
+    if 0 in (_read(STANDBY_POLICY, "ACSettingIndex"), _read(STANDBY_POLICY, "DCSettingIndex")):
+        causes.append("standby_policy")
+    # SystemS1, SystemS2, SystemS3 at offsets 3-5, AoAc (Modern Standby) at 20
+    return {"available": bool(raw[3] or raw[4] or raw[5] or raw[20]), "causes": causes}
+
+
+def network_setup():
+    """What networking in games relies on: IPv6 (DisabledComponents), Teredo set off by a policy, the IP Helper
+    service, services merged into shared processes, and whether Xbox gaming is installed at all."""
+    split = _read(r"HKLM\SYSTEM\CurrentControlSet\Control", SVCHOST_SPLIT)
+    ipv6 = _read(r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters", "DisabledComponents")
+    policy = _read(r"HKLM\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition", "Teredo_State")
+    packages = [name.lower() for name in _subkeys(winreg.HKEY_CURRENT_USER, APP_PACKAGES)]
+    return {"ipv6": ipv6 if isinstance(ipv6, int) else 0, "split": split if isinstance(split, int) else None,
+            "teredo_policy_off": isinstance(policy, str) and policy.lower() == "disabled",
+            "ip_helper_off": _service_start("iphlpsvc") == 4,
+            "gaming": _service_start("GamingServices") is not None or
+            any(p.startswith(GAMING_PACKAGES) for p in packages)}
+
+
+def wmi_repository():
+    """The exit code of Windows' own check of the WMI repository (0: consistent). Needs administrator rights."""
+    if not engine.is_admin():
+        return None
+    tool = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "wbem", "winmgmt.exe")
+    try:
+        done = subprocess.run([tool, "/verifyrepository"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=60, creationflags=engine.CREATE_NO_WINDOW,
+                              env=engine.clean_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.returncode & 0xFFFFFFFF
 
 
 # One PowerShell run for what has no simple Windows call: drives' health, devices with problems, antivirus, the
@@ -1333,6 +2026,41 @@ try {
   $r.battery = @{ design = $design; full = $full }
 } catch {}
 try { $r.image = [string](Repair-WindowsImage -Online -CheckHealth).ImageHealthState } catch {}
+try { $d = Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpComputerStatus
+  $r.defender = @{ mode = [string]$d.AMRunningMode; realtime = [bool]$d.RealTimeProtectionEnabled;
+                   tamper = [bool]$d.IsTamperProtected } } catch {}
+# Certificates marked as untrusted: malware puts antivirus makers' there so their programs cannot start
+try { $r.disallowed = @(Get-ChildItem Cert:/LocalMachine/Disallowed, Cert:/CurrentUser/Disallowed |
+  ForEach-Object { [string]$_.Subject }) } catch {}
+try { $r.teredo = [int](@(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetTeredoConfiguration)[0].Type)
+} catch {}
+# WMI answers, or the error it gives (a damaged repository or provider)
+try { $null = Get-WmiObject -Class Win32_OperatingSystem -ErrorAction Stop; $r.wmi = 0 }
+catch { $code = $_.Exception.ErrorCode; if (-not $code) { $code = $_.Exception.HResult }
+  $r.wmi = [int64]$code -band 0xFFFFFFFF; if (-not $r.wmi) { $r.wmi = 1 } }
+try { $r.disk_paths = @(Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Disk |
+  ForEach-Object { @{ number = [int]$_.Number; path = [string]$_.Path } }) } catch {}
+try { $r.volumes = @(Get-CimInstance -Namespace root/Microsoft/Windows/Storage -ClassName MSFT_Volume |
+  Where-Object { $_.DriveLetter } | ForEach-Object { @{ drive = [string]$_.DriveLetter; health = [int]$_.HealthStatus } })
+} catch {}
+try { $r.dirty = @(Get-CimInstance -Query 'SELECT DriveLetter, DirtyBitSet FROM Win32_Volume WHERE DriveLetter IS NOT NULL' |
+  Where-Object { $_.DirtyBitSet } | ForEach-Object { [string]$_.DriveLetter }) } catch {}
+try { $r.cycles = @(Get-CimInstance -Namespace root/wmi -ClassName BatteryCycleCount |
+  ForEach-Object { [int]$_.CycleCount }) } catch {}
+# What slowed the last starts and shutdowns, and the desktop short of video memory, as Windows measured it itself.
+# Only administrators may read this log
+$keep = 'BootTime', 'MainPathBootTime', 'BootPostBootTime', 'BootIsRebootAfterInstall', 'Name', 'FriendlyName', 'Path',
+  'TotalTime', 'DegradationTime', 'ShutdownTime', 'Scenario', 'DisplayDeviceFriendlyName', 'MemorySize'
+try {
+  $xpath = '*[System[((EventID>=100 and EventID<=110) or (EventID>=200 and EventID<=203) or EventID=500 or ' +
+    'EventID=501) and TimeCreated[timediff(@SystemTime) <= ' + ([int64]%(perf_days)d * 86400000) + ']]]'
+  $found = @(Get-WinEvent -LogName 'Microsoft-Windows-Diagnostics-Performance/Operational' -FilterXPath $xpath `
+    -MaxEvents 400 -ErrorAction Stop)
+  $r.perf_events = @($found | ForEach-Object { $data = @{}
+    foreach ($item in ([xml]$_.ToXml()).Event.EventData.Data) {
+      if ($keep -contains $item.Name) { $data[$item.Name] = [string]$item.'#text' } }
+    @{ id = $_.Id; time = $_.TimeCreated.ToString('s'); data = $data } })
+} catch { if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { $r.perf_events = @() } }
 $since = (Get-Date).AddDays(-%(event_days)d)
 try { $r.events = Events @{ LogName = 'System'; StartTime = $since; Level = 1, 2, 3;
   Id = 41, 1001, 2004, 4101, 4199, 6008 } } catch {}
@@ -1356,7 +2084,7 @@ try { $r.app_events = Events @{ LogName = 'Application'; Id = 1000, 1002;
   StartTime = (Get-Date).AddDays(-%(app_days)d) } } catch {}
 $r | ConvertTo-Json -Depth 5 -Compress
 """ % {"event_days": EVENT_DAYS, "app_days": APP_EVENT_DAYS, "service_days": SERVICE_DAYS,
-       "throttle_days": THROTTLE_DAYS, "disk_providers": "', '".join(DISK_PROVIDERS)}
+       "throttle_days": THROTTLE_DAYS, "disk_providers": "', '".join(DISK_PROVIDERS), "perf_days": PERF_DAYS}
 
 EVENT_KEYS = ("events", "disk_events", "nvidia_events", "throttle_events", "shutdowns", "service_events",
               "update_events", "memory_tests", "live_events", "whea", "app_events")
@@ -1425,6 +2153,34 @@ def finish_powershell(process, timeout=POWERSHELL_TIMEOUT):
     for key in EVENT_KEYS:
         if key in raw:
             facts[key] = [e for e in (_event(item) for item in _list(raw[key]) if isinstance(item, dict)) if e]
+    defender = raw.get("defender")
+    if isinstance(defender, dict) and defender.get("mode"):
+        facts["defender"] = {"mode": str(defender["mode"]), "realtime": bool(defender.get("realtime")),
+                             "tamper": bool(defender.get("tamper"))}
+    for key in ("disallowed", "dirty"):
+        if key in raw:
+            facts[key] = [str(item) for item in _list(raw[key]) if item]
+    for key in ("teredo", "wmi"):
+        if isinstance(raw.get(key), int):
+            facts[key] = raw[key]
+    for key in ("disk_paths", "volumes"):
+        if key in raw:
+            facts[key] = [item for item in _list(raw[key]) if isinstance(item, dict)]
+    cycles = [c for c in _list(raw.get("cycles")) if isinstance(c, int) and c > 0]
+    if cycles:
+        facts["battery_cycles"] = max(cycles)
+    if "perf_events" in raw:
+        found = []
+        for item in _list(raw["perf_events"]):
+            if not isinstance(item, dict):
+                continue
+            try:
+                moment = datetime.datetime.fromisoformat(item.get("time") or "")
+            except (TypeError, ValueError):
+                continue
+            data = item.get("data") if isinstance(item.get("data"), dict) else {}
+            found.append({"id": item.get("id"), "time": moment, "data": {k: str(v) for k, v in data.items()}})
+        facts["perf_events"] = found
     return facts
 
 
@@ -1459,11 +2215,14 @@ def gather(report=lambda step: None, api=None):
     read("vram", video_memory)
     read("gpu_preferences", gpu_preferences)
     read("startup", startup_programs)
+    read("startup_impact", startup_impact)
     read("software", software)
     read("game_dvr", game_dvr)
+    read("network_setup", network_setup)
     read("boot", boot_options)
     read("uptime", uptime)
     read("fast_startup", fast_startup)
+    read("sleep", sleep_state)
     read("graphics", sysinfo.graphics)
     if X3D_DUAL.search((facts.get("processor") or {}).get("name", "")):
         read("x3d", x3d_support)
@@ -1479,11 +2238,16 @@ def gather(report=lambda step: None, api=None):
             facts.update(finish_powershell(process))
         except OSError:
             pass
-    # The PCI Express lanes of the graphics cards, known now that PowerShell has named them
+    # The PCI Express lanes of the graphics cards, known now that PowerShell has named them, and the drives' own
+    # health reports and links
     read("links", lambda: {v.get("name"): pcie_width(v["pnp"]) for v in facts.get("video") or []
                            if pci_vendor(v.get("pnp"))})
+    read("drive_health", lambda: drive_health(facts.get("disks") or []))
+    read("drive_links", lambda: drive_links(facts.get("disks") or [], facts.get("disk_paths") or []))
     report("storage")
     read("disabled_services", disabled_services)
+    read("app_platform", app_platform)
+    read("wmi_repository", wmi_repository)
     read("wer_off", wer_off)
     read("crash_files", lambda: crash_files(facts["now"]))
     read("local_dumps", local_dumps)
@@ -1497,6 +2261,8 @@ def gather(report=lambda step: None, api=None):
     read("windows", windows)
     read("firmware", firmware)
     read("security", security_settings)
+    read("managed", managed)
+    read("blocked", blocked_tools)
     read("proxy", proxy)
     read("hosts", hosts)
     report("security")
@@ -1659,10 +2425,19 @@ def check_cpu_load(facts):
     if not sample:
         return unknown("cpu_load")
     load = round(sample["load"])
-    severity = "warning" if load >= 80 else "ok"
     items = [("item_program_percent", {"name": name, "percent": round(share)}) for name, share in sample["top"]]
-    return Finding("cpu_load", severity, "cpu_high" if severity != "ok" else "cpu_ok", {"percent": load}, items,
-                   ["taskmgr"])
+    # Hardware interrupts and deferred procedure calls: a driver that keeps one processor this busy makes sound
+    # crackle and games stutter, even while the total load looks low
+    since_start, now = sample.get("interrupts") or 0, sample.get("interrupts_now") or 0
+    storm = since_start >= INTERRUPTS_HIGH or now >= INTERRUPTS_NOW_HIGH
+    if storm:
+        items.insert(0, ("item_interrupts", {"percent": round(max(since_start, now))}))
+    if load >= 80:
+        return Finding("cpu_load", "warning", "cpu_high", {"percent": load}, items, ["taskmgr"])
+    if storm:
+        return Finding("cpu_load", "warning", "interrupts_high", {"percent": round(max(since_start, now))}, items,
+                       ["devices"])
+    return Finding("cpu_load", "ok", "cpu_ok", {"percent": load}, items, ["taskmgr"])
 
 
 def check_cpu_microcode(facts):
@@ -1712,19 +2487,28 @@ def check_power_plan(facts):
         return unknown("power_plan")
     plugged = state["plugged"] is not False or not state["battery"]  # a desktop is always plugged in
     params = {"name": state["name"] or "?"}
+    # No sleep at all, and a setting known to take it away: Modern Standby turned off on a PC without S3, or the
+    # policy that forbids the standby states
+    sleep = facts.get("sleep") or {}
+    items = [("item_sleep_" + cause, {}) for cause in sleep.get("causes") or []] \
+        if sleep.get("available") is False else []
     if plugged and state["scheme"] == POWER_SAVER:
-        return Finding("power_plan", "warning", "power_saver", params, actions=["power"])
+        return Finding("power_plan", "warning", "power_saver", params, items, ["power"])
     if plugged and state["overlay"] == OVERLAY_EFFICIENCY:
-        return Finding("power_plan", "warning", "power_efficiency", params, actions=["power_mode"])
+        return Finding("power_plan", "warning", "power_efficiency", params, items, ["power_mode"])
+    if state.get("idle_disable") == 1:
+        return Finding("power_plan", "warning", "idle_off", params, items, ["power"])
     if plugged:
         caps = [state.get(key) for key in ("max_cpu", "max_cpu1") if state.get(key) is not None]
         if caps and min(caps) < 100:
-            return Finding("power_plan", "warning", "power_capped", dict(params, percent=min(caps)), actions=["power"])
+            return Finding("power_plan", "warning", "power_capped", dict(params, percent=min(caps)), items, ["power"])
         if state.get("boost") == 0:
-            return Finding("power_plan", "warning", "boost_off", params, actions=["power"])
+            return Finding("power_plan", "warning", "boost_off", params, items, ["power"])
         mhz = [state.get(key) for key in ("max_mhz", "max_mhz1") if state.get(key)]
         if mhz:
-            return Finding("power_plan", "warning", "freq_capped", dict(params, mhz=min(mhz)), actions=["power"])
+            return Finding("power_plan", "warning", "freq_capped", dict(params, mhz=min(mhz)), items, ["power"])
+    if items:
+        return Finding("power_plan", "info", "sleep_off", params, items, ["power"])
     if state["saver"]:
         return Finding("power_plan", "info", "battery_saver", params, actions=["power_mode"])
     return Finding("power_plan", "ok", "power_ok", params, actions=["power"])
@@ -1874,10 +2658,19 @@ def check_startup_apps(facts):
     names = facts.get("startup")
     if names is None:
         return unknown("startup_apps")
-    severity = "warning" if len(names) > 10 else "ok"
-    items = [("item_name", {"name": name}) for name in sorted(names, key=str.lower)]
-    return Finding("startup_apps", severity, "startup_many" if severity != "ok" else "startup_ok", {"n": len(names)},
-                   items, ["startup"])
+    # What the programs cost at the last starts, as Task Manager's "Startup impact" measures it: "High" is more
+    # than a second of processor time or more than 3 MB read from the drive
+    heavy = [p for p in facts.get("startup_impact") or []
+             if p["cpu"] >= STARTUP_HIGH_MS or p["disk"] >= STARTUP_HIGH_DISK]
+    items = [("item_startup_heavy", {"name": p["name"], "seconds": round(p["cpu"] / 1000, 1), "size": Size(p["disk"])})
+             for p in heavy[:5]]
+    items += [("item_name", {"name": name}) for name in sorted(names, key=str.lower)]
+    if len(names) > 10:
+        return Finding("startup_apps", "warning", "startup_many", {"n": len(names)}, items, ["startup"])
+    if heavy:
+        return Finding("startup_apps", "info", "startup_heavy",
+                       {"n": len(names), "names": ", ".join(p["name"] for p in heavy[:3])}, items, ["startup"])
+    return Finding("startup_apps", "ok", "startup_ok", {"n": len(names)}, items, ["startup"])
 
 
 def check_rgb_software(facts):
@@ -1996,29 +2789,71 @@ def check_disk_health(facts):
     disks = facts.get("disks")
     if not disks:
         return unknown("disk_health")
-    # Wear and uncorrected read errors: only administrators can read them, and some drives leave them empty
+    # Wear and uncorrected read errors: only administrators can read them, and some drives leave them empty. What
+    # an NVMe drive or a hard disk reports itself comes first: Windows' counters can show no wear at all
     counters = {c.get("id"): c for c in facts.get("wear") or []}
+    own = facts.get("drive_health") or {}
     items = []
     for d in disks:
         params = {"name": d.get("name") or "?", "media": d.get("media") or "?", "bus": d.get("bus") or "?",
                   "health": _health(d)}
+        report = own.get(d.get("id"))
         wear = counters.get(d.get("id"), {}).get("wear")
-        items.append(("item_disk_wear", dict(params, wear=wear)) if isinstance(wear, int) else ("item_disk", params))
+        if report and report["kind"] == "nvme":
+            items.append(("item_disk_nvme", dict(params, wear=report["used"], hours=report["hours"],
+                                                 written=Size(report["written"]), unsafe=report["unsafe"])))
+        elif report and report["kind"] == "ata":
+            items.append(("item_disk_hdd", dict(params, hours=report["hours"] or 0)))
+        elif isinstance(wear, int):
+            items.append(("item_disk_wear", dict(params, wear=wear)))
+        else:
+            items.append(("item_disk", params))
     # "Unknown" comes from USB bridges, RAID and virtual disks: no data rather than a fault
     bad = [d for d in disks if (d.get("health") or "").lower() in ("warning", "unhealthy")]
     if bad:
         severity = "problem" if any(d["health"].lower() == "unhealthy" for d in bad) else "warning"
         return Finding("disk_health", severity, "health_bad", {"name": bad[0].get("name") or "?",
                                                                "health": _health(bad[0])}, items)
-    for d in disks:
-        counter = counters.get(d.get("id"), {})
-        wear, errors = counter.get("wear"), counter.get("read_errors")
-        params = {"name": d.get("name") or "?", "wear": wear}
-        if isinstance(wear, int) and wear >= 90:
-            return Finding("disk_health", "problem" if wear >= 100 else "warning", "ssd_worn", params, items)
-        if isinstance(errors, int) and errors > 0:
-            return Finding("disk_health", "warning", "read_errors", dict(params, n=errors), items)
+    found = [drive_verdict(d, own.get(d.get("id")), counters.get(d.get("id"), {})) for d in disks]
+    found = [f for f in found if f]
+    if found:
+        severity, line, params = min(found, key=lambda f: SEVERITIES.index(f[0]))
+        return Finding("disk_health", severity, line, params, items)
     return Finding("disk_health", "ok", "health_ok", {}, items)
+
+
+def drive_verdict(disk, report, counter):
+    """(severity, line, params) of what one drive reports about its health, or None when it is fine. The rules
+    are CrystalDiskInfo's: an NVMe drive's critical warning, its spare blocks at or below the threshold, its rated
+    endurance used up; a hard disk's reallocated, pending or uncorrectable sectors."""
+    params = {"name": disk.get("name") or "?"}
+    if report and report["kind"] == "nvme":
+        critical = report["critical"]
+        if critical & ~0x02:  # spare low, reliability degraded, read-only, the backup of volatile memory failed
+            return "problem", "nvme_critical", params
+        if report["spare_threshold"] and report["spare"] < report["spare_threshold"]:
+            return "problem", "nvme_spare", dict(params, spare=report["spare"])
+        if report["used"] >= NVME_WORN:
+            return "problem" if report["used"] >= NVME_WORN_OUT else "warning", "ssd_worn", \
+                dict(params, wear=report["used"])
+        if report["spare_threshold"] and report["spare"] == report["spare_threshold"]:
+            return "warning", "nvme_spare", dict(params, spare=report["spare"])
+        if report["media_errors"]:
+            return "warning", "nvme_media_errors", dict(params, n=report["media_errors"])
+        if critical & 0x02:
+            return "warning", "nvme_hot", dict(params, temperature=report["temperature"] or "?")
+        return None
+    if report and report["kind"] == "ata":
+        sectors = {key: report[key] or 0 for key in ("reallocated", "pending", "uncorrectable")}
+        if any(sectors.values()):
+            return "warning", "hdd_sectors", dict(params, **sectors)
+        return None
+    wear, errors = counter.get("wear"), counter.get("read_errors")
+    if isinstance(wear, int) and wear >= NVME_WORN:
+        return "problem" if wear >= NVME_WORN_OUT else "warning", "ssd_worn", dict(params, wear=wear)
+    if isinstance(errors, int) and errors > 0:
+        return "warning", "read_errors", dict(params, n=errors)
+    return None
 
 
 def check_system_drive(facts):
@@ -2132,7 +2967,9 @@ def check_crashes(facts):
         code = e["args"][0].split()[0] if e["args"] else "?"
         if e["id"] == 41 and code.isdigit():
             code = f"0x{int(code):08X}"
-        items.append(("item_bsod", {"date": e["time"].date(), "code": code}))
+        cause = stop_cause(code)
+        items.append(("item_bsod_cause", {"date": e["time"].date(), "code": code, "cause": Text("stop_" + cause)})
+                     if cause else ("item_bsod", {"date": e["time"].date(), "code": code}))
     for e in sorted(resets, key=lambda e: e["time"], reverse=True)[:6]:
         # Kernel-Power 41 keeps when the power button was pressed, and the power state Windows was moving to at the
         # time (SYSTEM_POWER_STATE): 2-4 sleep, 5 hibernation (and Fast startup), 6 shutdown
@@ -2169,6 +3006,28 @@ def check_crashes(facts):
     if resets:
         return Finding("crashes", "warning", "resets", {"n": len(resets), "days": EVENT_DAYS}, items, actions)
     return Finding("crashes", "ok", "crashes_ok", {"days": EVENT_DAYS}, items, actions[1:])
+
+
+# The usual cause behind the commonest stop codes of a blue screen (Microsoft's bug check reference)
+STOP_CAUSES = {
+    "driver": (0x0A, 0x1E, 0x3B, 0x7E, 0x8E, 0xC2, 0xC5, 0xD1, 0x19, 0xBE, 0xFC, 0x13A, 0x139, 0x133, 0xCE, 0xD5),
+    "memory": (0x1A, 0x50, 0x12B, 0x4E),
+    "graphics": (0x116, 0x117, 0x119, 0x10E, 0x141),
+    "hardware": (0x124, 0x101, 0x9C),
+    "disk": (0x7A, 0x77, 0x154, 0x24, 0x7B),
+    "system": (0xEF, 0xF4, 0xC000021A),
+    "sleep": (0x9F, 0xA0),
+    "usb": (0x144, 0xFE),
+}
+
+
+def stop_cause(code):
+    """The kind of fault a stop code usually means ("driver", "memory"…), or None for one not in STOP_CAUSES."""
+    try:
+        number = int(str(code), 16)
+    except ValueError:
+        return None
+    return next((cause for cause, codes in STOP_CAUSES.items() if number in codes), None)
 
 
 def _module_vendor(module):
@@ -2453,7 +3312,9 @@ def check_battery(facts):
         return unknown("battery")
     health = min(100, _percent(battery["full"], battery["design"]))
     severity = "problem" if health < 40 else "warning" if health < 60 else "ok"
-    return Finding("battery", severity, "battery", {"percent": health})
+    cycles = facts.get("battery_cycles")
+    return Finding("battery", severity, "battery", {"percent": health},
+                   [("item_battery_cycles", {"n": cycles})] if cycles else [])
 
 
 # SecurityCenter2 productState: bits 12-15 say whether protection is on, bits 4-7 whether definitions are current
@@ -2492,15 +3353,41 @@ def check_security_settings(facts):
     state = facts.get("security")
     if state is None:
         return unknown("security_settings")
-    items = []
+    # On a PC an organization manages, its policies are on purpose
+    weakened = "info" if _is_managed(facts) else "warning"
+    found = []
     if state["uac_off"]:
-        items.append(("item_uac_off", {}))
+        found.append(("item_uac_off", {}, "warning"))
     if state["mitigations_off"]:
-        items.append(("item_mitigations_off", {}))
-    if not items:
+        found.append(("item_mitigations_off", {}, "warning"))
+    if state.get("smartscreen_off"):
+        found.append(("item_smartscreen_off", {}, weakened))
+    if state.get("zone_off"):
+        found.append(("item_zone_off", {}, weakened))
+    # Policies that turn Microsoft Defender off: only while it is the antivirus at work. Tamper protection ignores
+    # them on a PC no organization manages, and real-time protection then stays on
+    defender, policies = facts.get("defender"), state.get("defender_policies") or []
+    if policies and defender and defender["mode"].lower().startswith("normal"):
+        names = ", ".join(policies)
+        if not defender["realtime"]:
+            found.append(("item_defender_policy", {"names": names}, weakened))
+        elif defender["tamper"]:
+            found.append(("item_defender_policy_ignored", {"names": names}, "info"))
+        else:
+            found.append(("item_defender_policy_pending", {"names": names}, weakened))
+    found += [("item_hidden_" + page, {}, "info") for page in state.get("hidden_pages") or []]
+    if state.get("notifications_off"):
+        found.append(("item_defender_quiet", {}, "info"))
+    if not found:
         return Finding("security_settings", "ok", "security_ok")
-    return Finding("security_settings", "warning", "security_off", {"n": len(items)}, items,
-                   ["uac"] if state["uac_off"] else [])
+    severity = min((f[2] for f in found), key=SEVERITIES.index)
+    items = [(key, params) for key, params, _ in found]
+    by_policy = [f for f in found if f[0] not in ("item_uac_off", "item_mitigations_off")]
+    if by_policy and _is_managed(facts):
+        items.append(("item_managed", {}))
+    actions = ["uac"] if state["uac_off"] else ["security"] if by_policy else []
+    return Finding("security_settings", severity, "security_off" if severity == "warning" else "security_changed",
+                   {"n": len(found)}, items, actions)
 
 
 def check_memory_integrity(facts):
@@ -2538,8 +3425,20 @@ def check_windows_update(facts):
     last = facts.get("windows_updated") or facts.get("last_update")
     if settings and settings["disabled"]:
         return Finding("windows_update", "problem", "wu_disabled", actions=["update"])
+    # An update server of an organization (WSUS) and its policies are normal on a PC it manages. On any other PC
+    # they are left by tools that block updates: a server on this PC itself answers nothing
+    if settings and not _is_managed(facts):
+        if settings.get("server"):
+            severity = "problem" if LOCAL_SERVERS.search(settings["server"]) else "warning"
+            return Finding("windows_update", severity, "wu_server", {"server": settings["server"]}, actions=["update"])
+        if settings.get("blocked"):
+            return Finding("windows_update", "warning", "wu_blocked", {"names": ", ".join(settings["blocked"])},
+                           actions=["update"])
     if settings and settings["policy_off"]:
         return Finding("windows_update", "warning", "wu_policy", actions=["update"])
+    paused = settings.get("paused_until") if settings else None
+    if paused and paused > facts["now"] + datetime.timedelta(days=PAUSE_LIMIT_DAYS):
+        return Finding("windows_update", "warning", "wu_paused", {"date": paused.date()}, actions=["update"])
     # Windows updates that failed to install again and again and have not been installed since, in this or a newer
     # version. Microsoft Store apps also update through this service, retry by themselves and are left out
     events = sorted(facts.get("update_events") or [], key=lambda e: e["time"])
@@ -2805,6 +3704,248 @@ def check_conflicting_software(facts):
         return Finding("conflicting_software", "ok", "conflicts_ok", {})
     severity = min(severities, key=SEVERITIES.index)
     return Finding("conflicting_software", severity, "conflicts", {"n": len(items)}, items, actions)
+
+
+def _worse(severity, other):
+    return min(severity, other, key=SEVERITIES.index)
+
+
+def _number(data, key):
+    value = (data.get(key) or "").strip()
+    return int(value) if value.isdigit() else 0
+
+
+def check_video_memory(facts):
+    events = facts.get("perf_events")
+    if events is None:
+        return None  # only administrators may read this log, and running short is rare: nothing to point out
+    since = _days_ago(facts, EVENT_DAYS)
+    # Scenario 2 of the desktop window manager: "video memory resources are over-utilized and there is thrashing"
+    short = [e for e in events if e["id"] in (500, 501) and e["data"].get("Scenario") == "2" and e["time"] >= since]
+    if len(short) < VIDEO_MEMORY_EVENTS:
+        return None
+    last = max(short, key=lambda e: e["time"])
+    return Finding("video_memory", "info", "vram_short", {"n": len(short), "days": EVENT_DAYS, "date": last["time"].date(),
+                                                          "name": last["data"].get("DisplayDeviceFriendlyName") or "?"},
+                   actions=["taskmgr"])
+
+
+# Events of Diagnostics-Performance that name what slowed a start or a shutdown down. Programs (101) are left out:
+# Windows names everything that started right after sign-in, a program opened by hand too; their cost at the start
+# comes from the startup measurements instead
+SLOW_CULPRITS = {102: "driver", 103: "service", 109: "device", 202: "shutdown_device", 203: "shutdown_service",
+                 201: "shutdown_app"}
+
+
+def check_boot_time(facts):
+    events = facts.get("perf_events")
+    if events is None:
+        return unknown("boot_time", "unknown_admin" if facts.get("admin") is False else "unknown_read")
+    starts = [e for e in events if e["id"] == 100 and e["data"].get("BootIsRebootAfterInstall", "").lower() != "true"
+              and _number(e["data"], "BootTime")]
+    if not starts:
+        # The Diagnostic Policy Service writes these events; without it there are none to read
+        if any(service[0] == "DPS" for service in facts.get("disabled_services") or []):
+            return unknown("boot_time", "unknown_dps")
+        return None
+    times = sorted(_number(e["data"], "BootTime") for e in starts)
+    params = {"seconds": round(times[len(times) // 2] / 1000), "n": len(times)}
+    found = {}
+    for e in events:
+        kind = SLOW_CULPRITS.get(e["id"])
+        if not kind:
+            continue
+        name = e["data"].get("FriendlyName") or e["data"].get("Name") or "?"
+        entry = found.setdefault((kind, name), {"starts": set(), "delays": []})
+        # A start's culprits are written together with it, in the same minute
+        entry["starts"].add(e["time"].replace(second=0, microsecond=0))
+        entry["delays"].append(_number(e["data"], "DegradationTime"))
+    slow = []
+    for (kind, name), entry in found.items():
+        delays = sorted(entry["delays"])
+        typical = delays[len(delays) // 2]
+        if len(entry["starts"]) >= SLOW_STARTS and typical >= SLOW_START_MS:
+            slow.append((kind, name, typical, len(entry["starts"])))
+    if not slow:
+        return Finding("boot_time", "ok", "boot_time_ok", params)
+    slow.sort(key=lambda s: -s[2])
+    items = [("item_slow_" + kind, {"name": name, "seconds": round(delay / 1000, 1), "n": n})
+             for kind, name, delay, n in slow[:6]]
+    total = sum(delay for kind, _, delay, _ in slow)
+    actions = (["devices"] if any(s[0] in ("driver", "device", "shutdown_device") for s in slow) else []) + \
+              (["services"] if any(s[0] in ("service", "shutdown_service") for s in slow) else [])
+    return Finding("boot_time", "warning" if total >= SLOW_START_TOTAL_MS else "info", "boot_slowed",
+                   dict(params, names=", ".join(dict.fromkeys(name for _, name, _, _ in slow[:3]))), items, actions)
+
+
+def check_xbox_network(facts):
+    setup = facts.get("network_setup")
+    if setup is None:
+        return unknown("xbox_network")
+    ipv6 = setup["ipv6"] & 0xFFFFFFFF
+    items, severity = [], "ok"
+    if ipv6 == IPV6_DELAY:
+        items.append(("item_ipv6_delay", {}))
+        severity = "warning"
+    if setup["gaming"]:
+        # Xbox party chat and many multiplayer games connect through Teredo, which runs in the IP Helper service
+        if facts.get("teredo") == TEREDO_DISABLED or setup["teredo_policy_off"] or ipv6 & IPV6_TUNNELS_OFF:
+            items.append(("item_teredo_off", {}))
+            severity = "warning"
+        if setup["ip_helper_off"]:
+            items.append(("item_ip_helper_off", {}))
+            severity = "warning"
+        # Services merged into shared processes (a threshold raised above the memory): Xbox controllers and the
+        # Game Bar stop working. The default (3.5 GB) merges them on PCs with less memory by design
+        memory = (facts.get("memory") or {}).get("total") or 0
+        if setup["split"] not in (None, SVCHOST_DEFAULT) and memory and setup["split"] * 1024 >= memory:
+            items.append(("item_svchost_merged", {}))
+            severity = "warning"
+    # 0x20 only prefers IPv4, which Microsoft supports; the other bits turn parts of IPv6 off
+    if ipv6 & ~0x20 and ipv6 != IPV6_DELAY and not items:
+        items.append(("item_ipv6_off", {}))
+        severity = "info"
+    if not items:
+        return Finding("xbox_network", "ok", "xbox_ok")
+    return Finding("xbox_network", severity, "xbox_changed", {"n": len(items)}, items, ["network_status"])
+
+
+def check_drive_link(facts):
+    links = facts.get("drive_links")
+    if not links:
+        return None  # no NVMe drive, or its link could not be read
+    names = {d.get("id"): d.get("name") or "?" for d in facts.get("disks") or []}
+    items, severity, slow = [], "ok", None
+    for number, (speed, width, top_speed, top_width) in sorted(links.items()):
+        params = {"name": names.get(number, "?"), "speed": speed, "width": width, "max_speed": top_speed,
+                  "max_width": top_width}
+        if width < top_width:  # half its lanes: a slot shared with another device, or an adapter
+            items.append(("item_link_narrow", params))
+            severity, slow = "warning", slow or params
+        elif speed < top_speed:  # the slot or the board is an older generation
+            items.append(("item_link_slower", params))
+            severity, slow = _worse(severity, "info"), slow or params
+        else:
+            items.append(("item_link_full", params))
+    if slow:
+        return Finding("drive_link", severity, "drive_link_slow", slow, items)
+    return Finding("drive_link", "ok", "drive_link_ok", {}, items)
+
+
+VOLUME_HEALTH = {1: ("item_volume_scan", "info"), 2: ("item_volume_fix", "warning"),
+                 3: ("item_volume_repair", "problem")}  # MSFT_Volume.HealthStatus
+
+
+def check_volume_health(facts):
+    volumes = facts.get("volumes")
+    if volumes is None:
+        return unknown("volume_health", "unknown_admin" if facts.get("admin") is False else "unknown_read")
+    dirty = {d.rstrip(":").upper() for d in facts.get("dirty") or []}
+    items, severity = [], "ok"
+    for volume in sorted(volumes, key=lambda v: v.get("drive") or ""):
+        drive = (volume.get("drive") or "").rstrip(":").upper()
+        if not drive:
+            continue
+        if volume.get("health") in VOLUME_HEALTH:
+            key, level = VOLUME_HEALTH[volume["health"]]
+            items.append((key, {"drive": drive + ":"}))
+            severity = _worse(severity, level)
+        elif drive in dirty:  # Windows checks the drive at the next start
+            items.append(("item_volume_dirty", {"drive": drive + ":"}))
+            severity = _worse(severity, "warning")
+    if not items:
+        return Finding("volume_health", "ok", "volumes_ok", {"n": len(volumes)})
+    return Finding("volume_health", severity, "volumes_damaged", {"n": len(items)}, items)
+
+
+def check_app_platform(facts):
+    state, info = facts.get("app_platform"), facts.get("windows") or {}
+    if info.get("server"):
+        return None  # Windows Server comes without most of these
+    if state is None:
+        return unknown("app_platform")
+    edition, build = info.get("edition") or "", info.get("build") or 0
+    packages, removed = state["packages"], state["deprovisioned"]
+
+    def has(prefixes):
+        return any(p.startswith(prefixes) for p in packages)
+
+    found = []
+    store = not edition.startswith(NO_STORE_EDITIONS)
+    if store and not has(STORE_PACKAGE):
+        found.append(("item_no_store", STORE_PACKAGE, "warning"))
+    if not has(SECURITY_APP_PACKAGES):
+        found.append(("item_no_security_app", SECURITY_APP_PACKAGES[0], "warning"))
+    if build >= 22000 and not has(SHELL_PACKAGE):
+        found.append(("item_no_shell", SHELL_PACKAGE, "warning"))
+    if store and not has(APP_INSTALLER_PACKAGE):
+        found.append(("item_no_app_installer", APP_INSTALLER_PACKAGE, "info"))
+    if state["gaming"] and not has(XBOX_IDENTITY_PACKAGE):
+        found.append(("item_no_xbox_identity", XBOX_IDENTITY_PACKAGE, "warning"))
+    if not state["webview2"]:
+        # Windows 11 comes with it; on Windows 10 it arrives with Edge and Microsoft 365
+        found.append(("item_no_webview2", None, "warning" if build >= 22000 else "info"))
+    if not found:
+        return Finding("app_platform", "ok", "platform_ok")
+    items = []
+    for key, prefix, _ in found:
+        items.append((key, {}))
+        if prefix and any(name.startswith(prefix) for name in removed):
+            items.append(("item_removed_for_all", {}))
+    severity = min((f[2] for f in found), key=SEVERITIES.index)
+    return Finding("app_platform", severity, "platform_missing", {"n": len(found)}, items)
+
+
+def check_wmi_health(facts):
+    code, repository = facts.get("wmi"), facts.get("wmi_repository")
+    if repository:  # Windows' own check of the repository found it inconsistent
+        return Finding("wmi_health", "problem", "wmi_damaged", {"code": f"0x{repository:08X}"})
+    if code:
+        return Finding("wmi_health", "warning", "wmi_error", {"code": f"0x{code & 0xFFFFFFFF:08X}"})
+    if code is None and repository is None:
+        return unknown("wmi_health")
+    return Finding("wmi_health", "ok", "wmi_ok")
+
+
+def _subject_name(subject):
+    found = re.search(r"CN=([^,]+)", subject or "")
+    return (found.group(1) if found else subject or "?").strip().strip('"')
+
+
+BLOCKED_ORDER = ("sign_in", "hijack", "protection", "windows")
+
+
+def check_blocked_tools(facts):
+    state = facts.get("blocked")
+    if state is None:
+        return unknown("blocked_tools")
+    items, severity, count = [], "ok", 0
+    for found in sorted(state["programs"], key=lambda p: (BLOCKED_ORDER.index(p["kind"]), p["program"])):
+        debugger = os.path.basename(command_program(found["debugger"])) or found["debugger"]
+        items.append(("item_blocked_" + found["kind"], {"name": found["program"], "debugger": debugger}))
+        items += [("item_blocked_service", {"name": service}) for service in found["services"]]
+        severity = _worse(severity, "info" if found["kind"] == "windows" else "warning")
+        count += 1
+    # Locks a school or a workplace sets on purpose are worth knowing about only
+    lock_level = "info" if _is_managed(facts) else "warning"
+    for tool in state["locks"]:
+        items.append(("item_lock_" + tool, {}))
+        severity, count = _worse(severity, lock_level), count + 1
+    if state["disallowed"]:
+        items.append(("item_lock_names", {"names": ", ".join(state["disallowed"][:6])}))
+    for name in state["firewall"]:
+        items.append(("item_firewall_block", {"name": name}))
+        severity, count = _worse(severity, "warning"), count + 1
+    vendors = list(dict.fromkeys(_subject_name(s) for s in facts.get("disallowed") or [] if SECURITY_VENDORS.search(s)))
+    for name in vendors[:5]:
+        items.append(("item_untrusted_vendor", {"name": name}))
+        severity, count = _worse(severity, "warning"), count + 1
+    if not items:
+        return Finding("blocked_tools", "ok", "blocked_ok")
+    if state["locks"] and lock_level == "info":
+        items.append(("item_managed", {}))
+    return Finding("blocked_tools", severity, "blocked_protection" if severity == "warning" else "blocked_windows",
+                   {"n": count}, items)
 
 
 VERDICTS = {check: globals()["check_" + check] for check, _ in CHECKS}
