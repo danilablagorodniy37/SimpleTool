@@ -29,19 +29,20 @@ import theme
 import tray
 import tweaks
 import sysinfo
+import uninstaller
 import updater
 import updates
 import whatsnew
 from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, Ring, ScanRings,
-                     Segmented, Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in)
+                     Segmented, Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in, round_points)
 
-VERSION = "0.12.1"
+VERSION = "0.13"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
-PAGES = ["overview", "diagnostics"] + tweaks.CATEGORIES + ["memory", "snapshots"]
+PAGES = ["overview", "diagnostics"] + tweaks.CATEGORIES + ["programs", "memory", "snapshots"]
 TRAY_OPEN, TRAY_LIMITER, TRAY_EXIT = 1, 2, 3  # tray icon menu items
 SELECTABLE = ("applied", "partial", "not_applied", "unknown")
 REVERTIBLE = ("applied", "partial", "unknown")
@@ -68,8 +69,11 @@ ICONS = {"overview": "", "privacy": "", "system": "", "explorer": ""
          "info": "", "refresh": "", "dots": "", "snapshots": "", "folder": "", "memory": "",
          "add": "", "apps": "", "help": "",
          "diagnostics": "", "speed": "", "drive": "", "bug": ""}
+ICONS["programs"] = ICONS["apps"]
+ICONS["search"] = ""
 # The icon of each group of troubleshooting checks
 GROUP_ICONS = {"performance": "speed", "storage": "drive", "stability": "bug", "security": "shield"}
+PROGRAM_ICON = 32  # px of a program's own icon in the list, before scaling
 
 
 def status_color(state):
@@ -200,6 +204,14 @@ class App:
         self.installed = None     # [(process, title)] of programs installed on the PC; found once in the background
         self.installed_sizes = {}  # how much memory the running ones used at the time of the search
         self.show_all_installed = False
+        self.programs = None      # [uninstaller.Program] of the Programs page; read in the background when it opens
+        self.programs_loading = False
+        self.programs_gone = []   # (program, leftovers, date) of programs removed without SimpleTool
+        self.program_icons = {}   # registry key of a program -> PhotoImage of its own icon
+        self.program_rows = []    # (program, card) of the page, to filter and sort without rebuilding it
+        self.program_query = ""
+        self.program_search = None  # the variable of the search field
+        self.program_sort = "name"
         # Tk objects may only be deleted from the window thread, but the cyclic garbage collector runs in whichever
         # thread is allocating memory, such as the limiter thread. So only poll() collects garbage
         gc.disable()
@@ -606,13 +618,16 @@ class App:
         light = C["name"] == "light"  # the sidebar is dark in every theme
         color = ("#FCA5A5" if light else C["bad"]) if found["problem"] else ("#F0B783" if light else C["warn"])
         self.nav["diagnostics"]["count"].configure(text=str(attention) if attention else "", fg=color)
+        # Programs: how many are installed, once the list has been read
+        self.nav["programs"]["count"].configure(text=str(len(self.programs)) if self.programs else "",
+                                                fg=C["side_dim"])
         if not self.scan:
             for page, widgets in self.nav.items():
-                if page not in ("memory", "diagnostics"):
+                if page not in ("memory", "diagnostics", "programs"):
                     widgets["count"].configure(text="")
             return
         for page, widgets in self.nav.items():
-            if page in ("memory", "diagnostics"):
+            if page in ("memory", "diagnostics", "programs"):
                 continue
             if page == "overview":
                 problems = sum(self.unknown_reasons().values())
@@ -666,6 +681,11 @@ class App:
             self.link(self.links, self.t("mem_pick"), self.pick_running).pack(side="left")
         elif page == "diagnostics":
             self.link(self.links, self.t("rescan"), self.rescan_diagnostics).pack(side="left")
+        elif page == "programs":
+            if os.path.isdir(os.path.join(engine.data_dir(), "uninstalled")):
+                self.link(self.links, self.t("prog_saved"), self.open_saved_leftovers).pack(side="left",
+                                                                                            padx=(0, self.px(16)))
+            self.link(self.links, self.t("prog_reload"), lambda: self.load_programs(force=True)).pack(side="left")
         else:
             for key, action in (("select_all", self.select_all), ("clear", self.clear_selection)):
                 self.link(self.links, self.t(key), action).pack(side="left", padx=(self.px(16), 0))
@@ -689,6 +709,8 @@ class App:
             self.build_memory_page()
         elif page == "diagnostics":
             self.build_diagnostics_page()
+        elif page == "programs":
+            self.build_programs_page()
         else:
             self.build_tweak_page(page)
         tk.Frame(self.list_frame, bg=C["bg"], height=self.px(12)).pack()
@@ -1278,6 +1300,375 @@ class App:
                       color=C["dim"]).pack(side="left", padx=(px(12), 0))
         self.page_cards.append(card)
 
+    # --- Programs ---
+
+    def load_programs(self, force=False):
+        """Reads the installed programs and their own icons in the background, then shows them."""
+        if self.programs_loading or (self.programs is not None and not force) or force and self.busy:
+            return
+        self.programs_loading = True
+        size = self.px(PROGRAM_ICON)
+
+        def work():
+            found, icons, gone = uninstaller.installed_programs(), {}, []
+            # Programs removed since the last time without SimpleTool: offered only when they left something
+            for program, day in uninstaller.removed_elsewhere(found):
+                leftovers = uninstaller.find_leftovers(program, found)
+                if leftovers:
+                    gone.append((program, leftovers, day))
+                else:
+                    uninstaller.forget(program.key)
+            for program in found + [entry[0] for entry in gone]:
+                if program.icon:
+                    try:
+                        data = uninstaller.icon_png(program.icon[0], program.icon[1], size)
+                    except OSError:
+                        data = None
+                    if data:
+                        icons[program.key] = data
+            return found, icons, gone
+
+        def done(result):
+            self.programs_loading = False
+            if isinstance(result, Exception):
+                self.programs = self.programs or []
+                self.show_errors([str(result)])
+            else:
+                self.programs, icons, self.programs_gone = result
+                self.program_icons = {}
+                for key, data in icons.items():
+                    try:
+                        self.program_icons[key] = tk.PhotoImage(data=data)
+                    except tk.TclError:
+                        pass  # an icon Tk cannot read gets the generic one
+            self.update_nav_counts()
+            if self.page == "programs":
+                self.show_page("programs", animate=False)
+
+        self.run_job(work, done)
+
+    def build_programs_page(self):
+        px = self.px
+        self.program_rows = []
+        if self.programs is None:
+            note = tk.Label(self.list_frame, text=self.t("prog_loading"), font=self.fonts["body"], fg=C["muted"],
+                            bg=C["bg"], anchor="w")
+            note.pack(fill="x", padx=px(18), pady=px(8))
+            self.load_programs()
+            return
+        # Search, order and how many there are
+        card = Card(self.list_frame, self.scale, radius=14, pad=6)
+        card.pack(fill="x", pady=(0, px(12)))
+        top = tk.Frame(card.body, bg=card.fill)
+        top.pack(fill="x", padx=px(12), pady=(px(12), 0))
+        field = tk.Frame(top, bg=C["bg"], highlightthickness=1, highlightbackground=C["border"],
+                         highlightcolor=C["primary"])
+        field.pack(side="left", fill="x", expand=True)
+        tk.Label(field, text=ICONS["search"], font=self.fonts["icon_small"], fg=C["muted"], bg=C["bg"]).pack(
+            side="left", padx=(px(10), 0))
+        # Kept on the window: a variable nothing in Python refers to is deleted, and its trace with it
+        self.program_search = query = tk.StringVar(value=self.program_query)
+        entry = tk.Entry(field, textvariable=query, font=self.fonts["body"], fg=C["text"], bg=C["bg"], relief="flat",
+                         insertbackground=C["text"], highlightthickness=0)
+        entry.pack(side="left", fill="x", expand=True, ipady=px(6), padx=(px(8), px(10)))
+        query.trace_add("write", lambda *args: self.filter_programs(query.get()))
+        order = Segmented(top, [("name", self.t("prog_sort_name")), ("size", self.t("prog_sort_size")),
+                                ("date", self.t("prog_sort_date"))], self.program_sort, self.fonts["small_bold"],
+                          self.scale, self.animator, command=self.sort_programs)
+        order.pack(side="right", padx=(px(12), 0))
+        self.program_count = tk.Label(card.body, text="", font=self.fonts["small"], fg=C["muted"], bg=card.fill,
+                                      anchor="w", justify="left")
+        self.program_count.pack(fill="x", padx=px(12), pady=(px(10), px(12) if self.admin else 0))
+        self.wrap(self.program_count, px(62))
+        if not self.admin:
+            note = tk.Label(card.body, text=self.t("prog_admin"), font=self.fonts["small_bold"], fg=C["warn"],
+                            bg=card.fill, anchor="w", justify="left")
+            note.pack(fill="x", padx=px(12), pady=(px(8), px(12)))
+            self.wrap(note, px(62))
+        self.page_cards.append(card)
+        if self.programs_gone:
+            self.build_gone_programs()
+        # The programs go before this marker, in the chosen order
+        self.program_end = tk.Frame(self.list_frame, bg=C["bg"])
+        self.program_end.pack(fill="x")
+        for program in self.programs:
+            self.program_rows.append((program, self.build_program_card(program)))
+        self.arrange_programs()
+
+    def build_gone_programs(self):
+        """Programs removed through Windows' settings or their own uninstaller that left things behind."""
+        px = self.px
+        head = tk.Label(self.list_frame, text=self.t("prog_gone_title"), font=self.fonts["h2"], fg=C["text"],
+                        bg=C["bg"], anchor="w", justify="left")
+        head.pack(fill="x", padx=px(4))
+        self.wrap(head, px(8))
+        note = tk.Label(self.list_frame, text=self.t("prog_gone_text"), font=self.fonts["small"], fg=C["muted"],
+                        bg=C["bg"], anchor="w", justify="left")
+        note.pack(fill="x", padx=px(4), pady=(px(2), px(8)))
+        self.wrap(note, px(8))
+        for program, leftovers, day in self.programs_gone:
+            card = Card(self.list_frame, self.scale, radius=12, pad=4)
+            card.pack(fill="x", pady=(0, px(8)))
+            card.set_accent(C["warn"])
+            body = card.body
+            body.columnconfigure(1, weight=1)
+            self.program_icon(body, card.fill, program).grid(row=0, column=0, rowspan=2, padx=px(14), pady=px(10))
+            name = tk.Label(body, text=program.name, font=self.fonts["h2"], fg=C["text"], bg=card.fill, anchor="w",
+                            justify="left")
+            name.grid(row=0, column=1, sticky="ew", pady=(px(10), 0))
+            self.wrap(name, px(360))
+            info = tk.Label(body, text=self.t("prog_gone_info", date=self.format_day(day or datetime.date.today()),
+                                              left=self.leftovers_text(leftovers)),
+                            font=self.fonts["small"], fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+            info.grid(row=1, column=1, sticky="ew", pady=(px(2), px(10)))
+            self.wrap(info, px(360))
+            actions = tk.Frame(body, bg=card.fill)
+            actions.grid(row=0, column=2, rowspan=2, sticky="e", padx=px(12))
+            self.link(actions, self.t("prog_gone_hide"), lambda p=program: self.hide_gone(p), font="small",
+                      color=C["dim"]).pack(side="left", padx=(0, px(14)))
+            button = GradientButton(actions, self.t("prog_clean_up"),
+                                    lambda p=program, items=leftovers: self.show_leftovers(p, items, gone=True),
+                                    self.fonts["button"], self.scale, self.animator, primary=False, pad=(14, 6))
+            button.pack(side="left")
+            self.action_buttons.append((button, uninstaller.needs_admin(leftovers)))
+            self.page_cards.append(card)
+        tk.Frame(self.list_frame, bg=C["bg"], height=px(6)).pack(fill="x")
+
+    def leftovers_text(self, leftovers):
+        """How many leftovers and how big: "6, 48 MB"; registry entries alone have no size to tell."""
+        total = sum(item["size"] for item in leftovers)
+        return f"{len(leftovers)}, {self.size_text(total)}" if total else str(len(leftovers))
+
+    def hide_gone(self, program):
+        """The user keeps what the program left: it is not offered again."""
+        uninstaller.forget(program.key)
+        self.programs_gone = [entry for entry in self.programs_gone if entry[0].key != program.key]
+        self.show_page("programs", animate=False)
+
+    def open_saved_leftovers(self):
+        """The folder with the .reg copies of removed registry keys and the list of everything removed."""
+        folder = os.path.join(engine.data_dir(), "uninstalled")
+        os.makedirs(folder, exist_ok=True)
+        self.shell_open(folder)
+
+    def program_icon(self, parent, bg, program):
+        """The program's own icon; a program without one gets a tile of the same size, so the names line up."""
+        px, color = self.px, CATEGORY_COLORS["programs"]
+        size = px(PROGRAM_ICON)
+        icon = tk.Canvas(parent, width=size, height=size, bg=bg, highlightthickness=0, bd=0)
+        image = self.program_icons.get(program.key)
+        if image:
+            icon.create_image(size // 2, size // 2, image=image)
+        else:
+            icon.create_polygon(*round_points(1, 1, size - 2, size - 2, px(8)), smooth=True,
+                                fill=mix(color, bg, 0.14), outline=mix(color, bg, 0.35))
+            icon.create_text(size / 2, size / 2, text=ICONS["programs"], font=self.fonts["icon"], fill=color)
+        return icon
+
+    def build_program_card(self, program):
+        px = self.px
+        card = Card(self.list_frame, self.scale, radius=12, pad=4)
+        body = card.body
+        body.columnconfigure(1, weight=1)
+        self.program_icon(body, card.fill, program).grid(row=0, column=0, rowspan=2, padx=px(14), pady=px(10))
+        name = tk.Label(body, text=program.name, font=self.fonts["h2"], fg=C["text"], bg=card.fill, anchor="w",
+                        justify="left")
+        name.grid(row=0, column=1, sticky="ew", pady=(px(10), 0))
+        self.wrap(name, px(330))
+        details = [program.publisher, program.version,
+                   self.size_text(program.size) if program.size else "",
+                   self.format_day(program.installed) if program.installed else ""]
+        info = tk.Label(body, text="  ·  ".join(part for part in details if part), font=self.fonts["small"],
+                        fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+        info.grid(row=1, column=1, sticky="ew", pady=(px(2), px(10)))
+        self.wrap(info, px(330))
+        actions = tk.Frame(body, bg=card.fill)
+        actions.grid(row=0, column=2, rowspan=2, sticky="e", padx=px(12))
+        if not program.removable:
+            tk.Label(actions, text=self.t("prog_not_removable"), font=self.fonts["small"], fg=C["dim"],
+                     bg=card.fill).pack(side="left")
+        else:
+            label = self.t("prog_clean_up" if program.uninstaller_missing else "prog_uninstall")
+            button = GradientButton(actions, label, lambda: self.confirm_uninstall(program), self.fonts["button"],
+                                    self.scale, self.animator, primary=False, pad=(14, 6))
+            button.pack(side="left")
+            # A program installed for every account is removed with administrator rights only
+            self.action_buttons.append((button, not program.user))
+        self.page_cards.append(card)
+        return card
+
+    def format_day(self, day):
+        """A date without the time, as format_date writes it."""
+        return f"{day.day} {day:%b %Y}" if self.lang == "en" else f"{day:%d.%m.%Y}"
+
+    def filter_programs(self, text):
+        self.program_query = text
+        self.arrange_programs()
+
+    def sort_programs(self, order):
+        self.program_sort = order
+        self.arrange_programs()
+
+    def arrange_programs(self):
+        """Shows the programs that match the search, in the chosen order, without building the cards again."""
+        if not self.program_rows:
+            return
+        query = self.program_query.strip().lower()
+        order = {"name": lambda p: p.name.lower(), "size": lambda p: (-p.size, p.name.lower()),
+                 "date": lambda p: (-(p.installed.toordinal() if p.installed else 0), p.name.lower())}
+        rows = sorted(self.program_rows, key=lambda row: order[self.program_sort](row[0]))
+        shown = []
+        for program, card in rows:
+            card.pack_forget()
+        for program, card in rows:
+            if not query or query in program.name.lower() or query in program.publisher.lower():
+                card.pack(fill="x", pady=(0, self.px(8)), before=self.program_end)
+                shown.append(program)
+        total = sum(p.size for p in self.programs or [])
+        self.program_count.configure(text=self.t("prog_count", n=len(self.programs or []),
+                                                 size=self.size_text(total)) if len(shown) == len(rows) else
+                                     self.t("prog_found", n=len(shown), total=len(rows)))
+        self.root.after_idle(self.layout)
+
+    def confirm_uninstall(self, program):
+        px = self.px
+        missing = program.uninstaller_missing
+        win, content = self.dialog(self.t("prog_confirm_title"), ICONS["programs"], CATEGORY_COLORS["programs"],
+                                   program.name, self.t("prog_confirm_missing" if missing else "prog_confirm_text"),
+                                   image=self.program_icons.get(program.key))
+
+        def go():
+            win.destroy()
+            # The same rule as for tweaks: a Windows restore point first, or the user's explicit decision
+            self.ensure_restore_point(lambda: self.start_uninstall(program), kind="_programs")
+
+        GradientButton(content, self.t("prog_clean_up" if missing else "prog_uninstall"), go, self.fonts["button"],
+                       self.scale, self.animator, pad=(18, 8)).pack(side="right")
+        GradientButton(content, self.t("cancel"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.present(win)
+
+    def start_uninstall(self, program):
+        """Runs the program's uninstaller in the background, then looks for what it left behind."""
+        others = [p for p in self.programs or [] if p.key != program.key]
+
+        def work():
+            if not program.uninstaller_missing:
+                uninstaller.run_uninstaller(program)
+                if uninstaller.still_installed(program):
+                    return "kept", []
+            uninstaller.forget(program.key)
+            return "removed", uninstaller.find_leftovers(program, others)
+
+        def done(result):
+            self.message = None
+            self.update_footer()
+            if isinstance(result, Exception):
+                self.notify(self.t("prog_failed"), C["warn"], ICONS["warning"])
+                self.show_errors([str(result)])
+                return
+            state, leftovers = result
+            if state == "kept":
+                self.notify(self.t("prog_kept", name=program.name), C["warn"], ICONS["warning"])
+                return
+            if leftovers:
+                self.show_leftovers(program, leftovers)
+            else:
+                self.notify(self.t("prog_clean", name=program.name), C["ok"], ICONS["check"])
+            self.load_programs(force=True)
+
+        self.run_action("prog_uninstalling", work, done)
+
+    def show_leftovers(self, program, leftovers, gone=False):
+        """What the program left: each item with a check box, all checked; the chosen ones are removed. A program
+        removed without SimpleTool (gone) had no restore point yet: it is checked for before the removal."""
+        px = self.px
+        win, content = self.dialog(self.t("prog_left_title"), ICONS["folder"], CATEGORY_COLORS["programs"],
+                                   self.t("prog_left_heading", name=program.name),
+                                   self.t("prog_left_text", found=self.leftovers_text(leftovers)),
+                                   image=self.program_icons.get(program.key))
+        frame = tk.Frame(content, bg=C["bg"])
+        frame.pack(fill="x")
+        canvas = tk.Canvas(frame, bg=C["bg"], highlightthickness=0, bd=0, width=px(520),
+                           height=min(px(330), px(58) * len(leftovers) + px(8)), yscrollincrement=px(20))
+        if len(leftovers) > 5:
+            scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview, style="Brand.Vertical.TScrollbar")
+            canvas.configure(yscrollcommand=scrollbar.set)
+            scrollbar.pack(side="right", fill="y", pady=px(2))
+        canvas.pack(side="left", fill="both", expand=True)
+        rows = tk.Frame(canvas, bg=C["bg"])
+        window = canvas.create_window(0, 0, window=rows, anchor="nw")
+        rows.bind("<Configure>", lambda e: canvas.configure(scrollregion=(0, 0, e.width, e.height)))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        win.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-3 * round(e.delta / 120), "units"))
+        chosen = [True] * len(leftovers)
+        for index, item in enumerate(leftovers):
+            row = tk.Frame(rows, bg=C["bg"], cursor="hand2")
+            row.pack(fill="x", padx=px(10), pady=(px(8), 0))
+            box = CheckBox(row, px(18), self.animator)
+            box.set(True, True, animate=False)
+            box.pack(side="left", anchor="n", padx=(0, px(10)), pady=(px(2), 0))
+            texts = tk.Frame(row, bg=C["bg"], cursor="hand2")
+            texts.pack(side="left", fill="x", expand=True)
+            kind = self.t("prog_kind_" + item["kind"])
+            if item["size"]:
+                kind += f"  ·  {self.size_text(item['size'])}"
+            head = tk.Label(texts, text=kind, font=self.fonts["small_bold"], fg=C["muted"], bg=C["bg"], anchor="w",
+                            cursor="hand2")
+            head.pack(fill="x")
+            path = tk.Label(texts, text=item["path"] + (f"  →  {item['name']}" if item["name"] else ""),
+                            font=self.fonts["small"], fg=C["text"], bg=C["bg"], anchor="w", justify="left",
+                            wraplength=px(450), cursor="hand2")
+            path.pack(fill="x")
+
+            def toggle(event=None, i=index, b=box):
+                chosen[i] = not chosen[i]
+                b.set(chosen[i], True)
+
+            for widget in (row, box, texts, head, path):
+                widget.bind("<Button-1>", toggle)
+        tk.Label(content, text=self.t("prog_left_note"), font=self.fonts["small"], fg=C["muted"], bg=C["surface"],
+                 anchor="w", justify="left", wraplength=px(520)).pack(fill="x", pady=(px(12), 0))
+        buttons = tk.Frame(content, bg=C["surface"])
+        buttons.pack(fill="x", pady=(px(14), 0))
+
+        def go():
+            picked = [item for item, on in zip(leftovers, chosen) if on]
+            win.destroy()
+            if picked and gone:
+                self.ensure_restore_point(lambda: self.remove_program_leftovers(program, picked), kind="_programs")
+            elif picked:
+                self.remove_program_leftovers(program, picked)
+
+        GradientButton(buttons, self.t("prog_left_remove"), go, self.fonts["button"], self.scale, self.animator,
+                       pad=(18, 8)).pack(side="right")
+        GradientButton(buttons, self.t("prog_left_keep"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.present(win)
+
+    def remove_program_leftovers(self, program, leftovers):
+        def done(result):
+            self.message = None
+            self.update_footer()
+            if isinstance(result, Exception):
+                self.notify(self.t("prog_failed"), C["warn"], ICONS["warning"])
+                self.show_errors([str(result)])
+                return
+            folder, errors = result
+            removed = len(leftovers) - len(errors)
+            self.notify(self.t("prog_left_done", n=removed), C["ok"] if not errors else C["warn"],
+                        ICONS["check"] if not errors else ICONS["warning"])
+            if errors:
+                self.show_errors(errors)
+            self.load_programs(force=True)
+
+        def work():
+            result = uninstaller.remove_leftovers(program, leftovers)
+            uninstaller.forget(program.key)
+            return result
+
+        self.run_action("prog_cleaning", work, done)
+
     def status_map(self):
         return {i: check[0] for i, check in self.scan["checks"].items()} if self.scan else {}
 
@@ -1395,8 +1786,10 @@ class App:
     # --- Memory limiter ---
 
     def size_text(self, size, digits=1):
-        """A size for people: "640 MB", "1.4 GB"."""
+        """A size for people: "312 KB", "640 MB", "1.4 GB"."""
         mb = size / limiter.MB
+        if 0 < mb < 1:  # a small folder left by a program
+            return self.t("mem_size_kb", n=max(1, round(size / 1024)))
         if mb < 1000:
             return self.t("mem_size_mb", n=round(mb))
         if mb >= 1000 * 1024:  # what a drive has written over its life
@@ -2117,6 +2510,8 @@ class App:
             text = self.t("mem_on" if self.limiter.active() else "mem_off")
         elif self.page == "diagnostics":
             text = self.t("diag_running" if self.diag_running else "diag_footer")
+        elif self.page == "programs":
+            text = self.t("prog_footer")
         else:
             text = self.t("hint_select")
         self.message_label.configure(text=text)
@@ -2141,7 +2536,7 @@ class App:
         if self.page in ("overview", "snapshots"):
             self.show_page(self.page)
             return
-        if self.page in ("memory", "diagnostics"):
+        if self.page in ("memory", "diagnostics", "programs"):
             self.update_nav_counts()
             self.update_footer()
             return
@@ -2265,11 +2660,11 @@ class App:
 
         self.ensure_restore_point(apply)
 
-    def ensure_restore_point(self, proceed):
-        """Tweaks are applied only after a Windows restore point: one from the last 24 hours, a new one, or the
-        user's explicit decision to go on without one."""
+    def ensure_restore_point(self, proceed, kind=""):
+        """Tweaks are applied, and programs removed (kind "_programs": the texts say so), only after a Windows
+        restore point: one from the last 24 hours, a new one, or the user's explicit decision to go on without one."""
         if not self.admin:  # Windows lists and creates restore points only for administrators
-            self.show_restore_point_dialog(proceed)
+            self.show_restore_point_dialog(proceed, kind=kind)
             return
 
         def recent():
@@ -2284,7 +2679,7 @@ class App:
             if point:
                 proceed()
             else:
-                self.show_restore_point_dialog(proceed)
+                self.show_restore_point_dialog(proceed, kind=kind)
 
         self.run_action("rp_checking", recent, done, acting=False)
 
@@ -2432,8 +2827,9 @@ class App:
 
     # --- Dialogs ---
 
-    def dialog(self, title, icon, color, heading, text, heading_color=None):
-        """A blagotech-style window: icon, heading, text. Returns (window, content frame)."""
+    def dialog(self, title, icon, color, heading, text, heading_color=None, image=None):
+        """A blagotech-style window: icon (or an image: a program's own icon), heading, text. Returns (window,
+        content frame)."""
         px = self.px
         win = tk.Toplevel(self.root, bg=C["surface"])
         win.withdraw()
@@ -2446,7 +2842,12 @@ class App:
         badge = Card(body, self.scale, fill=mix(color, C["surface"], 0.14), border=mix(color, C["surface"], 0.4),
                      radius=14, pad=4)
         badge.grid(row=0, column=0, rowspan=2, sticky="nw")
-        tk.Label(badge.body, text=icon, font=self.fonts["icon_big"], fg=color, bg=badge.fill).pack(padx=px(8), pady=px(6))
+        if image:
+            tk.Label(badge.body, image=image, bg=badge.fill).pack(padx=px(7), pady=px(7))
+            win.image = image  # kept while the window is open, even when the page reads the list again
+        else:
+            tk.Label(badge.body, text=icon, font=self.fonts["icon_big"], fg=color, bg=badge.fill).pack(padx=px(8),
+                                                                                                         pady=px(6))
         tk.Label(body, text=heading, font=self.fonts["dialog"], fg=heading_color or C["text"], bg=C["surface"],
                  anchor="w").grid(row=0, column=1, sticky="w", padx=(px(16), 0))
         tk.Label(body, text=text, font=self.fonts["body"], fg=C["muted"], bg=C["surface"], justify="left", anchor="w",
@@ -2618,12 +3019,12 @@ class App:
 
     # --- Restore point before Apply ---
 
-    def show_restore_point_dialog(self, proceed, error=None):
+    def show_restore_point_dialog(self, proceed, error=None, kind=""):
         """Asks for a restore point before tweaks are applied. Going on without one takes a second, scarier
         dialog (show_no_restore_point_dialog)."""
         px = self.px
         win, content = self.dialog(self.t("rp_gate_title"), ICONS["shield"], C["warn"], self.t("rp_gate_title"),
-                                   self.t("rp_gate_text" if self.admin else "rp_gate_admin_text"))
+                                   self.t(("rp_gate_text" if self.admin else "rp_gate_admin_text") + kind))
         if error is not None:
             failure = tk.Label(content, text=self.t("rp_failed") + (f"\n{error}" if error else ""),
                                font=self.fonts["small"], fg=C["bad"], bg=C["surface"], anchor="w", justify="left",
@@ -2637,14 +3038,14 @@ class App:
         def create():
             win.destroy()
             self.create_restore_point(then=proceed,
-                                      failed=lambda detail: self.show_restore_point_dialog(proceed, detail))
+                                      failed=lambda detail: self.show_restore_point_dialog(proceed, detail, kind))
 
         def skip():
             win.destroy()
-            self.show_no_restore_point_dialog(proceed)
+            self.show_no_restore_point_dialog(proceed, kind)
 
         if self.admin:
-            GradientButton(buttons, self.t("rp_gate_create"), create, self.fonts["button"], self.scale,
+            GradientButton(buttons, self.t("rp_gate_create" + kind), create, self.fonts["button"], self.scale,
                            self.animator, pad=(18, 8)).pack(side="right")
         else:
             error_label = tk.Label(content, text="", font=self.fonts["small"], fg=C["warn"], bg=C["surface"],
@@ -2657,7 +3058,7 @@ class App:
         self.link(buttons, self.t("rp_gate_skip"), skip, font="small", color=C["dim"]).pack(side="left")
         self.present(win)
 
-    def show_no_restore_point_dialog(self, proceed):
+    def show_no_restore_point_dialog(self, proceed, kind=""):
         """Going on without a restore point: the risk is spelled out, and the button works only after the user
         ticks that they take it."""
         px = self.px
@@ -2680,10 +3081,10 @@ class App:
 
         def back():
             win.destroy()
-            self.show_restore_point_dialog(proceed)
+            self.show_restore_point_dialog(proceed, kind=kind)
 
-        apply = GradientButton(buttons, self.t("rp_skip_apply"), go, self.fonts["button"], self.scale, self.animator,
-                               pad=(18, 8), danger=True)
+        apply = GradientButton(buttons, self.t("rp_skip_apply" + kind), go, self.fonts["button"], self.scale,
+                               self.animator, pad=(18, 8), danger=True)
         apply.pack(side="right")
         apply.set_enabled(False)
         GradientButton(buttons, self.t("back"), back, self.fonts["button"], self.scale, self.animator,

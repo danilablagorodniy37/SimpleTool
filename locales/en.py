@@ -80,6 +80,19 @@ TEXTS = {
                         "(see the terms of use). Neither SimpleTool nor blagotech can repair your system.",
         "rp_skip_confirm": "I understand the risk. Whatever happens to my computer is my own responsibility.",
         "rp_skip_apply": "Apply without a restore point",
+        "rp_gate_text_programs": "SimpleTool is about to remove a program or what it left behind. If something goes "
+                                 "wrong, a Windows restore point is the reliable way back: it saves the whole "
+                                 "registry and system files, and System Restore can return to it even when Windows "
+                                 "does not start.\n\nThere is no restore point from the last 24 hours. Creating one "
+                                 "takes a minute or two. If System Protection is off for the Windows drive, "
+                                 "SimpleTool turns it on.",
+        "rp_gate_admin_text_programs": "SimpleTool is about to remove a program or what it left behind. Before that "
+                                       "it creates a Windows restore point: the reliable way back if something goes "
+                                       "wrong. Windows lets only administrators create restore points.\n\nRestart "
+                                       "SimpleTool as administrator: it creates the restore point, and then you "
+                                       "continue the removal.",
+        "rp_gate_create_programs": "Create restore point and remove",
+        "rp_skip_apply_programs": "Remove without a restore point",
         "snap_delete_title": "Delete this snapshot?",
         "snap_delete_text": "The snapshot from {date} will be deleted for good: you will not be able to restore it.",
         "snap_delete_ok": "Delete",
@@ -274,9 +287,52 @@ TEXTS = {
         "mem_pick_title": "Running programs",
         "mem_pick_text": "Choose a program to limit. System processes are not shown.",
         "mem_pick_empty": "No other programs are running.",
+        "mem_size_kb": "{n} KB",
         "mem_size_mb": "{n} MB",
         "mem_size_gb": "{n} GB",
         "mem_size_tb": "{n} TB",
+        "prog_reload": "Refresh the list",
+        "prog_loading": "Reading the installed programs…",
+        "prog_footer": "Uninstalling runs the program's own uninstaller, then SimpleTool shows what it left behind.",
+        "prog_sort_name": "Name",
+        "prog_sort_size": "Size",
+        "prog_sort_date": "Date",
+        "prog_count": "Programs installed: {n}, {size} in all",
+        "prog_found": "Found: {n} of {total}",
+        "prog_not_removable": "Cannot be removed",
+        "prog_uninstall": "Uninstall",
+        "prog_clean_up": "Remove leftovers",
+        "prog_confirm_title": "Uninstall a program",
+        "prog_confirm_text": "SimpleTool makes sure there is a restore point, then runs the program's own "
+                             "uninstaller: answer its questions as usual. When it finishes, SimpleTool looks for what "
+                             "the program left behind and shows it before removing anything.",
+        "prog_confirm_missing": "The uninstaller of this program is already gone: only its entry and what it left "
+                                "behind remain. SimpleTool shows them before removing anything.",
+        "prog_uninstalling": "The program's uninstaller is running…",
+        "prog_failed": "The program could not be uninstalled",
+        "prog_kept": "{name} is still installed: the uninstaller was cancelled or did not finish",
+        "prog_clean": "{name} is uninstalled and left nothing behind",
+        "prog_left_title": "Leftovers",
+        "prog_left_heading": "{name} left things behind",
+        "prog_left_text": "Found: {found}. Untick what you want to keep.",
+        "prog_kind_folder": "Folder",
+        "prog_kind_file": "Shortcut",
+        "prog_kind_key": "Registry key",
+        "prog_kind_value": "Startup entry",
+        "prog_left_note": "Registry keys are saved to a .reg file before they are deleted, and files and folders go "
+                          "to the Recycle Bin: everything can be brought back.",
+        "prog_left_remove": "Remove selected",
+        "prog_left_keep": "Keep all",
+        "prog_cleaning": "Removing the leftovers…",
+        "prog_left_done": "Leftovers removed: {n}",
+        "prog_admin": "Programs installed for every account are removed with administrator rights: restart "
+                      "SimpleTool as administrator to remove them.",
+        "prog_saved": "Saved copies",
+        "prog_gone_title": "Left by programs removed without SimpleTool",
+        "prog_gone_text": "These programs were removed through Windows settings or their own uninstaller, and left "
+                          "things behind.",
+        "prog_gone_info": "Removed {date}  ·  left: {left}",
+        "prog_gone_hide": "Hide",
         "tray_open": "Open SimpleTool",
         "tray_limiter": "Memory limiter",
         "tray_exit": "Exit",
@@ -354,6 +410,9 @@ TEXTS = {
         "context": ("Context menu", "Useful right-click items. On Windows 11 they are under “Show more options”."),
         "snapshots": ("System snapshots", "How things were before: SimpleTool saves the state before every change, "
                                           "and you can go back to any snapshot."),
+        "programs": ("Programs",
+                     "Installed programs with their own icons. SimpleTool runs a program's own uninstaller and then "
+                     "finds what it left behind: folders, registry keys, shortcuts and startup entries."),
         "memory": ("Memory limiter", "Keeps Chrome, Discord and other programs from taking too much RAM."),
     },
     "tweaks": {

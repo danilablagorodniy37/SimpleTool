@@ -1,7 +1,8 @@
 # SimpleTool
 
 A Windows 10 and 11 tweaker for privacy, system features and File Explorer, with a memory limiter
-for programs such as Chrome and Discord and a troubleshooting check for lags, crashes and conflicts. Tick the tweaks you want, press **Apply**, and press
+for programs such as Chrome and Discord, a troubleshooting check for lags, crashes and conflicts, and an
+uninstaller that finds what programs leave behind. Tick the tweaks you want, press **Apply**, and press
 **Revert** to put the original values back.
 
 > **Beta.** This is a test version and it is not stable yet. Use it at your own risk.
@@ -59,6 +60,45 @@ with the reason. Most checks work without administrator rights.
 Every tweak shows its current state: **Applied**, **Partly**, **Not applied**, or **Not found**
 when the service or task it targets is not on this PC. Applied tweaks carry a teal bar along the left edge
 of their card, and each page starts with how many of its tweaks are applied.
+
+## Programs
+
+The **Programs** page lists the installed programs with their own icons (from the program's entry, the icon
+Windows Installer keeps for it, or its exe), publisher, version, size and installation date. Search by name or
+publisher, and order by name, size or date.
+
+**Uninstall** works like full uninstallers such as Reg Organizer:
+
+1. A Windows restore point first, by the same rule as **Apply**.
+2. The program's own uninstaller, which knows what it installed. SimpleTool waits for it and for the copies of
+   itself it starts (Inno Setup and NSIS uninstallers quit at once and leave the work to a copy in the temporary
+   folder): they run in a job object, which counts them. Windows Installer products are removed with
+   `msiexec /x`, not through the repair screen their entries often open.
+3. A search for what is left: folders named after the program in Program Files, ProgramData and AppData (Local,
+   Roaming, LocalLow and Local\Programs), directly or in its publisher's folder; its install folder; Start menu
+   folders and shortcuts, and desktop shortcuts, that lead nowhere now; registry keys named after it under
+   Software (its publisher's whole key when nothing else of the publisher is there); startup entries and App
+   Paths that start its removed files; its entry in the list, if the uninstaller left it.
+4. The list of leftovers, each with a tick box. Registry keys are exported to .reg files before they are deleted,
+   removed values are written down, and files and folders go to the Recycle Bin. **Saved copies** opens
+   `%LOCALAPPDATA%\SimpleTool\uninstalled`.
+
+Leftovers are matched by the program's own names, never by parts of words. A name another installed program
+shares or begins ("python" belongs to every Python), short and generic names, Windows and user folders, the
+folders of other installed programs and the folders that hold them, and shared registry keys (Microsoft,
+Classes, Policies and the like) are never offered. Files on network drives are not checked: a share that is not
+there could keep the list waiting.
+
+An entry whose uninstaller is already gone gets **Remove leftovers**. Programs Windows marks as not removable
+(Microsoft Edge) have no button.
+
+SimpleTool remembers the list it read (`%LOCALAPPDATA%\SimpleTool\programs.json`, never sent anywhere). When a
+program disappears from it because it was removed through Windows settings or its own uninstaller, SimpleTool
+looks for what it left, and if something is there, lists the program at the top of the page with **Remove
+leftovers** and **Hide**.
+
+Programs installed for every account are removed with administrator rights, and those installed for one
+account without them.
 
 ## Memory limiter
 
@@ -191,7 +231,9 @@ once, and the result must match the original state exactly. A catalog audit chec
 touches UAC, Defender, Winlogon, startup entries, the boot configuration, critical services or
 Windows Update tasks. The memory limiter is tested on fake processes and, with real Windows calls,
 only on a copy of Python that the test starts under its own unique name, so no other program is
-trimmed or capped. GitHub Actions runs the tests on Windows for every push.
+trimmed or capped. The leftover search runs on a made-up profile in a temporary folder with a made-up
+registry, and in the window test running an uninstaller and removing leftovers fail the test unless the
+test itself replaces them. GitHub Actions runs the tests on Windows for every push.
 
 ## License and trademarks
 

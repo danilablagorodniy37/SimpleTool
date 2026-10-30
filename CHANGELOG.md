@@ -2,6 +2,22 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.13
+
+**Programs** (new page)
+- Every installed program with its own icon (from its entry, the icon Windows Installer keeps for it, or its own exe), publisher, version, size and installation date. Search, and order by name, size or date.
+- **Uninstall** checks for a Windows restore point first, as Apply does, then runs the program's own uninstaller and waits for it and for the copies of itself it starts (Inno Setup, NSIS). Windows Installer products are removed with `msiexec /x`, not through the repair screen their entries often open. An uninstaller that asks for administrator rights gets Windows' prompt.
+- Then SimpleTool looks for what the program left: its folders in Program Files, ProgramData and AppData (directly or in its publisher's folder), Start menu folders and shortcuts that lead nowhere now, its registry keys under Software, startup entries and App Paths that start its removed files, and its entry in the list. Every item is shown with a tick box before anything is removed.
+- Leftovers are matched by the program's own names only. Names another installed program shares, short and generic names, Windows and user folders, the folders of other installed programs and shared registry keys are never offered.
+- Registry keys are saved to .reg files before they are deleted, and files and folders go to the Recycle Bin. **Saved copies** opens the folder with the .reg files.
+- An entry whose uninstaller is already gone gets **Remove leftovers**.
+- **Programs removed without SimpleTool**: SimpleTool remembers the list it read. A program that disappears from it (removed through Windows settings or its own uninstaller) and left something behind is listed at the top of the page.
+- Programs installed for every account are removed with administrator rights, and those installed for one account without them.
+
+**Terms of use** now cover removing programs and their leftovers, and the list of programs SimpleTool keeps on the PC. SimpleTool asks to accept them again.
+
+Sizes under 1 MB are shown in KB.
+
 ## 0.12.1
 
 **Troubleshooting without administrator rights**

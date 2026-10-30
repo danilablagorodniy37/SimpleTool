@@ -83,6 +83,18 @@ def _check(status, what):
         raise OSError(f"GDI+ {what} failed with status {status}")
 
 
+def png(width, height, rgba):
+    """A PNG file in memory from top-down RGBA pixels, for tk.PhotoImage(data=...)."""
+    line = width * 4
+    rows = b"".join(b"\x00" + rgba[y * line:(y + 1) * line] for y in range(height))
+
+    def chunk(tag, body):
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)  # 8 bits, RGBA
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows, 1)) + chunk(b"IEND", b"")
+
+
 class Surface:
     """A bitmap of a solid background color to draw antialiased circles and arcs on; png() gives the result."""
 
@@ -138,13 +150,7 @@ class Surface:
             raw = ctypes.string_at(data.Scan0, stride * self.height)
         finally:
             self.lib.GdipBitmapUnlockBits(self.bitmap, ctypes.byref(data))
-        rows = b"".join(b"\x00" + raw[y * stride:y * stride + line] for y in range(self.height))
-
-        def chunk(tag, body):
-            return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
-
-        header = struct.pack(">IIBBBBB", self.width, self.height, 8, 6, 0, 0, 0)  # 8 bits, RGBA
-        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows, 1)) + chunk(b"IEND", b"")
+        return png(self.width, self.height, b"".join(raw[y * stride:y * stride + line] for y in range(self.height)))
 
     def close(self):
         if self.graphics:

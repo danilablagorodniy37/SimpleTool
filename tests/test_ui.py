@@ -23,10 +23,13 @@ import main
 import terms
 import theme
 import tweaks
+import uninstaller
 import updater
 import updates
 from tests.test_diagnostics import event, healthy
 from widgets import GradientButton
+
+PROFILE = r"C:\Users\A"  # a made-up user profile for the tests, secret-scan: allow
 
 
 def forbidden(*args, **kwargs):
@@ -48,6 +51,18 @@ class UiSmoke(unittest.TestCase):
         self.facts.update(cpu={"load": 91.0, "top": [("game.exe", 80.0)]}, startup=[f"App {i}" for i in range(14)],
                           events=[event("Microsoft-Windows-Kernel-Power", 41, level=1, args=["0"])],
                           devices=[{"name": "Wi-Fi adapter", "code": 28}], restart_pending=None)
+        # Programs: made-up entries; the icon and the "uninstaller" of the first are an existing Windows file
+        self.notepad = notepad = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "notepad.exe")
+        uninstall = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+        self.programs = [
+            uninstaller.Program(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoodTool", "Good Tool",
+                                "Acme", "2.1", 5 * 2 ** 20, datetime.date(2026, 10, 1), icon=(notepad, 0),
+                                uninstall=f'"{notepad}" /uninstall', user=True),
+            uninstaller.Program(uninstall + r"\Edge", "Microsoft Edge", "Microsoft Corporation", "130.0",
+                                removable=False),
+            uninstaller.Program(uninstall + r"\OldTool", "Old Tool", size=40 * 2 ** 20,
+                                uninstall=r'"C:\nowhere-at-all\unins000.exe"'),
+        ]
         self.patches = [
             mock.patch.object(engine, "data_dir", lambda: self.tmp),
             mock.patch.object(engine, "apply", forbidden),
@@ -67,6 +82,11 @@ class UiSmoke(unittest.TestCase):
             mock.patch.object(main.App, "shell_open", lambda app, target, args=None:
                               self.started.append((target, args)) or True),
             mock.patch.object(diagnostics, "gather", self.fake_gather),
+            mock.patch.object(uninstaller, "installed_programs", lambda: list(self.programs)),
+            mock.patch.object(uninstaller, "find_leftovers", lambda program, others=(): []),
+            mock.patch.object(uninstaller, "run_uninstaller", forbidden),
+            mock.patch.object(uninstaller, "remove_leftovers", forbidden),
+            mock.patch.object(uninstaller, "to_recycle_bin", forbidden),
         ]
         for patch in self.patches:
             patch.start()
@@ -522,6 +542,182 @@ class UiSmoke(unittest.TestCase):
             self.assertTrue(os.path.exists(path), "nothing is deleted before the answer")
             self.button(dialog, ui["snap_delete_ok"])._click(None)
             self.assertFalse(os.path.exists(path))
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def shown_programs(self, app):
+        """The names of the program cards on the Programs page, top to bottom."""
+        cards = {card: program.name for program, card in app.program_rows}
+        return [cards[w] for w in app.list_frame.pack_slaves() if w in cards]
+
+    def program_card(self, app, name):
+        return next(card for program, card in app.program_rows if program.name == name)
+
+    def texts(self, parent):
+        return [w.cget("text") for w in self.widgets(parent) if isinstance(w, tk.Label)]
+
+    def open_programs(self, admin):
+        root, app, errors = self.open_app(admin=admin)
+        for dialog in self.dialogs(root):  # the administrator dialog of the limited mode
+            dialog.destroy()
+        app.show_page("programs", animate=False)
+        self.wait(root, lambda: app.program_rows)
+        return root, app, errors
+
+    def test_programs(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_programs(admin=True)
+        try:
+            self.assertEqual(self.shown_programs(app), ["Good Tool", "Microsoft Edge", "Old Tool"])
+            self.assertEqual(app.nav["programs"]["count"].cget("text"), "3")
+            self.assertIn(self.programs[0].key, app.program_icons, "its own icon")
+            self.assertEqual(app.program_count.cget("text"),
+                             ui["prog_count"].format(n=3, size=app.size_text(45 * 2 ** 20)))
+            edge = self.program_card(app, "Microsoft Edge")
+            self.assertIn(ui["prog_not_removable"], self.texts(edge))
+            self.assertFalse([w for w in self.widgets(edge) if isinstance(w, GradientButton)], "no button")
+            self.button(self.program_card(app, "Old Tool"), ui["prog_clean_up"])
+            # Search and order work on the cards already built
+            app.program_search.set("acme")
+            self.assertEqual(self.shown_programs(app), ["Good Tool"])
+            self.assertEqual(app.program_count.cget("text"), ui["prog_found"].format(n=1, total=3))
+            app.program_search.set("")
+            app.sort_programs("size")
+            self.assertEqual(self.shown_programs(app), ["Old Tool", "Good Tool", "Microsoft Edge"])
+            app.sort_programs("name")
+            # Uninstalling: a question first, the restore point check, the uninstaller, then what it left
+            recent = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)
+            calls, removed = [], []
+            leftovers = [{"kind": "folder", "path": rf"{PROFILE}\AppData\Roaming\Good Tool", "name": "", "size": 2048},
+                         {"kind": "key", "path": r"HKCU\Software\Good Tool", "name": "", "size": 0}]
+
+            def run(program):
+                calls.append(("run", program.name))
+                self.programs.remove(program)
+                return 0
+
+            def find(program, others):
+                calls.append(("find", sorted(p.name for p in others)))
+                return leftovers
+
+            self.button(self.program_card(app, "Good Tool"), ui["prog_uninstall"])._click(None)
+            dialog = self.dialogs(root)[0]
+            self.assertEqual(dialog.title(), ui["prog_confirm_title"])
+            with mock.patch.object(engine, "recent_restore_point", lambda: recent), \
+                    mock.patch.object(uninstaller, "run_uninstaller", run), \
+                    mock.patch.object(uninstaller, "still_installed", lambda program: False), \
+                    mock.patch.object(uninstaller, "find_leftovers", find):
+                self.button(dialog, ui["prog_uninstall"])._click(None)
+                self.wait(root, lambda: self.dialogs(root) and self.dialogs(root)[0].title() == ui["prog_left_title"])
+            self.assertEqual(calls, [("run", "Good Tool"), ("find", ["Microsoft Edge", "Old Tool"])])
+            # Everything is ticked; what is unticked stays
+            dialog = self.dialogs(root)[0]
+            self.click_text(dialog, r"HKCU\Software\Good Tool")
+            with mock.patch.object(uninstaller, "remove_leftovers",
+                                   lambda program, items: removed.append(items) or (self.tmp, [])):
+                self.button(dialog, ui["prog_left_remove"])._click(None)
+                self.wait(root, lambda: removed and not app.busy)
+            self.assertEqual(removed, [leftovers[:1]])
+            self.assertIn(ui["prog_left_done"].format(n=1), self.texts(app.toaster.card))
+            # The list is read again: the program is gone
+            self.wait(root, lambda: not app.programs_loading and len(app.programs) == 2 and app.program_rows)
+            self.assertEqual(self.shown_programs(app), ["Microsoft Edge", "Old Tool"])
+            # An entry whose uninstaller is gone: only the leftovers are looked for, nothing is run (tripwire)
+            self.button(self.program_card(app, "Old Tool"), ui["prog_clean_up"])._click(None)
+            dialog = self.dialogs(root)[0]
+            self.assertIn(ui["prog_confirm_missing"], self.texts(dialog))
+            with mock.patch.object(engine, "recent_restore_point", lambda: recent), \
+                    mock.patch.object(uninstaller, "find_leftovers", lambda program, others: []):
+                self.button(dialog, ui["prog_clean_up"])._click(None)
+                self.wait(root, lambda: not app.busy and not self.dialogs(root))
+            self.assertIn(ui["prog_clean"].format(name="Old Tool"), self.texts(app.toaster.card))
+            self.wait(root, lambda: not app.programs_loading)  # the list is read again after each removal
+            # The uninstaller was cancelled: the program stays, nothing is looked for
+            self.programs[:] = [uninstaller.Program("k", "Kept Tool", uninstall=f'"{self.notepad}" /uninstall',
+                                                    user=True)]
+            app.load_programs(force=True)
+            self.wait(root, lambda: not app.programs_loading and self.shown_programs(app) == ["Kept Tool"])
+            self.button(self.program_card(app, "Kept Tool"), ui["prog_uninstall"])._click(None)
+            with mock.patch.object(engine, "recent_restore_point", lambda: recent), \
+                    mock.patch.object(uninstaller, "run_uninstaller", lambda program: 1602), \
+                    mock.patch.object(uninstaller, "still_installed", lambda program: True):
+                self.button(self.dialogs(root)[0], ui["prog_uninstall"])._click(None)
+                self.wait(root, lambda: not app.busy and not self.dialogs(root))
+            self.assertIn(ui["prog_kept"].format(name="Kept Tool"), self.texts(app.toaster.card))
+            # Every language and theme on this page
+            for lang, _ in i18n.LANGUAGES:
+                app.set_language(lang)
+                self.pump(root, 0.2)
+            for name in theme.THEMES:
+                app.set_theme(name)
+                self.pump(root, 0.2)
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_leftovers_of_programs_removed_without_simpletool(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_programs(admin=True)  # SimpleTool keeps the list it read
+        try:
+            recent = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)
+            # Two programs are removed through Windows' settings; one of them left a folder
+            old = self.programs.pop(2)
+            edge = self.programs.pop(1)
+            left = {old.key: [{"kind": "folder", "path": rf"{PROFILE}\AppData\Roaming\Old Tool", "name": "",
+                               "size": 4096}],
+                    edge.key: [{"kind": "key", "path": r"HKCU\Software\Edge Helper", "name": "", "size": 0}]}
+            # Stopped by tearDown before the patches of setUp, so that the real search comes back
+            finding = mock.patch.object(uninstaller, "find_leftovers",
+                                        lambda program, others: left.get(program.key, []))
+            self.patches.append(finding)
+            finding.start()
+            app.load_programs(force=True)
+            self.wait(root, lambda: not app.programs_loading and len(app.programs_gone) == 2)
+            self.assertIn(ui["prog_gone_title"], self.texts(app.list_frame))
+            self.assertEqual(self.shown_programs(app), ["Good Tool"])
+            # What one left is shown first, and removed after the restore point check
+            removed = []
+            buttons = [w for w in self.widgets(app.list_frame) if isinstance(w, GradientButton)
+                       and w.itemcget(w.text, "text") == ui["prog_clean_up"]]
+            self.assertEqual(len(buttons), 2)
+            card = next(card for card in app.page_cards if old.name in self.texts(card))
+            self.button(card, ui["prog_clean_up"])._click(None)
+            dialog = self.dialogs(root)[0]
+            self.assertEqual(dialog.title(), ui["prog_left_title"])
+            with mock.patch.object(engine, "recent_restore_point", lambda: recent), \
+                    mock.patch.object(uninstaller, "remove_leftovers",
+                                      lambda program, items: removed.append((program.name, items)) or (self.tmp, [])):
+                self.button(dialog, ui["prog_left_remove"])._click(None)
+                self.wait(root, lambda: removed and not app.busy and not app.programs_loading)
+            self.assertEqual(removed, [("Old Tool", left[old.key])])
+            self.assertEqual([entry[0].name for entry in app.programs_gone], ["Microsoft Edge"])
+            # The other one: the user keeps what it left, and it is not offered again
+            self.click_text(app.list_frame, ui["prog_gone_hide"])
+            self.assertEqual(app.programs_gone, [])
+            self.assertNotIn(ui["prog_gone_title"], self.texts(app.list_frame))
+            app.load_programs(force=True)
+            self.wait(root, lambda: not app.programs_loading)
+            self.assertEqual(app.programs_gone, [])
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_programs_without_administrator_rights(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_programs(admin=False)
+        try:
+            self.assertIn(ui["prog_admin"], self.texts(app.list_frame))
+            # Installed for this account only: it can go; installed for every account: it needs the rights
+            self.assertTrue(self.button(self.program_card(app, "Good Tool"), ui["prog_uninstall"]).enabled)
+            self.assertFalse(self.button(self.program_card(app, "Old Tool"), ui["prog_clean_up"]).enabled)
+            # Windows creates restore points only for administrators: the dialog says so, for a program
+            self.button(self.program_card(app, "Good Tool"), ui["prog_uninstall"])._click(None)
+            self.button(self.dialogs(root)[0], ui["prog_uninstall"])._click(None)
+            self.pump(root, 0.1)
+            dialog = self.dialogs(root)[0]
+            self.assertEqual(dialog.title(), ui["rp_gate_title"])
+            self.assertIn(ui["rp_gate_admin_text_programs"], self.texts(dialog))
             self.assertEqual(errors, [])
         finally:
             root.destroy()

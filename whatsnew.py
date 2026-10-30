@@ -6,6 +6,29 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.13": {
+        "en": [
+            "New Programs page: every installed program with its own icon. Uninstall runs the program's own "
+            "uninstaller, then SimpleTool finds the folders, registry keys, shortcuts and startup entries it left and "
+            "removes the ones you tick: keys are saved to .reg files and files go to the Recycle Bin.",
+            "SimpleTool also finds what programs removed without it left behind, through Windows settings or their "
+            "own uninstaller.",
+        ],
+        "ru": [
+            "Новый раздел «Программы»: все установленные программы с их собственными значками. «Удалить» запускает "
+            "деинсталлятор самой программы, затем SimpleTool находит оставленные ею папки, ключи реестра, ярлыки и "
+            "записи автозагрузки и удаляет отмеченные: ключи сохраняются в .reg-файлы, а файлы уходят в Корзину.",
+            "SimpleTool находит и то, что оставили программы, удалённые без него: через параметры Windows или их "
+            "собственный деинсталлятор.",
+        ],
+        "uk": [
+            "Новий розділ «Програми»: усі встановлені програми з їхніми власними значками. «Видалити» запускає "
+            "деінсталятор самої програми, потім SimpleTool знаходить залишені нею теки, ключі реєстру, ярлики й "
+            "записи автозавантаження та видаляє позначені: ключі зберігаються в .reg-файли, а файли йдуть до Кошика.",
+            "SimpleTool знаходить і те, що залишили програми, видалені без нього: через параметри Windows або їхній "
+            "власний деінсталятор.",
+        ],
+    },
     "0.12.1": {
         "en": [
             "Troubleshooting without administrator rights is more careful: the Microsoft Defender check no longer "
