@@ -612,6 +612,41 @@ class UiSmoke(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_tweak_sets(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_app(admin=True)
+        try:
+            app.show_page("snapshots", animate=False)
+            self.pump(root, 0.1)
+            # Saving: the applied tweaks go to the file the user picks
+            target = os.path.join(self.tmp, "set.json")
+            with mock.patch("tkinter.filedialog.asksaveasfilename", lambda **kw: target):
+                self.button(app.list_frame, ui["set_export"])._click(None)
+            with open(target, encoding="utf-8") as f:
+                saved = json.load(f)
+            applied = [t.id for t in tweaks.TWEAKS if app.card_state(t) == "applied"]
+            self.assertEqual((saved["simpletool"], saved["tweaks"]), ("tweak set", applied))
+            # Applying a set: only the tweaks not applied here are offered; unknown ids are left out
+            todo = [t.id for t in tweaks.TWEAKS if app.selectable(t) and app.card_state(t) == "not_applied"][:3]
+            with open(target, "w", encoding="utf-8") as f:
+                json.dump({"simpletool": "tweak set", "version": 1, "tweaks": todo + applied[:1] + ["no_such"]}, f)
+            chosen = []
+            app.apply_selected = lambda: chosen.append(set(app.selected))
+            app.show_tweak_set(target)
+            dialog = self.dialogs(root)[-1]
+            self.assertIn(ui["set_heading"].format(n=len(todo)), self.texts(dialog))
+            self.button(dialog, ui["set_apply"].format(n=len(todo)))._click(None)
+            self.assertEqual(chosen, [set(todo)])
+            # Not a set: nothing opens
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("{}")
+            count = len(self.dialogs(root))
+            app.show_tweak_set(target)
+            self.assertEqual(len(self.dialogs(root)), count)
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
     def test_search(self):
         ui = i18n.TEXTS["en"]["ui"]
         root, app, errors = self.open_app(admin=True)

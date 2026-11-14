@@ -25,6 +25,9 @@ The release workflow publishes the section of the tagged version as the notes of
 **Recommended tweaks**
 - Tweaks that only turn off what sends data, nags, shows ads or is a known risk, with no feature going with them, are marked **Recommended** with a star. **Recommended** at the top of a page ticks those not applied yet; nothing changes until **Apply**.
 
+**Tweak sets**
+- **System snapshots** has a **Tweak set** card: **Save…** writes the applied tweaks to a file, and **Apply a set…** on another PC lists the tweaks of that file not applied there yet and applies them after the usual restore point check.
+
 **Search**
 - A search field under the logo (**Ctrl+F**) finds tweaks on every page by the words of their name, description or details. The results are grouped by page and can be ticked and applied right there; **Esc** goes back.
 

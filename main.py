@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 import tkinter as tk
+import tkinter.filedialog as filedialog
 import tkinter.font as tkfont
 import urllib.parse
 from ctypes import wintypes
@@ -1498,6 +1499,7 @@ class App:
             note.pack(fill="x", padx=px(12), pady=(px(8), px(12)))
             self.wrap(note, px(62))
         self.page_cards.append(card)
+        self.build_tweak_set_card()
         if not self.snapshots:
             empty = tk.Label(self.list_frame, text=self.t("snap_empty" if self.admin else "snap_empty_limited"),
                              font=self.fonts["body"], fg=C["muted"], bg=C["bg"], anchor="w", justify="left")
@@ -2662,6 +2664,102 @@ class App:
 
     def status_map(self):
         return {i: check[0] for i, check in self.scan["checks"].items()} if self.scan else {}
+
+    # --- Tweak sets: the applied tweaks of one PC, applied on another ---
+
+    def build_tweak_set_card(self):
+        """Save the applied tweaks to a file, and apply a saved set: the same tweaks on another PC."""
+        px = self.px
+        card = Card(self.list_frame, self.scale, radius=14, pad=6)
+        card.pack(fill="x", pady=(0, px(12)))
+        body = card.body
+        body.columnconfigure(0, weight=1)
+        tk.Label(body, text=self.t("set_title"), font=self.fonts["h2"], fg=C["text"], bg=card.fill, anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=px(12), pady=(px(10), 0))
+        text = tk.Label(body, text=self.t("set_intro"), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
+                        anchor="w", justify="left")
+        text.grid(row=1, column=0, sticky="ew", padx=px(12), pady=(px(2), px(10)))
+        self.wrap(text, px(330))
+        buttons = tk.Frame(body, bg=card.fill)
+        buttons.grid(row=0, column=1, rowspan=2, sticky="e", padx=px(12))
+        for key, action in (("set_export", self.export_tweak_set), ("set_import", self.import_tweak_set)):
+            button = GradientButton(buttons, self.t(key), action, self.fonts["button"], self.scale, self.animator,
+                                    primary=False, pad=(14, 6))
+            button.pack(side="left", padx=(px(8), 0))
+            self.action_buttons.append((button, False))
+        self.page_cards.append(card)
+
+    def export_tweak_set(self):
+        """Saves the ids of the applied tweaks to a file, to apply the same set on another PC."""
+        applied = [t.id for t in tweaks.TWEAKS if self.card_state(t) == "applied"]
+        if not applied:
+            self.notify(self.t("set_empty"), C["warn"], ICONS["warning"])
+            return
+        path = filedialog.asksaveasfilename(parent=self.root, title=self.t("set_export"), defaultextension=".json",
+                                            initialfile=f"SimpleTool tweaks {datetime.date.today():%Y-%m-%d}.json",
+                                            filetypes=[(self.t("set_files"), "*.json")])
+        if not path:
+            return
+        try:
+            engine.write_json(path, {"simpletool": "tweak set", "version": 1, "app": VERSION, "tweaks": applied})
+        except OSError as exc:
+            self.show_errors([f"{path}: {exc.strerror or exc}"])
+            return
+        self.notify(self.t("set_saved", n=len(applied)), C["ok"], ICONS["check"])
+
+    def read_tweak_set(self, path):
+        """The tweak ids a set file names that this version knows, or None if the file is not a tweak set."""
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get("simpletool") != "tweak set" or not isinstance(data.get("tweaks"),
+                                                                                                 list):
+            return None
+        return [i for i in data["tweaks"] if isinstance(i, str) and i in self.tweak_by_id]
+
+    def import_tweak_set(self):
+        path = filedialog.askopenfilename(parent=self.root, title=self.t("set_import"),
+                                          filetypes=[(self.t("set_files"), "*.json")])
+        if path:
+            self.show_tweak_set(path)
+
+    def show_tweak_set(self, path):
+        """What a set file would change here: the tweaks of the set not applied yet, and Apply for them."""
+        px = self.px
+        ids = self.read_tweak_set(path)
+        if ids is None:
+            self.notify(self.t("set_bad"), C["warn"], ICONS["warning"])
+            return
+        todo = [self.tweak_by_id[i] for i in ids if self.selectable(self.tweak_by_id[i])
+                and self.card_state(self.tweak_by_id[i]) != "applied"]
+        if not todo:
+            self.notify(self.t("set_nothing", n=len(ids)), C["ok"], ICONS["check"])
+            return
+        win, content = self.dialog(self.t("set_import"), ICONS["snapshots"], CATEGORY_COLORS["snapshots"],
+                                   self.t("set_heading", n=len(todo)), self.t("set_text", total=len(ids)))
+        rows = self.scroll_area(win, content, min(px(300), px(30) * len(todo) + px(12)), len(todo) > 9)
+        for tweak in todo:
+            row = tk.Frame(rows, bg=C["bg"])
+            row.pack(fill="x", padx=px(10), pady=(px(5), 0))
+            tk.Label(row, text=ICONS[tweak.category], font=self.fonts["icon_small"], fg=CATEGORY_COLORS[tweak.category],
+                     bg=C["bg"]).pack(side="left")
+            tk.Label(row, text=self.text("tweaks", tweak.id)[0], font=self.fonts["body"], fg=C["text"], bg=C["bg"],
+                     anchor="w").pack(side="left", fill="x", expand=True, padx=(px(10), 0))
+        buttons = tk.Frame(content, bg=C["surface"])
+        buttons.pack(fill="x", pady=(px(16), 0))
+
+        def go():
+            win.destroy()
+            self.selected = {t.id for t in todo}
+            self.apply_selected()
+
+        GradientButton(buttons, self.t("set_apply", n=len(todo)), go, self.fonts["button"], self.scale,
+                       self.animator, pad=(18, 8)).pack(side="right")
+        GradientButton(buttons, self.t("cancel"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.present(win)
 
     def take_manual_snapshot(self):
         ctx, statuses = self.scan and self.scan.get("ctx"), self.status_map()

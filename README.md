@@ -67,6 +67,9 @@ data, nags, shows ads or is a known risk, and no feature goes with it. Nothing c
 
 The search field under the logo (**Ctrl+F**) finds tweaks on every page by the words of their name, description or
 details; the results are grouped by page and can be ticked and applied right there. **Esc** goes back.
+**Tweak set** on the System snapshots page saves the applied tweaks to a file; **Apply a set…** on another PC shows
+the tweaks of that file not applied there yet and applies them after the usual restore point check.
+
 **F5** reads the page again (the overview, Troubleshooting, Programs, Startup) and **Ctrl+A** ticks every tweak of
 the page.
 
