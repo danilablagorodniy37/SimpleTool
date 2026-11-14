@@ -2558,8 +2558,10 @@ class App:
             pill.pack(side="left", padx=(px(10), 0))
         details = [entry.publisher, self.t(f"startup_source_{entry.source}_{entry.scope}")]
         if entry.impact:
-            details.append(self.t("startup_impact", seconds=f"{entry.impact['cpu'] / 1000:.1f}",
-                                  size=self.size_text(entry.impact["disk"])))
+            seconds = f"{entry.impact['cpu'] / 1000:.1f}"
+            if self.lang != "en":
+                seconds = seconds.replace(".", ",")  # 5,6 s in Russian and Ukrainian
+            details.append(self.t("startup_impact", seconds=seconds, size=self.size_text(entry.impact["disk"])))
         info = tk.Label(body, text="  ·  ".join(part for part in details if part), font=self.fonts["small"],
                         fg=C["muted"], bg=card.fill, anchor="w", justify="left")
         info.grid(row=1, column=1, sticky="ew", pady=(px(2), 0))
@@ -2679,13 +2681,14 @@ class App:
         text = tk.Label(body, text=self.t("set_intro"), font=self.fonts["small"], fg=C["muted"], bg=card.fill,
                         anchor="w", justify="left")
         text.grid(row=1, column=0, sticky="ew", padx=px(12), pady=(px(2), px(10)))
-        self.wrap(text, px(330))
+        self.wrap(text, px(62))
+        # Under the text: next to it a long translation of the buttons would cover it
         buttons = tk.Frame(body, bg=card.fill)
-        buttons.grid(row=0, column=1, rowspan=2, sticky="e", padx=px(12))
-        for key, action in (("set_export", self.export_tweak_set), ("set_import", self.import_tweak_set)):
+        buttons.grid(row=2, column=0, sticky="w", padx=px(12), pady=(0, px(12)))
+        for i, (key, action) in enumerate((("set_export", self.export_tweak_set), ("set_import", self.import_tweak_set))):
             button = GradientButton(buttons, self.t(key), action, self.fonts["button"], self.scale, self.animator,
                                     primary=False, pad=(14, 6))
-            button.pack(side="left", padx=(px(8), 0))
+            button.pack(side="left", padx=(px(8) if i else 0, 0))
             self.action_buttons.append((button, False))
         self.page_cards.append(card)
 
