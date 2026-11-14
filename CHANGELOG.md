@@ -2,6 +2,14 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.15.1
+
+Not released yet: fixes made after 0.15 was published.
+
+- **Tweak set**: saved without administrator rights, the file now keeps every applied tweak, also those that need the rights; applying a set leaves the ticks of the pages as they were and names the tweaks that need administrator rights. Its buttons are under the text, which a long translation covered.
+- **Programs**: the list of desktop programs finishing its reading no longer rebuilds the Microsoft Store view while you type in it.
+- Seconds with a decimal comma in Russian and Ukrainian (Startup, Troubleshooting); a startup entry whose file is gone is listed once.
+
 ## 0.15
 
 **Startup** (new page)
