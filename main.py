@@ -72,6 +72,7 @@ ICONS = {"overview": "", "privacy": "", "system": "", "explorer": ""
          "diagnostics": "", "speed": "", "drive": "", "bug": ""}
 ICONS["programs"] = ICONS["apps"]
 ICONS["startup"] = ""  # LightningBolt
+ICONS["taskbar"] = ""  # Task View
 ICONS["search"] = ""
 # The icon of each group of troubleshooting checks
 GROUP_ICONS = {"performance": "speed", "storage": "drive", "stability": "bug", "security": "shield"}
