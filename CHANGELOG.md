@@ -29,8 +29,11 @@ The release workflow publishes the section of the tagged version as the notes of
 **Overview and window**
 - The overview has a second row of tiles: what Troubleshooting found, how many programs are installed and how many start at sign-in. Each tile opens its page.
 - The sidebar fits all eleven pages: in a short window the items move closer together, then the beta note goes.
-- The window and its dialogs fade in, list cards light up under the pointer, and **Apply** and **Revert** are shown only on pages with tweaks.
+- Smoother drawing: cards, switches, check boxes, status pills, the segmented controls and progress bars are drawn antialiased, with truly rounded corners instead of jagged ones.
+- The window and its dialogs fade in, pages slide into place, list cards and search fields light up under the pointer or with the focus, and **Apply** and **Revert** are shown only on pages with tweaks.
+- Keys: **F5** reads the page again, **Ctrl+A** ticks every tweak of the page, **Ctrl+F** searches, **Esc** leaves the search.
 - Fixed: after a quick switch the sidebar marker could stay on the previous page.
+- Fixed: on the Programs page the message at the bottom ran under the buttons.
 
 **Terms of use** now cover Microsoft Store apps, which are removed without a restore point (it cannot bring them back), and the startup switches. SimpleTool asks to accept them again.
 

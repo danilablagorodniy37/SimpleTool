@@ -249,6 +249,7 @@ class App:
         self.limiter.start()
         self.setup_fonts()
         self.build()
+        self.bind_keys()
         self.start_scan()
         self.poll()
         self.memory_tick()
@@ -268,6 +269,32 @@ class App:
         else:
             root.after(600, self.startup_dialogs)
         self.start_jobs = [root.after(1500, self.remove_previous_exe), root.after(4000, self.daily_update_check)]
+
+    def bind_keys(self):
+        """F5 reads the page again, Ctrl+A ticks every tweak of the page, Esc leaves the search."""
+        def typing():
+            return isinstance(self.root.focus_get(), tk.Entry)
+
+        def refresh(event):
+            action = {"overview": self.rescan, "diagnostics": self.rescan_diagnostics,
+                      "programs": self.reload_program_list, "startup": lambda: self.load_startup(force=True)}
+            action.get(self.page, self.rescan)()
+
+        def select_all(event):
+            if not typing() and (self.page in tweaks.CATEGORIES or self.page == "search"):
+                self.select_all()
+
+        def escape(event):
+            if self.page == "search" and not self.dialog_open():
+                self.search_var.set("")
+
+        self.root.bind("<F5>", refresh)
+        self.root.bind("<Control-a>", select_all)
+        self.root.bind("<Control-A>", select_all)
+        self.root.bind("<Escape>", escape)
+
+    def dialog_open(self):
+        return any(isinstance(w, tk.Toplevel) and w.winfo_viewable() for w in self.root.winfo_children())
 
     # --- Appearance ---
 
