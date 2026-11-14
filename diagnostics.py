@@ -81,7 +81,7 @@ ACTIONS = {
     "optional_features": ("open", "ms-settings:optionalfeatures", None),
     "uac": ("open", "UserAccountControlSettings.exe", None),
     "recovery": ("open", "ms-settings:recovery", None),
-    "apps": ("open", "ms-settings:appsfeatures", None),
+    "apps": ("page", "programs", None),  # SimpleTool's Programs page: the uninstaller and what it leaves
     "system_properties": ("open", "SystemPropertiesAdvanced.exe", None),
     "network_status": ("open", "ms-settings:network-status", None),
     "proxy": ("open", "ms-settings:network-proxy", None),

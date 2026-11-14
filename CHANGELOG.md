@@ -11,6 +11,8 @@ The release workflow publishes the section of the tagged version as the notes of
 - An entry whose file is gone starts nothing: it is listed first with **Remove entry**. A registry value is saved before it is deleted, a shortcut goes to the Recycle Bin.
 - Troubleshooting's startup findings now open this page.
 
+**Troubleshooting** findings about programs with documented problems (Nahimic, Killer, "optimizers", remote control programs and the like) now open SimpleTool's Programs page, which removes them with what they leave, instead of Windows' list of apps.
+
 **Microsoft Store apps** on the Programs page
 - A switch between **Programs** and **Microsoft Store apps**: the apps of this account with their own names and logos, publisher, version, size and date, with search, order and tick boxes.
 - Remove one app, or tick several and remove them together in a window that shows each app's state and can stop after the current one. An app is removed for this account with its data; Microsoft Store can install it again.
