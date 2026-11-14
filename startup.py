@@ -58,6 +58,7 @@ class Entry:
         self.publisher = ""
         self.impact = None        # {"cpu" ms, "disk" bytes, "starts"} as Windows measured the last starts
         self.logo = None          # the logo file of a Store app
+        self.exists = False       # the program's file is on a local disk (read with the list, not by the window)
 
     def __repr__(self):
         return f"Entry({self.name!r}, {self.key!r}, enabled={self.enabled})"
@@ -100,10 +101,22 @@ def approved_on(data):
     return not (isinstance(data, bytes) and data and data[0] & 1)
 
 
+def _exists(path):
+    """Whether a file is there, asked only of local disks: a share of a computer that is off keeps the question
+    waiting for a minute."""
+    return os.path.isabs(path) and uninstaller._local(path) and os.path.isfile(path)
+
+
 def program_file(command):
     """The file a command line starts, found on the PATH when the command names it without a folder:
     '"C:\\x\\app.exe" --hidden' -> 'C:\\x\\app.exe'; for rundll32 the DLL it runs."""
     path = uninstaller.command_program(command)
+    text = os.path.expandvars((command or "").strip())
+    if path and not text.startswith('"') and not _exists(path):
+        # Unquoted with spaces ("C:\Program Files\Foo Bar\app.vbs /x"): Windows tries the words one by one
+        words = text.split(" ")
+        path = next((candidate for candidate in (" ".join(words[:i]) for i in range(len(words), 0, -1))
+                     if _exists(candidate)), path)
     if os.path.basename(path).lower() in HOSTS:
         rest = os.path.expandvars(command or "")
         rest = rest[rest.lower().find("rundll32") + len("rundll32"):]
@@ -156,7 +169,8 @@ def app_info(package):
     name cannot be read."""
     path = rf"{APP_PACKAGES}\{package}"
     name = package.split("_")[0]
-    title = storeapps.resolve(package, name, _read(path, "DisplayName") or "")
+    text = _read(path, "DisplayName") or ""
+    title = storeapps.indirect(text) if text.startswith("@") else storeapps.resolve(package, name, text)
     folder, logo = _read(path, "PackageRootFolder"), None
     if isinstance(folder, str) and folder:
         manifest = storeapps.read_manifest(folder)
@@ -209,7 +223,8 @@ def entries(impact=None):
             impact = []
     costs = {os.path.normcase(item["path"]): item for item in impact if item.get("path")}
     for entry in found:
-        if entry.path and os.path.isfile(entry.path):
+        entry.exists = bool(entry.path) and _exists(entry.path)
+        if entry.exists:
             title = diagnostics.file_description(entry.path)
             # An updater or launcher that starts the program (Discord's "Update" by GitHub) says nothing about it:
             # the name the program gave its entry does

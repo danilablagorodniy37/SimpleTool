@@ -36,8 +36,8 @@ PROTECTED = ("microsoft.windowsstore", "microsoft.storepurchaseapp", "microsoft.
 SIGNATURE_SYSTEM = 4  # SignatureKind: 0 None, 1 Developer, 2 Enterprise, 3 Store, 4 System
 FULL_NAME = re.compile(r"^[A-Za-z0-9.\-]+_[A-Za-z0-9.\-]+_[A-Za-z0-9\-]*_[A-Za-z0-9.\-~]*_[a-z0-9]+$")
 LIST_SCRIPT = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-               "Get-AppxPackage | Select-Object Name, PackageFullName, PackageFamilyName, InstallLocation, Version, "
-               "SignatureKind, IsFramework, IsResourcePackage, IsBundle, NonRemovable | ConvertTo-Json -Compress")
+               "Get-AppxPackage -ErrorAction SilentlyContinue | "
+               "Select-Object Name, PackageFullName, PackageFamilyName, InstallLocation, Version, SignatureKind, IsFramework, IsResourcePackage, IsBundle, NonRemovable | ConvertTo-Json -Compress")
 POWERSHELL_TIMEOUT = 120  # seconds; a removal of a large app takes a while
 LOGO_SIZES = re.compile(r"\.(?:targetsize-(\d+)|scale-(\d+))", re.IGNORECASE)
 
@@ -84,9 +84,13 @@ def _packages():
     """Get-AppxPackage of this account as a list of dicts."""
     code, output, errors = _powershell(LIST_SCRIPT)
     output = output.strip().lstrip("﻿")
-    if code or not output:
+    # PowerShell exits with 1 when one package reports a non-fatal error; the list it printed is still whole
+    if not output:
         raise OSError(errors.strip() or f"Get-AppxPackage exited with code {code}")
-    data = json.loads(output)
+    try:
+        data = json.loads(output)
+    except ValueError:
+        raise OSError(errors.strip() or f"Get-AppxPackage exited with code {code}") from None
     return [data] if isinstance(data, dict) else data
 
 
@@ -104,6 +108,15 @@ def resource_uris(name, text):
     if "/" in key:
         return [f"ms-resource://{name}/{key}", f"ms-resource://{name}/Resources/{key}"]
     return [f"ms-resource://{name}/Resources/{key}", f"ms-resource://{name}/{key}"]
+
+
+def indirect(text):
+    """An indirect string ("@{Package?ms-resource://...}", "@%SystemRoot%\\x.dll,-101") in the language of
+    Windows, or "" if it cannot be read."""
+    shlwapi = ctypes.windll.shlwapi
+    shlwapi.SHLoadIndirectString.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.UINT, ctypes.c_void_p]
+    buffer = ctypes.create_unicode_buffer(1024)
+    return buffer.value if shlwapi.SHLoadIndirectString(text, buffer, len(buffer), None) == 0 else ""
 
 
 def resolve(full_name, name, text):
@@ -278,7 +291,8 @@ def remove(app):
     if not FULL_NAME.match(app.full_name) or protected(app.package):
         raise ValueError(f"not a removable package: {app.full_name}")
     # The full name has only letters, digits, dots, dashes, tildes and underscores, so it is safe inside quotes
-    code, output, errors = _powershell(f"Remove-AppxPackage -Package '{app.full_name}' -ErrorAction Stop")
+    code, output, errors = _powershell("[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+                                       f"Remove-AppxPackage -Package '{app.full_name}' -ErrorAction Stop")
     if code:
         raise OSError(errors.strip().splitlines()[0] if errors.strip() else f"Remove-AppxPackage exited with code {code}")
 

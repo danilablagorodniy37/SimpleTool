@@ -1,4 +1,5 @@
 """Antialiased widgets: rounded shapes drawn through GDI+ into cached images, with the canvas as the fallback."""
+import time
 import tkinter as tk
 import types
 import unittest
@@ -131,6 +132,33 @@ class Shapes(unittest.TestCase):
             for i in range(40):
                 widgets.bar_image(self.frame, 50 + i, 6, C["primary"])
             self.assertLessEqual(len([key for key in theme._cache if key[0] in ("aa", "aa_corners")]), 10)
+
+    def test_images_on_screen_outlive_the_cache_limit(self):
+        """Dropping a PhotoImage blanks every widget showing it: the cache keeps the ones in use."""
+        toggle = widgets.Toggle(self.frame, 1.0, self.animator, on=True)
+        box = widgets.CheckBox(self.frame, 20, self.animator)
+        box.set(True, True, animate=False)
+        toggle.pack()
+        box.pack()
+        shown = [toggle.itemcget(toggle.image, "image")]
+        with mock.patch.object(widgets, "SHAPES_KEPT", 10):
+            for i in range(60):  # a progress bar dragged through many widths
+                widgets.bar_image(self.frame, 50 + i, 6, C["primary"])
+            names = self.root.image_names()
+            self.assertTrue(all(name in names for name in shown), "the switch still has its picture")
+            self.assertLess(len([key for key in widgets._shapes]), 20)
+
+    def test_a_failing_animation_does_not_stop_the_others(self):
+        seen, errors = [], []
+        self.root.report_callback_exception = lambda *exc: errors.append(exc[1])
+        self.animator.animate("broken", 0.05, lambda t: 1 / 0)
+        self.animator.animate("fine", 0.05, seen.append)
+        deadline = time.time() + 2
+        while (not seen or seen[-1] < 1.0) and time.time() < deadline:
+            self.root.update()
+            time.sleep(0.01)
+        self.assertEqual(seen[-1], 1.0)
+        self.assertTrue(errors and isinstance(errors[0], ZeroDivisionError))
 
 
 if __name__ == "__main__":

@@ -1961,6 +1961,7 @@ class App:
                                      self.animator, primary=False, pad=(18, 8))
         stop_button.pack(side="right")
         self.present(win)
+        win.unbind("<Escape>")  # the uninstallers go on: the window stays until they are done
         colors = {"running": C["accent"], "removed": C["ok"], "kept": C["warn"], "failed": C["bad"],
                   "skipped": C["dim"]}
         finished = [0]
@@ -2255,6 +2256,7 @@ class App:
                                      self.animator, primary=False, pad=(18, 8))
         stop_button.pack(side="right")
         self.present(win)
+        win.unbind("<Escape>")  # the uninstallers go on: the window stays until they are done
         colors = {"running": C["accent"], "removed": C["ok"], "kept": C["warn"], "failed": C["bad"],
                   "skipped": C["dim"]}
         finished = [0]
@@ -2460,7 +2462,7 @@ class App:
                 try:
                     if entry.logo:
                         data = storeapps.logo_png(entry.logo, size)
-                    elif entry.path and os.path.isfile(entry.path):
+                    elif entry.exists:
                         data = uninstaller.icon_png(entry.path, 0, size)
                     else:
                         data = None
@@ -2572,7 +2574,7 @@ class App:
             self.wrap(command, px(330))
         actions = tk.Frame(body, bg=card.fill)
         actions.grid(row=0, column=2, rowspan=3, sticky="e", padx=px(14))
-        if entry.path and os.path.exists(entry.path):
+        if entry.exists:
             self.link(actions, self.t("startup_location"), lambda: self.open_startup_location(entry), font="small",
                       color=C["dim"]).pack(side="left", padx=(0, px(14)))
         if missing and entry.source != "app":
@@ -3901,6 +3903,14 @@ class App:
         except tk.TclError:
             return
         self.animator.animate(("window", str(win)), duration, lambda t: win.attributes("-alpha", t))
+
+        def show():  # whatever happens to the animation, the window does not stay invisible
+            try:
+                win.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
+
+        self.root.after(int(duration * 1000) + 250, show)
 
     def present(self, win):
         win.update_idletasks()

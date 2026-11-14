@@ -152,7 +152,8 @@ class StoreAppsTest(unittest.TestCase):
         scripts = []
         with mock.patch.object(storeapps, "_powershell", lambda script: scripts.append(script) or (0, "", "")):
             storeapps.remove(app)
-        self.assertEqual(scripts, [f"Remove-AppxPackage -Package 'Contoso.Notes_2.5.0.0_x64__{PUBLISHER_ID}' "
+        self.assertEqual(scripts, ["[Console]::OutputEncoding = [Text.Encoding]::UTF8; "  # Windows' message in UTF-8
+                                   f"Remove-AppxPackage -Package 'Contoso.Notes_2.5.0.0_x64__{PUBLISHER_ID}' "
                                    "-ErrorAction Stop"])
         with mock.patch.object(storeapps, "_powershell", lambda script: (1, "", "Deployment failed 0x80073CFA\nmore")):
             with self.assertRaisesRegex(OSError, "0x80073CFA"):
@@ -179,6 +180,9 @@ class StoreAppsTest(unittest.TestCase):
             self.assertEqual(storeapps._packages(), [one], "a single package comes as an object")
         with mock.patch.object(storeapps, "_powershell", lambda script: (0, json.dumps([one, one]), "")):
             self.assertEqual(len(storeapps._packages()), 2)
+        # One broken package makes PowerShell exit with 1, but the list it printed is whole
+        with mock.patch.object(storeapps, "_powershell", lambda script: (1, json.dumps([one]), "a package is broken")):
+            self.assertEqual(storeapps._packages(), [one])
         with mock.patch.object(storeapps, "_powershell", lambda script: (1, "", "Get-AppxPackage : Access denied")):
             with self.assertRaisesRegex(OSError, "Access denied"):
                 storeapps._packages()

@@ -7,6 +7,7 @@ images of the frames before it. Without GDI+ the canvas draws the shapes itself,
 """
 import collections
 import math
+import sys
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -72,6 +73,11 @@ class Animator:
                         done()
             except tk.TclError:  # the widget is already deleted, so the animation is no longer needed
                 self.tweens.pop(key, None)
+            except Exception:  # one broken animation must not stop the others: windows fade in through them
+                self.tweens.pop(key, None)
+                report = getattr(self.root, "report_callback_exception", None)
+                if report:
+                    report(*sys.exc_info())
         try:
             if self.tweens:
                 self.job = self.root.after(15, self._tick)
@@ -96,6 +102,8 @@ def _cached(key, make):
     """theme._cache[key], made by make() when it is not there; None if GDI+ or Tk cannot make it."""
     value = theme._cache.get(key)
     if value is not None:
+        if key in _shapes:
+            _shapes.move_to_end(key)  # in use: the oldest unused ones go first
         return value
     if not _gdiplus[0]:
         return None
@@ -108,9 +116,28 @@ def _cached(key, make):
         return None
     theme._cache[key] = value
     _shapes[key] = True
-    while len(_shapes) > SHAPES_KEPT:
-        theme._cache.pop(_shapes.popitem(last=False)[0], None)
+    if len(_shapes) > SHAPES_KEPT:
+        _prune()
     return value
+
+
+def _prune():
+    """Drops the oldest cached shapes no widget shows. Deleting a PhotoImage blanks every widget that shows it, so
+    images in use stay, whatever their age (theme.clear_cache() leaves keys of images already gone)."""
+    extra = len(_shapes) - SHAPES_KEPT + SHAPES_KEPT // 10  # a batch, so pruning is not done for every new image
+    for key in list(_shapes):
+        if extra <= 0:
+            break
+        value = theme._cache.get(key)
+        images = value if isinstance(value, (list, tuple)) else [value] if value is not None else []
+        try:
+            used = any(image.tk.getboolean(image.tk.call("image", "inuse", image.name)) for image in images)
+        except tk.TclError:
+            used = False
+        if not used:
+            del _shapes[key]
+            theme._cache.pop(key, None)
+            extra -= 1
 
 
 def shape_image(widget, key, width, height, draw):

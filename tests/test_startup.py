@@ -89,6 +89,24 @@ class StartupTest(unittest.TestCase):
         self.assertEqual(startup.program_file(r"C:\WINDOWS\system32\rundll32.exe C:\Tools\x.dll,Run"),
                          r"C:\Tools\x.dll")
 
+    def test_unquoted_paths_with_spaces_and_network_paths(self):
+        folder = os.path.join(self.tmp, "Foo Bar")
+        os.makedirs(folder)
+        script = os.path.join(folder, "start me.vbs")
+        open(script, "w").close()
+        self.assertEqual(startup.program_file(f"{script} /quiet"), script, "the words are tried as Windows does")
+        share = r"\\nas\share\tool.exe"  # secret-scan: allow
+        self.registry.values = {RUN_USER: {"Share": f'"{share}"'}}
+        real_isfile = os.path.isfile
+
+        def isfile(path):
+            self.assertFalse(str(path).startswith("\\\\"), "a share of a computer that is off would stall")
+            return real_isfile(path)
+
+        with mock.patch("os.path.isfile", isfile):
+            entry = startup.entries(impact=[])[0]
+        self.assertFalse(entry.exists or entry.missing, "unknown, never reported as gone")
+
     def test_run_entries_and_their_marks(self):
         notepad = os.path.join(SYSTEM32, "notepad.exe")
         self.registry.values = {
