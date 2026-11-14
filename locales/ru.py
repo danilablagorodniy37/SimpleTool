@@ -388,6 +388,35 @@ TEXTS = {
                           "них кое-что осталось.",
         "prog_gone_info": "Удалена {date}  ·  осталось: {left}",
         "prog_gone_hide": "Скрыть",
+        "prog_source_desktop": "Программы",
+        "prog_source_store": "Приложения Microsoft Store",
+        "store_loading": "Читаю приложения Microsoft Store…",
+        "store_note": "Приложения удаляются для этой учётной записи вместе с их данными; установить их снова можно "
+                      "из Microsoft Store. Сам Store, «Безопасность Windows» и части Windows, устроенные как "
+                      "приложения, в список не входят.",
+        "store_none": "У этой учётной записи нет приложений Store, которые можно удалить.",
+        "store_other_account": "Приложения Store у каждой учётной записи свои, а SimpleTool запущен от другой учётной "
+                               "записи, чем та, что вошла в Windows: откройте его из своей учётной записи, чтобы "
+                               "увидеть её приложения.",
+        "store_count": "Приложений Store: {n}, всего {size}",
+        "store_footer": "Приложение Store удаляется для этой учётной записи; Microsoft Store может установить его "
+                        "снова.",
+        "store_confirm_title": "Удаление приложения Store",
+        "store_confirm_text": "Приложение будет удалено для этой учётной записи вместе с его данными и настройками. "
+                              "Точка восстановления его не вернёт, но Microsoft Store может установить его снова.",
+        "store_removing": "Удаляю приложение…",
+        "store_removed": "{name} удалено",
+        "store_kept": "{name} всё ещё установлено: Windows его не удалила",
+        "store_failed": "Не удалось удалить {name}",
+        "store_batch_title": "Удаление приложений Store",
+        "store_batch_heading": "Удалить выбранные приложения Store ({n})?",
+        "store_batch_text": "Они удаляются по очереди для этой учётной записи вместе с их данными и настройками. Любое "
+                            "из них можно снова установить из Microsoft Store.",
+        "store_batch_running": "Удаление приложений: {done} из {n}",
+        "store_batch_running_text": "Windows удаляет приложения по очереди; большое приложение удаляется не сразу.",
+        "store_batch_finished": "Готово: удалено {removed} из {n}",
+        "store_batch_failed": "Не удалось удалить приложения",
+        "store_batch_working": "Удаляю приложения…",
         "tray_open": "Открыть SimpleTool",
         "tray_limiter": "Ограничитель памяти",
         "tray_exit": "Выход",

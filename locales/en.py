@@ -385,6 +385,33 @@ TEXTS = {
                           "things behind.",
         "prog_gone_info": "Removed {date}  ·  left: {left}",
         "prog_gone_hide": "Hide",
+        "prog_source_desktop": "Programs",
+        "prog_source_store": "Microsoft Store apps",
+        "store_loading": "Reading the Microsoft Store apps…",
+        "store_note": "Store apps are removed for this account together with their data; Microsoft Store can install "
+                      "them again. The Store, Windows Security and the parts of Windows that come as apps are not "
+                      "listed.",
+        "store_none": "This account has no Store apps that can be removed.",
+        "store_other_account": "Store apps belong to each account, and SimpleTool runs as another account than the one "
+                               "signed in to Windows: open it from the signed-in account to see its apps.",
+        "store_count": "Store apps: {n}, {size} in all",
+        "store_footer": "A Store app is removed for this account; Microsoft Store can install it again.",
+        "store_confirm_title": "Remove a Store app",
+        "store_confirm_text": "The app is removed for this account together with its data and settings. A restore "
+                              "point cannot bring it back, but Microsoft Store can install it again.",
+        "store_removing": "Removing the app…",
+        "store_removed": "{name} is removed",
+        "store_kept": "{name} is still installed: Windows did not remove it",
+        "store_failed": "{name} could not be removed",
+        "store_batch_title": "Remove Store apps",
+        "store_batch_heading": "Remove the selected Store apps ({n})?",
+        "store_batch_text": "They are removed one after another for this account, together with their data and "
+                            "settings. Microsoft Store can install any of them again.",
+        "store_batch_running": "Removing apps: {done} of {n}",
+        "store_batch_running_text": "Windows removes the apps one after another; a large app takes a little while.",
+        "store_batch_finished": "Done: {removed} of {n} removed",
+        "store_batch_failed": "The apps could not be removed",
+        "store_batch_working": "Removing the apps…",
         "tray_open": "Open SimpleTool",
         "tray_limiter": "Memory limiter",
         "tray_exit": "Exit",

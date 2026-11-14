@@ -164,18 +164,6 @@ class StartupTest(unittest.TestCase):
         with self.assertRaises(PermissionError):
             startup.set_enabled(policy, False)
 
-    def test_resource_names(self):
-        full = "Microsoft.Windows.Photos_2026.1.0.0_x64__8wekyb3d8bbwe"
-        name = "Microsoft.Windows.Photos"
-        self.assertEqual(startup.resource_candidates("ms-resource:AppName", full),
-                         [f"@{{{full}?ms-resource://{name}/Resources/AppName}}",
-                          f"@{{{full}?ms-resource://{name}/AppName}}"])
-        self.assertEqual(startup.resource_candidates("ms-resource:/Resources/Title", full),
-                         [f"@{{{full}?ms-resource://{name}/Resources/Title}}"])
-        uri = "ms-resource://MicrosoftWindows.CrossDevice/CrossDevice.Core/Resources/AppName"
-        self.assertEqual(startup.resource_candidates(uri, full), [f"@{{{full}?{uri}}}"])
-        self.assertEqual(startup.resource_candidates("Plain name", full), ["Plain name"])
-
     def test_removing_only_dead_entries(self):
         self.registry.values = {RUN_USER: {"Gone": r'"C:\nowhere-at-all\gone.exe" -min',
                                            "Tool": os.path.join(SYSTEM32, "notepad.exe")},

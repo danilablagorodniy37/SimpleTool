@@ -9,7 +9,6 @@ brings back exactly what was there, and the program's own settings and updates s
 Only an entry whose program is gone can be removed: a Run value is saved to startup-removed.json first, a shortcut
 goes to the Recycle Bin.
 """
-import ctypes
 import datetime
 import json
 import os
@@ -20,6 +19,7 @@ import winreg
 
 import diagnostics
 import engine
+import storeapps
 import uninstaller
 
 APPROVED = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved"
@@ -57,6 +57,7 @@ class Entry:
         self.title = name         # the program's own description, when its file has one
         self.publisher = ""
         self.impact = None        # {"cpu" ms, "disk" bytes, "starts"} as Windows measured the last starts
+        self.logo = None          # the logo file of a Store app
 
     def __repr__(self):
         return f"Entry({self.name!r}, {self.key!r}, enabled={self.enabled})"
@@ -150,37 +151,18 @@ def _folder_entries():
     return found
 
 
-def indirect_string(text):
-    """A text such as "@{Package?ms-resource://...}" or "@%SystemRoot%\\x.dll,-101" in the user's language."""
-    if not text or not text.startswith("@"):
-        return text
-    buffer = ctypes.create_unicode_buffer(512)
-    if ctypes.windll.shlwapi.SHLoadIndirectString(text, buffer, len(buffer), None) == 0:
-        return buffer.value
-    return ""
-
-
-def resource_candidates(text, package):
-    """The indirect strings an ms-resource: name of a package can stand for, most likely first."""
-    if not text.startswith("ms-resource:"):
-        return [text]
-    name, key = package.split("_")[0], text[len("ms-resource:"):]
-    if key.startswith("//"):
-        return [f"@{{{package}?{text}}}"]
-    key = key.lstrip("/")
-    if key.lower().startswith("resources/"):
-        return [f"@{{{package}?ms-resource://{name}/{key}}}"]
-    return [f"@{{{package}?ms-resource://{name}/Resources/{key}}}", f"@{{{package}?ms-resource://{name}/{key}}}"]
-
-
-def app_name(package):
-    """The name a Store app shows (from its package full name), or its package name when it cannot be read."""
-    text = _read(rf"{APP_PACKAGES}\{package}", "DisplayName") or ""
-    for candidate in resource_candidates(text, package) if text else []:
-        name = indirect_string(candidate)
-        if name and not name.startswith(("@", "ms-resource:")):
-            return name
-    return package.split("_")[0].rpartition(".")[2] or package
+def app_info(package):
+    """(the name a Store app shows, its logo file or None) from its package full name; the package name when the
+    name cannot be read."""
+    path = rf"{APP_PACKAGES}\{package}"
+    name = package.split("_")[0]
+    title = storeapps.resolve(package, name, _read(path, "DisplayName") or "")
+    folder, logo = _read(path, "PackageRootFolder"), None
+    if isinstance(folder, str) and folder:
+        manifest = storeapps.read_manifest(folder)
+        if manifest and manifest[0].get("Logo"):
+            logo = storeapps.logo_file(folder, manifest[0]["Logo"])
+    return title or name.rpartition(".")[2] or package, logo
 
 
 def _read(path, name):
@@ -201,9 +183,12 @@ def _app_entries():
             state = _read(path, "State")
             if not isinstance(state, int) or not package:
                 continue  # not a startup task, or an app no longer installed
-            found.append(Entry(f"app:{family}\\{task}", app_name(package), package, "", "app", "HKCU",
-                               state in (TASK_ENABLED, TASK_ENABLED_BY_POLICY), location=path,
-                               policy=state in (TASK_DISABLED_BY_POLICY, TASK_ENABLED_BY_POLICY)))
+            title, logo = app_info(package)
+            entry = Entry(f"app:{family}\\{task}", title, package, "", "app", "HKCU",
+                          state in (TASK_ENABLED, TASK_ENABLED_BY_POLICY), location=path,
+                          policy=state in (TASK_DISABLED_BY_POLICY, TASK_ENABLED_BY_POLICY))
+            entry.logo = logo
+            found.append(entry)
     # Two tasks of one app get the task's name too
     names = [entry.name for entry in found]
     for entry in found:

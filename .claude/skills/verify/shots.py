@@ -106,11 +106,23 @@ def step(i):
     page, expand, scroll = SPECS[i]
     if expand:
         app.expanded.add(("t", expand))
-    app.show_page(page, animate=False)
+    if page in ("programs", "store"):  # "store": the Programs page showing the Microsoft Store apps
+        app.program_source = "desktop" if page == "programs" else "store"
+    app.show_page("programs" if page == "store" else page, animate=False)
     if page == "diagnostics":
         root.after(1500, wait_diagnostics, i, scroll, 0)
+    elif page in ("programs", "store"):
+        root.after(900, wait_programs, i, scroll, 0)
     else:
         root.after(900, lambda: (app.canvas.yview_moveto(float(scroll)), root.after(600, finish, i)))
+
+
+def wait_programs(i, scroll, waited):
+    """The Programs page reads its list when opened; the picture is taken when the cards are there."""
+    if (app.programs_loading or app.store_loading or not app.program_rows) and waited < 60:
+        root.after(500, wait_programs, i, scroll, waited + 0.5)
+        return
+    root.after(600, lambda: (app.canvas.yview_moveto(float(scroll)), root.after(600, finish, i)))
 
 
 def wait_diagnostics(i, scroll, waited):
