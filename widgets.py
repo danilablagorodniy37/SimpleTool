@@ -372,7 +372,20 @@ class GradientButton(tk.Canvas):
 
     def _click(self, event):
         if self.enabled:
+            self._press()
             self.command()
+
+    def _press(self):
+        """The label dips by a pixel for a moment: the click is felt even when the result takes a while."""
+        self.move(self.text, 0, 1)
+
+        def back():
+            try:
+                self.move(self.text, 0, -1)
+            except tk.TclError:
+                pass  # the click closed the window
+
+        self.after(110, back)
 
     def _hover_to(self, target):
         start = self.hover
