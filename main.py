@@ -231,6 +231,9 @@ class App:
         self.startup_filter = "all"
         self.startup_rows = []    # (entry, card) of the page, to filter without rebuilding it
         self.startup_icons = {}   # entry key -> PhotoImage of its program's icon
+        self.search_query = ""    # the text of the sidebar's search field: the "search" page lists matching tweaks
+        self.search_return = "overview"  # the page to go back to when the search field is cleared
+        self.search_job = None
         self.program_source = "desktop"  # the Programs page shows "desktop" programs or Microsoft "store" apps
         self.store_apps = None    # [storeapps.StoreApp] of this account; read the first time the Store view opens
         self.store_loading = False
@@ -353,7 +356,7 @@ class App:
         tk.Frame(side, bg=C["side_border"], width=1).pack(side="right", fill="y")
 
         brand = tk.Frame(side, bg=C["side"])
-        brand.pack(fill="x", padx=px(20), pady=(px(22), px(26)))
+        brand.pack(fill="x", padx=px(20), pady=(px(22), px(18)))
         names = tk.Frame(brand, bg=C["side"])
         names.pack(side="left")
         tk.Label(names, text="SimpleTool", font=self.fonts["brand"], fg=C["side_text"], bg=C["side"], bd=0).pack(anchor="w")
@@ -363,6 +366,7 @@ class App:
                                   ("tech", "small_bold", "#5FB4FF")):
             tk.Label(maker, text=text, font=self.fonts[font], fg=color, bg=C["side"], bd=0, padx=0).pack(side="left")
 
+        self.build_search(side)
         nav = tk.Frame(side, bg=C["side"])
         nav.pack(fill="x", padx=px(12))
         self.nav = {}
@@ -418,6 +422,95 @@ class App:
         self.terms_link.pack(anchor="w", pady=(px(4), 0))
         self.side_parts = (brand, bottom)
 
+    def build_search(self, side):
+        """A search field for the tweaks of every page, under the logo."""
+        px = self.px
+        fill, border = mix("#FFFFFF", C["side"], 0.06), mix("#FFFFFF", C["side"], 0.14)
+        self.search_box = box = tk.Frame(side, bg=fill, highlightthickness=1, highlightbackground=border,
+                                         highlightcolor=C["primary"])
+        box.pack(fill="x", padx=px(20), pady=(0, px(14)))
+        tk.Label(box, text=ICONS["search"], font=self.fonts["icon_small"], fg=C["side_dim"], bg=fill).pack(
+            side="left", padx=(px(10), 0))
+        self.search_var = tk.StringVar(value=self.search_query)  # the window is built again for a new language
+        self.search_entry = entry = tk.Entry(box, textvariable=self.search_var, font=self.fonts["small"],
+                                             fg=C["side_text"], bg=fill, relief="flat", insertbackground=C["side_text"],
+                                             highlightthickness=0)
+        entry.pack(side="left", fill="x", expand=True, ipady=px(5), padx=(px(8), px(8)))
+        # The hint lies over the empty field and lets clicks through to it
+        self.search_hint = tk.Label(box, text=self.t("search_hint"), font=self.fonts["small"], fg=C["side_dim"],
+                                    bg=fill, cursor="xterm")
+        if not self.search_query:
+            self.search_hint.place(in_=entry, x=0, rely=0.5, anchor="w")
+        self.search_hint.bind("<Button-1>", lambda e: entry.focus_set())
+        self.search_var.trace_add("write", lambda *args: self.search_changed())
+        entry.bind("<Escape>", lambda e: self.search_var.set(""))
+        self.root.bind("<Control-f>", lambda e: (entry.focus_set(), entry.select_range(0, "end")))
+        self.root.bind("<Control-F>", lambda e: (entry.focus_set(), entry.select_range(0, "end")))
+
+    def search_changed(self):
+        query = self.search_var.get()
+        if query:
+            self.search_hint.place_forget()
+        else:
+            self.search_hint.place(in_=self.search_entry, x=0, rely=0.5, anchor="w")
+        if self.search_job:
+            self.root.after_cancel(self.search_job)
+        # The page is built once the typing pauses, not for every letter
+        self.search_job = self.root.after(160, self.run_search)
+
+    def run_search(self):
+        self.search_job = None
+        query = " ".join(self.search_var.get().split())
+        if query == self.search_query and (self.page == "search") == bool(query):
+            return
+        self.search_query = query
+        if query:
+            if self.page != "search":
+                self.search_return = self.page
+            self.show_page("search", animate=self.page != "search")
+        elif self.page == "search":
+            self.show_page(self.search_return)
+
+    def search_matches(self, query):
+        """The tweaks whose name, short text or details contain every word of the query, case aside."""
+        words = query.casefold().split()
+        found = []
+        for tweak in tweaks.TWEAKS:
+            name, short, details = self.text("tweaks", tweak.id)
+            text = " ".join((name, short, details, tweak.id.replace("_", " "))).casefold()
+            if all(word in text for word in words):
+                found.append(tweak)
+        return found
+
+    def build_search_page(self):
+        px = self.px
+        found = self.search_matches(self.search_query)
+        if not found:
+            note = tk.Label(self.list_frame, text=self.t("search_none", query=self.search_query), font=self.fonts["body"],
+                            fg=C["muted"], bg=C["bg"], anchor="w", justify="left")
+            note.pack(fill="x", padx=px(4), pady=px(8))
+            self.wrap(note, px(8))
+            return
+        for category in tweaks.CATEGORIES:
+            items = [t for t in found if t.category == category]
+            if not items:
+                continue
+            head = tk.Frame(self.list_frame, bg=C["bg"])
+            head.pack(fill="x", padx=px(2), pady=(px(4), px(8)))
+            tk.Label(head, text=ICONS[category], font=self.fonts["icon_small"], fg=CATEGORY_COLORS[category],
+                     bg=C["bg"]).pack(side="left", padx=(0, px(8)))
+            link = self.link(head, self.text("categories", category)[0], lambda c=category: self.leave_search(c),
+                             font="small_bold", color=C["muted"])
+            link.pack(side="left")
+            for tweak in items:
+                self.build_tweak_card(tweak)
+
+    def leave_search(self, page):
+        """Opens a page from the search results; the field is cleared."""
+        self.search_return = page
+        self.search_var.set("")
+        self.run_search()
+
     def fit_sidebar(self, height):
         """In a short window the menu items move closer together, and then the note about the beta goes, so every
         page and the bottom of the sidebar stay in view."""
@@ -428,7 +521,8 @@ class App:
         item = next(iter(self.nav.values()))["icon"].winfo_reqheight() + 2 * px(2)  # the item's own pady
         note = self.beta_note.winfo_reqheight() + px(6)
         rest = bottom.winfo_reqheight() - (note if self.nav_fit[1] else 0)
-        fixed = brand.winfo_reqheight() + px(22) + px(26) + rest + px(20) + px(16)  # paddings and a gap above the chip
+        # The logo, the search field, their paddings, the bottom block and a gap above the chip
+        fixed = brand.winfo_reqheight() + px(40) + self.search_box.winfo_reqheight() + px(14) + rest + px(36)
         levels = [(px(9), True), (px(7), True), (px(6), False), (px(4), False), (px(2), False)]
         pady, show_note = next((level for level in levels
                                 if fixed + (note if level[1] else 0) + len(self.nav) * (item + 2 * level[0]) <= height),
@@ -707,6 +801,10 @@ class App:
 
     def move_indicator(self, animate=True):
         px = self.px
+        if self.page not in self.nav:  # the search page has no menu item
+            self.animator.cancel("indicator")
+            self.indicator.place_forget()
+            return
         item = self.nav[self.page]["item"]
         if animate:
             self.root.update_idletasks()
@@ -731,7 +829,10 @@ class App:
         """keep_scroll: the same page built again (a list read again) stays where it was scrolled to."""
         top = self.canvas.canvasy(0) if keep_scroll and page == self.page else 0
         self.page = page
-        name, desc = self.text("categories", page)
+        if page == "search":
+            name, desc = self.t("search_title"), self.t("search_desc", query=self.search_query)
+        else:
+            name, desc = self.text("categories", page)
         self.header.itemconfigure(self.h_title, text=name)
         self.header.itemconfigure(self.h_desc, text=desc)
         strength = 0.18 if C["name"] == "light" else 0.26
@@ -783,6 +884,8 @@ class App:
             self.build_programs_page()
         elif page == "startup":
             self.build_startup_page()
+        elif page == "search":
+            self.build_search_page()
         else:
             self.build_tweak_page(page)
         tk.Frame(self.list_frame, bg=C["bg"], height=self.px(12)).pack()
@@ -3366,7 +3469,7 @@ class App:
         # have nothing to tick and show none
         tweak_pair = (self.apply_button, self.revert_button)
         program_pair = (self.program_remove_button, self.program_clear_button)
-        shown = program_pair if programs else tweak_pair if self.page in tweaks.CATEGORIES else ()
+        shown = program_pair if programs else tweak_pair if self.page in tweaks.CATEGORIES + ["search"] else ()
         if not shown or not shown[0].winfo_manager():
             for button in tweak_pair + program_pair:
                 if button not in shown:

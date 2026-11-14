@@ -596,6 +596,41 @@ class UiSmoke(unittest.TestCase):
         self.wait(root, lambda: app.program_rows)
         return root, app, errors
 
+    def test_search(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_app(admin=True)
+        try:
+            app.show_page("system", animate=False)
+            app.search_var.set("  CONTEXT   menu ")
+            self.wait(root, lambda: app.page == "search")
+            names = {i18n.TEXTS["en"]["tweaks"][t.id][0] for t in app.search_matches("context menu")}
+            self.assertEqual(set(app.cards), {t.id for t in app.search_matches("context menu")})
+            self.assertTrue(names and all(app.text("tweaks", i) for i in app.cards))
+            self.assertEqual(app.header.itemcget(app.h_title, "text"), ui["search_title"])
+            self.assertTrue(app.apply_button.winfo_manager(), "found tweaks are applied from here")
+            self.assertFalse(app.indicator.winfo_manager(), "no menu item is marked")
+            # Ticking a found tweak works as on its own page
+            tweak = next(app.tweak_by_id[i] for i in app.cards if app.selectable(app.tweak_by_id[i]))
+            app.toggle_select(tweak)
+            self.assertIn(tweak.id, app.selected)
+            app.clear_selection()
+            # Nothing found
+            app.search_var.set("zzzz-no-such-tweak")
+            self.wait(root, lambda: not app.cards)
+            self.assertIn(ui["search_none"].format(query="zzzz-no-such-tweak"), self.texts(app.list_frame))
+            # Clearing the field goes back to the page the search started from
+            app.search_var.set("")
+            self.wait(root, lambda: app.page == "system")
+            # A page's heading in the results opens that page
+            app.search_var.set("taskbar")
+            self.wait(root, lambda: app.page == "search")
+            self.click_text(app.list_frame, i18n.TEXTS["en"]["categories"]["taskbar"][0])
+            self.wait(root, lambda: app.page == "taskbar")
+            self.assertEqual(app.search_var.get(), "")
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
     def test_startup_page(self):
         ui = i18n.TEXTS["en"]["ui"]
         root, app, errors = self.open_app(admin=False)

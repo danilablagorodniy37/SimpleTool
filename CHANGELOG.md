@@ -20,6 +20,9 @@ The release workflow publishes the section of the tagged version as the notes of
 - Start button on the left, hide the Task View button, hide search on the taskbar, turn off Widgets (by Microsoft's policy), labels on taskbar buttons, End task from the taskbar, seconds in the taskbar clock, no tips and app suggestions in Start, no account notifications in Start, no web results in Windows search.
 - **System** gets three more: turn off pointer acceleration, no Sticky Keys prompt on Shift, no tips on the lock screen.
 
+**Search**
+- A search field under the logo (**Ctrl+F**) finds tweaks on every page by the words of their name, description or details. The results are grouped by page and can be ticked and applied right there; **Esc** goes back.
+
 **Overview and window**
 - The overview has a second row of tiles: what Troubleshooting found, how many programs are installed and how many start at sign-in. Each tile opens its page.
 - The sidebar fits all eleven pages: in a short window the items move closer together, then the beta note goes.
