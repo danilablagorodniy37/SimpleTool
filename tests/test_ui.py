@@ -631,12 +631,13 @@ class UiSmoke(unittest.TestCase):
             with open(target, "w", encoding="utf-8") as f:
                 json.dump({"simpletool": "tweak set", "version": 1, "tweaks": todo + applied[:1] + ["no_such"]}, f)
             chosen = []
-            app.apply_selected = lambda: chosen.append(set(app.selected))
+            app.apply_selected = lambda ids=None: chosen.append(set(app.selected) if ids is None else ids)
             app.show_tweak_set(target)
             dialog = self.dialogs(root)[-1]
             self.assertIn(ui["set_heading"].format(n=len(todo)), self.texts(dialog))
             self.button(dialog, ui["set_apply"].format(n=len(todo)))._click(None)
             self.assertEqual(chosen, [set(todo)])
+            self.assertEqual(app.selected, set(), "the ticks of the pages stay as they were")
             # Not a set: nothing opens
             with open(target, "w", encoding="utf-8") as f:
                 f.write("{}")

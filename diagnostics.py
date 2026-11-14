@@ -3036,7 +3036,7 @@ def check_startup_apps(facts):
              for p in heavy[:5]]
     dead = facts.get("startup_dead") or []
     items = [("item_startup_dead", {"name": name}) for name in dead] + items
-    items += [("item_name", {"name": name}) for name in sorted(names, key=str.lower)]
+    items += [("item_name", {"name": name}) for name in sorted(names, key=str.lower) if name not in dead]
     if len(names) > 10:
         return Finding("startup_apps", "warning", "startup_many", {"n": len(names)}, items, ["startup"])
     if dead:  # leftovers of removed programs: harmless, but nothing to keep

@@ -50,6 +50,7 @@ TEXTS = {
         "set_nothing": "Every tweak of the set ({n}) is already applied here, or cannot be applied on this PC",
         "set_heading": "Apply {n} tweaks from the set?",
         "set_text": "The set has {total} tweaks; these are not applied on this PC yet. SimpleTool checks for a restore point first, as for any Apply.",
+        "set_locked": "{n} more need administrator rights.",
         "set_apply": "Apply ({n})",
         "select_all": "Select all",
         "clear": "Clear",

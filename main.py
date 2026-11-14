@@ -1289,6 +1289,8 @@ class App:
                 value = self.size_text(value)
             elif isinstance(value, datetime.date):
                 value = self.format_day(value)
+            elif isinstance(value, float) and self.lang != "en":
+                value = str(value).replace(".", ",")  # 5,6 s
             elif isinstance(value, diagnostics.Text):  # filled in with the other values, never with itself
                 value = self.diag_text(value, {n: v for n, v in params.items() if not isinstance(v, diagnostics.Text)})
             values[name] = value
@@ -1594,7 +1596,7 @@ class App:
                     except tk.TclError:
                         pass  # an icon Tk cannot read gets the generic one
             self.update_nav_counts()
-            if self.page == "programs":
+            if self.page == "programs" and self.program_source == "desktop":
                 self.show_page("programs", animate=False, keep_scroll=True)
 
         self.run_job(work, done)
@@ -2694,7 +2696,8 @@ class App:
 
     def export_tweak_set(self):
         """Saves the ids of the applied tweaks to a file, to apply the same set on another PC."""
-        applied = [t.id for t in tweaks.TWEAKS if self.card_state(t) == "applied"]
+        statuses = self.status_map()  # the real state, also of tweaks that need rights SimpleTool runs without
+        applied = [t.id for t in tweaks.TWEAKS if statuses.get(t.id) == "applied"]
         if not applied:
             self.notify(self.t("set_empty"), C["warn"], ICONS["warning"])
             return
@@ -2737,11 +2740,19 @@ class App:
             return
         todo = [self.tweak_by_id[i] for i in ids if self.selectable(self.tweak_by_id[i])
                 and self.card_state(self.tweak_by_id[i]) != "applied"]
+        statuses = self.status_map()
+        locked = [i for i in ids if self.card_state(self.tweak_by_id[i]) == "admin" and statuses.get(i) != "applied"]
         if not todo:
-            self.notify(self.t("set_nothing", n=len(ids)), C["ok"], ICONS["check"])
+            if locked:  # only administrators can apply what is left
+                self.show_admin_dialog()
+            else:
+                self.notify(self.t("set_nothing", n=len(ids)), C["ok"], ICONS["check"])
             return
+        text = self.t("set_text", total=len(ids))
+        if locked:
+            text += " " + self.t("set_locked", n=len(locked))
         win, content = self.dialog(self.t("set_import"), ICONS["snapshots"], CATEGORY_COLORS["snapshots"],
-                                   self.t("set_heading", n=len(todo)), self.t("set_text", total=len(ids)))
+                                   self.t("set_heading", n=len(todo)), text)
         rows = self.scroll_area(win, content, min(px(300), px(30) * len(todo) + px(12)), len(todo) > 9)
         for tweak in todo:
             row = tk.Frame(rows, bg=C["bg"])
@@ -2755,8 +2766,7 @@ class App:
 
         def go():
             win.destroy()
-            self.selected = {t.id for t in todo}
-            self.apply_selected()
+            self.apply_selected({t.id for t in todo})
 
         GradientButton(buttons, self.t("set_apply", n=len(todo)), go, self.fonts["button"], self.scale,
                        self.animator, pad=(18, 8)).pack(side="right")
@@ -3793,8 +3803,10 @@ class App:
 
         self.run_job(lambda: engine.take_snapshot(tweaks.TWEAKS, ctx, "initial", statuses, VERSION), done)
 
-    def apply_selected(self):
-        chosen = [t for t in tweaks.TWEAKS if t.id in self.selected and self.card_state(t) != "applied"]
+    def apply_selected(self, ids=None):
+        """Applies the ticked tweaks, or the tweaks of ids (a tweak set) without changing the ticks."""
+        ids = self.selected if ids is None else ids
+        chosen = [t for t in tweaks.TWEAKS if t.id in ids and self.card_state(t) != "applied"]
         if not chosen:
             self.message = ("nothing_to_apply", {})
             self.update_footer()
