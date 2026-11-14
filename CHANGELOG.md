@@ -9,6 +9,7 @@ Not released yet: fixes made after 0.15 was published.
 - **Tweak set**: saved without administrator rights, the file now keeps every applied tweak, also those that need the rights; applying a set leaves the ticks of the pages as they were and names the tweaks that need administrator rights. Its buttons are under the text, which a long translation covered.
 - **Programs**: the list of desktop programs finishing its reading no longer rebuilds the Microsoft Store view while you type in it, and an empty list says so in its count.
 - **Startup**: a program turned off says since when, as Windows recorded it.
+- **Microsoft Store apps** have **In Microsoft Store**: the app's page, where it can be installed again.
 - **Search** also finds pages by their names ("startup" leads to the Startup page) and finds tweaks by their English names in every language (Widgets, Bing, Task View).
 - Seconds with a decimal comma in Russian and Ukrainian (Startup, Troubleshooting); a startup entry whose file is gone is listed once.
 

@@ -1833,7 +1833,9 @@ class App:
         if program.key in self.program_locations:
             self.link(actions, self.t("prog_location"), lambda: self.open_program_location(program), font="small",
                       color=C["dim"]).pack(side="left", padx=(0, px(14)))
-        if store:
+        if store:  # the app's page in Microsoft Store: what it is, and where to install it again
+            self.link(actions, self.t("store_page"), lambda: self.shell_open(f"ms-windows-store://pdp/?PFN={program.family}"),
+                      font="small", color=C["dim"]).pack(side="left", padx=(0, px(14)))
             button = GradientButton(actions, self.t("prog_uninstall"), lambda: self.confirm_store_uninstall(program),
                                     self.fonts["button"], self.scale, self.animator, primary=False, pad=(14, 6))
             button.pack(side="left")

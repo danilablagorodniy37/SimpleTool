@@ -423,6 +423,7 @@ TEXTS = {
         "store_none": "This account has no Store apps that can be removed.",
         "store_other_account": "Store apps belong to each account, and SimpleTool runs as another account than the one "
                                "signed in to Windows: open it from the signed-in account to see its apps.",
+        "store_page": "In Microsoft Store",
         "store_count": "Store apps: {n}, {size} in all",
         "store_footer": "A Store app is removed for this account; Microsoft Store can install it again.",
         "store_confirm_title": "Remove a Store app",
