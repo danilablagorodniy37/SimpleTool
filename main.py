@@ -426,16 +426,16 @@ class App:
         """A search field for the tweaks of every page, under the logo."""
         px = self.px
         fill, border = mix("#FFFFFF", C["side"], 0.06), mix("#FFFFFF", C["side"], 0.14)
-        self.search_box = box = tk.Frame(side, bg=fill, highlightthickness=1, highlightbackground=border,
-                                         highlightcolor=C["primary"])
-        box.pack(fill="x", padx=px(20), pady=(0, px(14)))
+        self.search_box, box = self.rounded_field(side, fill, border, focus="#5FB4FF")
+        self.search_box.pack(fill="x", padx=px(20), pady=(0, px(14)))
         tk.Label(box, text=ICONS["search"], font=self.fonts["icon_small"], fg=C["side_dim"], bg=fill).pack(
             side="left", padx=(px(10), 0))
         self.search_var = tk.StringVar(value=self.search_query)  # the window is built again for a new language
         self.search_entry = entry = tk.Entry(box, textvariable=self.search_var, font=self.fonts["small"],
                                              fg=C["side_text"], bg=fill, relief="flat", insertbackground=C["side_text"],
                                              highlightthickness=0)
-        entry.pack(side="left", fill="x", expand=True, ipady=px(5), padx=(px(8), px(8)))
+        entry.pack(side="left", fill="x", expand=True, ipady=px(4), padx=(px(8), px(8)))
+        self.focus_border(self.search_box, entry)
         # The hint lies over the empty field and lets clicks through to it
         self.search_hint = tk.Label(box, text=self.t("search_hint"), font=self.fonts["small"], fg=C["side_dim"],
                                     bg=fill, cursor="xterm")
@@ -714,10 +714,12 @@ class App:
             except tk.TclError:
                 pass
         self.footer_inner.pack_configure(padx=(left, width - right))
-        # The footer message wraps instead of running under the buttons, which take about px(300); a page without
-        # them gives the message the whole width
-        buttons = self.apply_button.winfo_manager() or self.program_remove_button.winfo_manager()
-        self.message_label.configure(wraplength=max(self.px(160), self.content_width - self.px(300 if buttons else 40)))
+        # The footer message wraps instead of running under the buttons shown on this page; a page without them gives
+        # the message the whole width
+        shown = [b for b in (self.apply_button, self.revert_button, self.program_remove_button,
+                             self.program_clear_button) if b.winfo_manager()]
+        taken = sum(b.winfo_reqwidth() + self.px(10) for b in shown) + self.px(40)
+        self.message_label.configure(wraplength=max(self.px(160), self.content_width - taken))
         self.layout_header()
 
     def layout_header(self):
@@ -1579,16 +1581,16 @@ class App:
             return
         top = tk.Frame(card.body, bg=card.fill)
         top.pack(fill="x", padx=px(12), pady=(px(10), 0))
-        field = tk.Frame(top, bg=C["bg"], highlightthickness=1, highlightbackground=C["border"],
-                         highlightcolor=C["primary"])
-        field.pack(side="left", fill="x", expand=True)
+        box, field = self.rounded_field(top, C["bg"], C["border"])
+        box.pack(side="left", fill="x", expand=True)
         tk.Label(field, text=ICONS["search"], font=self.fonts["icon_small"], fg=C["muted"], bg=C["bg"]).pack(
             side="left", padx=(px(10), 0))
         # Kept on the window: a variable nothing in Python refers to is deleted, and its trace with it
         self.program_search = query = tk.StringVar(value=self.program_query)
         entry = tk.Entry(field, textvariable=query, font=self.fonts["body"], fg=C["text"], bg=C["bg"], relief="flat",
                          insertbackground=C["text"], highlightthickness=0)
-        entry.pack(side="left", fill="x", expand=True, ipady=px(6), padx=(px(8), px(10)))
+        entry.pack(side="left", fill="x", expand=True, ipady=px(5), padx=(px(8), px(10)))
+        self.focus_border(box, entry)
         query.trace_add("write", lambda *args: self.filter_programs(query.get()))
         order = Segmented(top, [("name", self.t("prog_sort_name")), ("size", self.t("prog_sort_size")),
                                 ("date", self.t("prog_sort_date"))], self.program_sort, self.fonts["small_bold"],
@@ -1688,6 +1690,19 @@ class App:
         folder = os.path.join(engine.data_dir(), "uninstalled")
         os.makedirs(folder, exist_ok=True)
         self.shell_open(folder)
+
+    def rounded_field(self, parent, fill, border, focus=None):
+        """A rounded box for an entry field (Card): its border takes the brand color while the field has the focus.
+        Returns (card, its body); the caller puts the entry into the body and calls focus_border(card, entry)."""
+        card = Card(parent, self.scale, fill=fill, border=border, radius=10, pad=2)
+        card.rest_border, card.focus_color = border, focus or C["primary"]
+        return card, card.body
+
+    def focus_border(self, card, entry):
+        entry.bind("<FocusIn>", lambda e: self.animator.color(("field", id(card)), card.set_border, card.border,
+                                                              card.focus_color, 0.16), add="+")
+        entry.bind("<FocusOut>", lambda e: self.animator.color(("field", id(card)), card.set_border, card.border,
+                                                               card.rest_border, 0.24), add="+")
 
     def hover_border(self, card):
         """A card of a list lights its border while the pointer is over it, then goes back to its own border."""
