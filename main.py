@@ -2510,12 +2510,14 @@ class App:
         self.startup_count.pack(side="left", fill="x", expand=True)
         note = tk.Label(card.body, text=self.t("startup_note"), font=self.fonts["small"], fg=C["muted"],
                         bg=card.fill, anchor="w", justify="left")
-        note.pack(fill="x", padx=px(12), pady=(px(8), px(12) if self.admin else 0))
+        note.pack(fill="x", padx=px(12), pady=(px(8), px(12) if self.admin and not self.other_account else 0))
         self.wrap(note, px(62))
-        if not self.admin:
-            warning = tk.Label(card.body, text=self.t("startup_admin"), font=self.fonts["small_bold"], fg=C["warn"],
-                               bg=card.fill, anchor="w", justify="left")
-            warning.pack(fill="x", padx=px(12), pady=(px(8), px(12)))
+        notes = ([self.t("startup_admin")] if not self.admin else []) + \
+            ([self.t("startup_other_account", account=self.other_account[0])] if self.other_account else [])
+        for i, text in enumerate(notes):
+            warning = tk.Label(card.body, text=text, font=self.fonts["small_bold"], fg=C["warn"], bg=card.fill,
+                               anchor="w", justify="left")
+            warning.pack(fill="x", padx=px(12), pady=(px(8), px(12) if i == len(notes) - 1 else 0))
             self.wrap(warning, px(62))
         self.page_cards.append(card)
         if not self.startup:

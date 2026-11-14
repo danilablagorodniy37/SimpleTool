@@ -23,6 +23,7 @@ TEXTS = {
         "startup_failed": "Could not change {name}: {error}",
         "startup_policy": "Set by a policy",
         "startup_admin": "Programs that start for every account are turned on and off with administrator rights. Windows' measurements of the start are also read with them.",
+        "startup_other_account": "SimpleTool runs as {account}, not as the account signed in to Windows: these are {account}'s programs. Open SimpleTool from the signed-in account to change its own.",
         "startup_note": "Turning a program off takes effect at the next sign-in. The time at sign-in is what Windows measured over the last starts, the programs it starts included.",
         "startup_empty": "Nothing starts with Windows.",
         "startup_settings": "Open in Settings",
