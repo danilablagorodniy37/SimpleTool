@@ -1201,6 +1201,7 @@ class App:
         widgets = {"card": card}
         self.details_toggle(body, widgets, ("s", name), lambda holder: self.build_service_details(holder, info, details,
                                                                                                    tweak_id), indent=12)
+        self.hover_border(card)
         self.page_cards.append(card)
         return widgets
 
@@ -1719,6 +1720,7 @@ class App:
                                     self.fonts["button"], self.scale, self.animator, primary=False, pad=(14, 6))
             button.pack(side="left")
             self.action_buttons.append((button, uninstaller.needs_admin(leftovers)))
+            self.hover_border(card)
             self.page_cards.append(card)
         tk.Frame(self.list_frame, bg=C["bg"], height=px(6)).pack(fill="x")
 
