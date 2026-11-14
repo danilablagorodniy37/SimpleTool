@@ -2037,7 +2037,12 @@ class App:
 
     def arrange_programs(self):
         """Shows the programs that match the search, in the chosen order, without building the cards again."""
-        if not self.program_rows:
+        if not self.program_rows:  # an empty list still says how many: none
+            count = "store_count" if self.program_source == "store" else "prog_count"
+            try:
+                self.program_count.configure(text=self.t(count, n=0, size=self.size_text(0)))
+            except (AttributeError, tk.TclError):
+                pass  # the page is not shown
             return
         query = self.program_query.strip().lower()
         order = {"name": lambda p: p.name.lower(), "size": lambda p: (-p.size, p.name.lower()),
