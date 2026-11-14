@@ -846,6 +846,12 @@ def startup_programs():
     return unique
 
 
+def startup_dead():
+    """Names of the startup entries whose file is gone (on a local disk): they start nothing."""
+    import startup  # startup.py uses this module, so it is imported when needed
+    return [entry.title for entry in startup.entries(impact=[]) if entry.missing]
+
+
 def game_dvr():
     """Whether Xbox Game Bar records the last minutes of games all the time."""
     if _read(r"HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR", "AllowGameDVR") == 0:
@@ -2572,6 +2578,7 @@ def gather(report=lambda step: None, api=None):
     read("vram", video_memory)
     read("gpu_preferences", gpu_preferences)
     read("startup", startup_programs)
+    read("startup_dead", startup_dead)
     read("startup_impact", startup_impact)
     read("software", software)
     read("game_dvr", game_dvr)
@@ -3027,9 +3034,14 @@ def check_startup_apps(facts):
              if p["cpu"] >= STARTUP_HIGH_MS or p["disk"] >= STARTUP_HIGH_DISK]
     items = [("item_startup_heavy", {"name": p["name"], "seconds": round(p["cpu"] / 1000, 1), "size": Size(p["disk"])})
              for p in heavy[:5]]
+    dead = facts.get("startup_dead") or []
+    items = [("item_startup_dead", {"name": name}) for name in dead] + items
     items += [("item_name", {"name": name}) for name in sorted(names, key=str.lower)]
     if len(names) > 10:
         return Finding("startup_apps", "warning", "startup_many", {"n": len(names)}, items, ["startup"])
+    if dead:  # leftovers of removed programs: harmless, but nothing to keep
+        return Finding("startup_apps", "info", "startup_dead", {"n": len(names), "dead": len(dead)}, items,
+                       ["startup"])
     if heavy:
         return Finding("startup_apps", "info", "startup_heavy",
                        {"n": len(names), "names": ", ".join(p["name"] for p in heavy[:3])}, items, ["startup"])

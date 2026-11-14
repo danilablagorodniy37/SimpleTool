@@ -9,7 +9,7 @@ The release workflow publishes the section of the tagged version as the notes of
 - With administrator rights, what each program costs at sign-in as Windows measured it over the last starts, the programs it starts included; a heavy one is marked **High impact**. Show all, only those that are on, or only those that are off.
 - The switch turns a program off the way Task Manager does: its own entry stays, so it can be turned on again at any time. The change takes effect at the next sign-in. Programs that start for every account need administrator rights; tasks set by a policy are shown as such.
 - An entry whose file is gone starts nothing: it is listed first with **Remove entry**. A registry value is saved before it is deleted, a shortcut goes to the Recycle Bin.
-- Troubleshooting's startup findings now open this page.
+- Troubleshooting's startup findings now open this page, and Troubleshooting lists the entries that start nothing because their file is gone.
 
 **Troubleshooting** findings about programs with documented problems (Nahimic, Killer, "optimizers", remote control programs and the like) now open SimpleTool's Programs page, which removes them with what they leave, instead of Windows' list of apps.
 

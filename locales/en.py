@@ -1506,6 +1506,7 @@ TEXTS = {
         "hz_ok": "Displays run at their highest refresh rate",
         "hz_low": "Display {number} runs at {hz} Hz but supports {max_hz} Hz",
         "startup_ok": "Programs that start with Windows: {n}",
+        "startup_dead": "Programs that start with Windows: {n}; entries that start nothing because their file is gone: {dead}",
         "startup_many": "Programs that start with Windows: {n}",
         "dvr_ok": "Xbox Game Bar does not record games in the background",
         "dvr_on": "Xbox Game Bar records games in the background all the time",
@@ -1807,6 +1808,7 @@ TEXTS = {
                                     "sleep state",
         "item_sleep_standby_policy": "A policy forbids the standby states (S1–S3)",
         "startup_heavy": "Programs that start with Windows: {n}; {names} slow the start the most",
+        "item_startup_dead": "{name}: its file is gone; remove the entry on the Startup page",
         "item_startup_heavy": "{name}: {seconds} s of processor time and {size} read at each start",
         "item_disk_nvme": "{name} ({media}, {bus}): {health}, {wear}% of its rated endurance used, {hours} h on, "
                           "{written} written, {unsafe} unsafe shutdowns",

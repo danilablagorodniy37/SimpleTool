@@ -1259,6 +1259,12 @@ class DrivesAndStarts(unittest.TestCase):
         many = verdict("startup_apps", startup=[f"App {i}" for i in range(12)], startup_impact=[heavy])
         self.assertEqual((many.severity, many.line), ("warning", "startup_many"))
 
+    def test_startup_entries_that_start_nothing(self):
+        finding = verdict("startup_apps", startup_dead=["Old Tool"])
+        self.assertFinding(finding, "info", "startup_dead")
+        self.assertEqual(finding.items[0], ("item_startup_dead", {"name": "Old Tool"}))
+        self.assertEqual(finding.actions, ["startup"], "the Startup page removes them")
+
     def test_startup_trees(self):
         data = ('<?xml version="1.0" encoding="UTF-16"?><StartupData>'
                 '<Process Name="C:\\Apps\\bridge-launcher.exe" PID="10"><CpuUsage>1000000</CpuUsage>'
