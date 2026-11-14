@@ -378,17 +378,8 @@ class App:
                 widget.bind("<Leave>", lambda e, p=page, w=item: None if self.pointer_inside(w) else self.hover_nav(p, False))
             self.nav[page] = {"item": item, "icon": icon, "count": count, "name": name, "parts": parts}
         self.indicator = tk.Frame(nav, bg=CATEGORY_COLORS[self.page], width=px(3))
-        self.nav_compact = False
-
-        def fit(event):
-            # In a short window the menu items move closer together, so the bottom of the sidebar stays in view
-            compact = event.height < px(660)
-            if compact != self.nav_compact:
-                self.nav_compact = compact
-                for widgets in self.nav.values():
-                    widgets["icon"].pack_configure(pady=px(6) if compact else px(9))
-
-        side.bind("<Configure>", fit, add="+")
+        self.nav_fit = (px(9), True)  # the gap above and below each menu item, and whether the beta note is shown
+        side.bind("<Configure>", lambda e: self.fit_sidebar(e.height), add="+")
 
         bottom = tk.Frame(side, bg=C["side"])
         bottom.pack(side="bottom", fill="x", padx=px(20), pady=(0, px(20)))  # left edge lines up with the logo
@@ -413,10 +404,39 @@ class App:
         beta = Pill(version, self.fonts["pill"], self.scale, self.animator)
         beta.set(self.t("beta"), "#F0B783", animate=False)
         beta.pack(side="left", padx=(px(8), 0))
-        tk.Label(bottom, text=self.t("beta_note"), font=self.fonts["small"], fg=C["side_dim"], bg=C["side"],
-                 anchor="w", justify="left", wraplength=px(220)).pack(fill="x", pady=(px(6), 0))
-        self.link(bottom, self.t("terms_link"), self.show_terms, font="small", color=C["side_dim"]).pack(
-            anchor="w", pady=(px(4), 0))
+        self.beta_note = tk.Label(bottom, text=self.t("beta_note"), font=self.fonts["small"], fg=C["side_dim"],
+                                  bg=C["side"], anchor="w", justify="left", wraplength=px(220))
+        self.beta_note.pack(fill="x", pady=(px(6), 0))
+        self.terms_link = self.link(bottom, self.t("terms_link"), self.show_terms, font="small", color=C["side_dim"])
+        self.terms_link.pack(anchor="w", pady=(px(4), 0))
+        self.side_parts = (brand, bottom)
+
+    def fit_sidebar(self, height):
+        """In a short window the menu items move closer together, and then the note about the beta goes, so every
+        page and the bottom of the sidebar stay in view."""
+        px = self.px
+        brand, bottom = self.side_parts
+        if height <= 1:
+            return
+        item = next(iter(self.nav.values()))["icon"].winfo_reqheight() + 2 * px(2)  # the item's own pady
+        note = self.beta_note.winfo_reqheight() + px(6)
+        rest = bottom.winfo_reqheight() - (note if self.nav_fit[1] else 0)
+        fixed = brand.winfo_reqheight() + px(22) + px(26) + rest + px(20) + px(16)  # paddings and a gap above the chip
+        levels = [(px(9), True), (px(7), True), (px(6), False), (px(4), False), (px(2), False)]
+        pady, show_note = next((level for level in levels
+                                if fixed + (note if level[1] else 0) + len(self.nav) * (item + 2 * level[0]) <= height),
+                               levels[-1])
+        if (pady, show_note) == self.nav_fit:
+            return
+        if pady != self.nav_fit[0]:
+            for widgets in self.nav.values():
+                widgets["icon"].pack_configure(pady=pady)
+        if show_note != self.nav_fit[1]:
+            if show_note:
+                self.beta_note.pack(fill="x", pady=(px(6), 0), before=self.terms_link)
+            else:
+                self.beta_note.pack_forget()
+        self.nav_fit = (pady, show_note)
 
     def build_main(self):
         px = self.px
@@ -694,6 +714,7 @@ class App:
 
             self.animator.animate("indicator", 0.32, step)
         else:
+            self.animator.cancel("indicator")  # a slide still running would carry it back to the page it was going to
             self.indicator.configure(bg=color)
             self.indicator.place(x=0, y=y, width=px(3), height=height)
 
@@ -1125,6 +1146,7 @@ class App:
         widgets = {"card": card}
         self.details_toggle(body, widgets, ("d", finding.check),
                             lambda holder: self.build_finding_details(holder, finding), column=1, indent=0)
+        self.hover_border(card)
         self.page_cards.append(card)
         self.diag_cards[finding.check] = widgets
 
@@ -1342,6 +1364,7 @@ class App:
         if not initial:
             self.link(actions, self.t("snap_delete"), lambda: self.confirm_delete(path, data), font="small",
                       color=C["dim"]).pack(side="left", padx=(px(12), 0))
+        self.hover_border(card)
         self.page_cards.append(card)
 
     # --- Programs ---
@@ -1529,6 +1552,21 @@ class App:
         os.makedirs(folder, exist_ok=True)
         self.shell_open(folder)
 
+    def hover_border(self, card):
+        """A card of a list lights its border while the pointer is over it, then goes back to its own border."""
+        rest = card.border
+
+        def enter(event):
+            self.animator.color(("hover", id(card)), card.set_border, card.border, C["border_hover"], 0.14)
+
+        def leave(event):
+            if not self.pointer_inside(card):
+                self.animator.color(("hover", id(card)), card.set_border, card.border, rest, 0.3)
+
+        for widget in [card] + list(descendants(card)):
+            widget.bind("<Enter>", enter, add="+")
+            widget.bind("<Leave>", leave, add="+")
+
     def program_icon(self, parent, bg, program, image=None):
         """The program's own icon (image, or the one read with the list); a program without one gets a tile of the
         same size, so the names line up."""
@@ -1594,6 +1632,7 @@ class App:
             button.pack(side="left")
             # A program installed for every account is removed with administrator rights only
             self.action_buttons.append((button, not program.user))
+        self.hover_border(card)
         self.page_cards.append(card)
         return card
 
@@ -2355,6 +2394,7 @@ class App:
             toggle.command = lambda on: self.toggle_startup(entry, on, toggle, card)
             toggle.pack(side="left")
         self.paint_startup_card(entry, card)
+        self.hover_border(card)
         self.page_cards.append(card)
         return card
 
@@ -2957,6 +2997,8 @@ class App:
 
     def show_window(self):
         self.hidden = False
+        if self.root.state() == "withdrawn":
+            self.fade_in_window(self.root)
         self.root.deiconify()
         if self.root.state() == "iconic":
             self.root.state("normal")
@@ -3633,6 +3675,14 @@ class App:
         content.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(px(18), 0))
         return win, content
 
+    def fade_in_window(self, win, duration=0.22):
+        """A window appears smoothly: its opacity goes from 0 to 1."""
+        try:
+            win.attributes("-alpha", 0.0)
+        except tk.TclError:
+            return
+        self.animator.animate(("window", str(win)), duration, lambda t: win.attributes("-alpha", t))
+
     def present(self, win):
         win.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
@@ -3641,6 +3691,7 @@ class App:
         theme.style_title_bar(win)
         theme.set_window_icon(win, ICON_PATH)
         win.bind("<Escape>", lambda e: win.destroy())
+        self.fade_in_window(win, 0.16)
         win.deiconify()
         win.grab_set()
         win.focus_set()
@@ -4205,6 +4256,7 @@ def main():
     root.geometry(f"{width}x{height}+{left + (area_width - width) // 2}+{top + max(0, (area_height - height - app.px(40)) // 3)}")
     theme.style_title_bar(root)
     theme.set_window_icon(root, ICON_PATH)
+    app.fade_in_window(root, 0.3)
     root.deiconify()
     root.mainloop()
 
