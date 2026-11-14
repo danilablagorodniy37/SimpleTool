@@ -103,6 +103,19 @@ program disappears from it because it was removed through Windows settings or it
 looks for what it left, and if something is there, lists the program at the top of the page with **Remove
 leftovers** and **Hide**.
 
+### Microsoft Store apps
+
+The switch at the top of the page shows the **Microsoft Store apps** of this account instead: the apps that have
+an entry in Start, with their own names (in the language of Windows) and logos, publisher, version, size and the
+date of the installed version. Search, order and ticks work as for programs. **Uninstall** removes an app for this
+account with `Remove-AppxPackage`, and **Uninstall selected** removes the ticked ones one after another; Windows
+deletes their data itself, so there are no leftovers to look for. No restore point is made: System Restore does not
+bring Store apps back, and Microsoft Store can install any of them again. Frameworks, codecs, language packs, shell
+extensions of desktop programs and the parts of Windows that come as packages are not listed, and neither are the
+packages Windows relies on: Microsoft Store, Windows Security, App Installer, the Xbox sign-in, Microsoft Edge and
+the runtimes apps share. Store apps need no administrator rights; when SimpleTool runs as another account than the
+one signed in, it says so instead of listing that account's apps.
+
 Programs installed for every account are removed with administrator rights, and those installed for one
 account without them.
 

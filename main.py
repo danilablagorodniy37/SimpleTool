@@ -24,6 +24,7 @@ import i18n
 import limiter
 import programs
 import services
+import storeapps
 import terms
 import theme
 import tray
@@ -215,6 +216,12 @@ class App:
         self.program_query = ""
         self.program_search = None  # the variable of the search field
         self.program_sort = "name"
+        self.program_source = "desktop"  # the Programs page shows "desktop" programs or Microsoft "store" apps
+        self.store_apps = None    # [storeapps.StoreApp] of this account; read the first time the Store view opens
+        self.store_loading = False
+        self.store_blocked = False  # SimpleTool runs as another account: the apps it would list are not the user's
+        self.store_selected = set()  # keys of the Store apps ticked to be removed together
+        self.store_icons = {}     # key of a Store app -> PhotoImage of its logo
         # Tk objects may only be deleted from the window thread, but the cyclic garbage collector runs in whichever
         # thread is allocating memory, such as the limiter thread. So only poll() collects garbage
         gc.disable()
@@ -703,7 +710,7 @@ class App:
             if os.path.isdir(os.path.join(engine.data_dir(), "uninstalled")):
                 self.link(self.links, self.t("prog_saved"), self.open_saved_leftovers).pack(side="left",
                                                                                             padx=(0, self.px(16)))
-            self.link(self.links, self.t("prog_reload"), lambda: self.load_programs(force=True)).pack(side="left")
+            self.link(self.links, self.t("prog_reload"), self.reload_program_list).pack(side="left")
         else:
             for key, action in (("select_all", self.select_all), ("clear", self.clear_selection)):
                 self.link(self.links, self.t(key), action).pack(side="left", padx=(self.px(16), 0))
@@ -1373,18 +1380,28 @@ class App:
 
     def build_programs_page(self):
         px = self.px
+        store = self.program_source == "store"
         self.program_rows, self.program_boxes = [], {}
-        if self.programs is None:
-            note = tk.Label(self.list_frame, text=self.t("prog_loading"), font=self.fonts["body"], fg=C["muted"],
-                            bg=C["bg"], anchor="w")
-            note.pack(fill="x", padx=px(18), pady=px(8))
-            self.load_programs()
-            return
-        # Search, order and how many there are
+        items = self.store_apps if store else self.programs
+        # Programs or Microsoft Store apps, then search, order and how many there are
         card = Card(self.list_frame, self.scale, radius=14, pad=6)
         card.pack(fill="x", pady=(0, px(12)))
+        self.page_cards.append(card)
+        source = Segmented(card.body, [("desktop", self.t("prog_source_desktop")),
+                                       ("store", self.t("prog_source_store"))], self.program_source,
+                           self.fonts["small_bold"], self.scale, self.animator, command=self.switch_program_source)
+        source.pack(anchor="w", padx=px(12), pady=(px(12), 0))
+        if items is None:
+            note = tk.Label(card.body, text=self.t("store_loading" if store else "prog_loading"),
+                            font=self.fonts["body"], fg=C["muted"], bg=card.fill, anchor="w")
+            note.pack(fill="x", padx=px(12), pady=px(12))
+            if store:
+                self.load_store_apps()
+            else:
+                self.load_programs()
+            return
         top = tk.Frame(card.body, bg=card.fill)
-        top.pack(fill="x", padx=px(12), pady=(px(12), 0))
+        top.pack(fill="x", padx=px(12), pady=(px(10), 0))
         field = tk.Frame(top, bg=C["bg"], highlightthickness=1, highlightbackground=C["border"],
                          highlightcolor=C["primary"])
         field.pack(side="left", fill="x", expand=True)
@@ -1402,21 +1419,27 @@ class App:
         order.pack(side="right", padx=(px(12), 0))
         self.program_count = tk.Label(card.body, text="", font=self.fonts["small"], fg=C["muted"], bg=card.fill,
                                       anchor="w", justify="left")
-        self.program_count.pack(fill="x", padx=px(12), pady=(px(10), px(12) if self.admin else 0))
+        note_key = "store_note" if store else None if self.admin else "prog_admin"
+        self.program_count.pack(fill="x", padx=px(12), pady=(px(10), 0 if note_key else px(12)))
         self.wrap(self.program_count, px(62))
-        if not self.admin:
-            note = tk.Label(card.body, text=self.t("prog_admin"), font=self.fonts["small_bold"], fg=C["warn"],
-                            bg=card.fill, anchor="w", justify="left")
+        if note_key:
+            note = tk.Label(card.body, text=self.t(note_key), font=self.fonts["small" if store else "small_bold"],
+                            fg=C["muted" if store else "warn"], bg=card.fill, anchor="w", justify="left")
             note.pack(fill="x", padx=px(12), pady=(px(8), px(12)))
             self.wrap(note, px(62))
-        self.page_cards.append(card)
-        if self.programs_gone:
+        if not store and self.programs_gone:
             self.build_gone_programs()
         # The programs go before this marker, in the chosen order
         self.program_end = tk.Frame(self.list_frame, bg=C["bg"])
         self.program_end.pack(fill="x")
-        for program in self.programs:
-            self.program_rows.append((program, self.build_program_card(program)))
+        for item in items:
+            self.program_rows.append((item, self.build_program_card(item, store)))
+        if store and not items:
+            key = "store_other_account" if self.store_blocked else "store_none"
+            empty = tk.Label(self.list_frame, text=self.t(key), font=self.fonts["body"], fg=C["muted"], bg=C["bg"],
+                             anchor="w", justify="left")
+            empty.pack(fill="x", padx=px(18), pady=px(8))
+            self.wrap(empty, px(36))
         self.arrange_programs()
 
     def build_gone_programs(self):
@@ -1505,18 +1528,19 @@ class App:
             icon.create_text(size / 2, size / 2, text=ICONS["programs"], font=self.fonts["icon"], fill=color)
         return icon
 
-    def build_program_card(self, program):
+    def build_program_card(self, program, store=False):
+        """A program of the list, or a Microsoft Store app (store): it is removed for this account, no rights needed."""
         px = self.px
         card = Card(self.list_frame, self.scale, radius=12, pad=4)
         body = card.body
         body.columnconfigure(2, weight=1)
         # Ticked programs are uninstalled together; one installed for every account needs administrator rights
-        selectable = program.removable and (self.admin or program.user)
+        selectable = store or program.removable and (self.admin or program.user)
         box = CheckBox(body, px(20), self.animator)
-        box.set(program.key in self.program_selected, selectable, animate=False)
+        box.set(program.key in self.program_selection(), selectable, animate=False)
         box.grid(row=0, column=0, rowspan=2, padx=(px(12), 0))
         self.program_boxes[program.key] = box
-        icon = self.program_icon(body, card.fill, program)
+        icon = self.program_icon(body, card.fill, program, self.store_icons.get(program.key) if store else None)
         icon.grid(row=0, column=1, rowspan=2, padx=px(12), pady=px(10))
         name = tk.Label(body, text=program.name, font=self.fonts["h2"], fg=C["text"], bg=card.fill, anchor="w",
                         justify="left")
@@ -1538,7 +1562,12 @@ class App:
         if program.key in self.program_locations:
             self.link(actions, self.t("prog_location"), lambda: self.open_program_location(program), font="small",
                       color=C["dim"]).pack(side="left", padx=(0, px(14)))
-        if not program.removable:
+        if store:
+            button = GradientButton(actions, self.t("prog_uninstall"), lambda: self.confirm_store_uninstall(program),
+                                    self.fonts["button"], self.scale, self.animator, primary=False, pad=(14, 6))
+            button.pack(side="left")
+            self.action_buttons.append((button, False))
+        elif not program.removable:
             tk.Label(actions, text=self.t("prog_not_removable"), font=self.fonts["small"], fg=C["dim"],
                      bg=card.fill).pack(side="left")
         else:
@@ -1550,6 +1579,196 @@ class App:
             self.action_buttons.append((button, not program.user))
         self.page_cards.append(card)
         return card
+
+    # --- Microsoft Store apps ---
+
+    def reload_program_list(self):
+        if self.program_source == "store":
+            self.load_store_apps(force=True)
+        else:
+            self.load_programs(force=True)
+
+    def switch_program_source(self, source):
+        if source == self.program_source:
+            return
+        self.program_source = source
+        self.message = None
+        self.show_page("programs", animate=False)
+
+    def load_store_apps(self, force=False):
+        """Reads this account's Microsoft Store apps and their logos in the background, then shows them."""
+        if self.store_loading or (self.store_apps is not None and not force) or force and self.busy:
+            return
+        self.store_loading = True
+        size = self.px(PROGRAM_ICON)
+
+        def work():
+            apps = storeapps.installed_apps()
+            logos = {}
+            for app in apps or []:
+                data = storeapps.logo_png(app.logo, size) if app.logo else None
+                if data:
+                    logos[app.key] = data
+            return apps, logos
+
+        def done(result):
+            self.store_loading = False
+            if isinstance(result, Exception):
+                self.store_apps = self.store_apps or []
+                self.show_errors([str(result)])
+            else:
+                apps, logos = result
+                # None: SimpleTool runs as another account than the one signed in, whose apps these would be
+                self.store_blocked = apps is None
+                self.store_apps = apps or []
+                self.store_selected &= {app.key for app in self.store_apps}
+                self.store_icons = {}
+                for key, data in logos.items():
+                    try:
+                        self.store_icons[key] = tk.PhotoImage(data=data)
+                    except tk.TclError:
+                        pass  # a logo Tk cannot read gets the generic icon
+            if self.page == "programs" and self.program_source == "store":
+                self.show_page("programs", animate=False, keep_scroll=True)
+
+        self.run_job(work, done)
+
+    def confirm_store_uninstall(self, app):
+        px = self.px
+        win, content = self.dialog(self.t("store_confirm_title"), ICONS["programs"], CATEGORY_COLORS["programs"],
+                                   app.name, self.t("store_confirm_text"), image=self.store_icons.get(app.key))
+
+        def go():
+            win.destroy()
+            self.start_store_uninstall(app)
+
+        GradientButton(content, self.t("prog_uninstall"), go, self.fonts["button"], self.scale, self.animator,
+                       pad=(18, 8)).pack(side="right")
+        GradientButton(content, self.t("cancel"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.present(win)
+
+    def start_store_uninstall(self, app):
+        """Removes a Store app for this account in the background; the list read again tells whether it went. No
+        restore point: System Restore does not bring Store apps back, Microsoft Store does."""
+        def work():
+            storeapps.remove(app)
+            return storeapps.still_installed(app)
+
+        def done(result):
+            self.message = None
+            self.update_footer()
+            if isinstance(result, Exception):
+                self.notify(self.t("store_failed", name=app.name), C["warn"], ICONS["warning"])
+                self.show_errors([str(result)])
+            elif result:
+                self.notify(self.t("store_kept", name=app.name), C["warn"], ICONS["warning"])
+            else:
+                self.store_selected.discard(app.key)
+                self.notify(self.t("store_removed", name=app.name), C["ok"], ICONS["check"])
+            self.load_store_apps(force=True)
+
+        self.run_action("store_removing", work, done)
+
+    def confirm_store_batch(self, chosen):
+        px = self.px
+        win, content = self.dialog(self.t("store_batch_title"), ICONS["programs"], CATEGORY_COLORS["programs"],
+                                   self.t("store_batch_heading", n=len(chosen)), self.t("store_batch_text"))
+        rows = self.scroll_area(win, content, min(px(300), px(46) * len(chosen) + px(12)), len(chosen) > 6)
+        for app in chosen:
+            self.program_row(rows, app, self.size_text(app.size) if app.size else "", self.store_icons.get(app.key))
+        buttons = tk.Frame(content, bg=C["surface"])
+        buttons.pack(fill="x", pady=(px(16), 0))
+
+        def go():
+            win.destroy()
+            self.start_store_batch(chosen)
+
+        GradientButton(buttons, self.t("prog_batch_go", n=len(chosen)), go, self.fonts["button"], self.scale,
+                       self.animator, pad=(18, 8)).pack(side="right")
+        GradientButton(buttons, self.t("cancel"), win.destroy, self.fonts["button"], self.scale, self.animator,
+                       primary=False, pad=(18, 8)).pack(side="right", padx=(0, px(10)))
+        self.present(win)
+
+    def start_store_batch(self, chosen):
+        """Removes the ticked Store apps one after another in a window that shows how far it got."""
+        px = self.px
+        total, stop = len(chosen), threading.Event()
+        icons = {app.key: self.store_icons.get(app.key) for app in chosen}
+        win, content = self.dialog(self.t("store_batch_title"), ICONS["programs"], CATEGORY_COLORS["programs"],
+                                   self.t("store_batch_running", done=0, n=total), self.t("store_batch_running_text"))
+        win.protocol("WM_DELETE_WINDOW", lambda: None)  # the apps are being removed
+        bar = ProgressBar(content, self.scale, self.animator)
+        bar.pack(fill="x", pady=(0, px(12)))
+        rows = self.scroll_area(win, content, min(px(320), px(46) * total + px(12)), total > 6)
+        states = [self.program_row(rows, app, self.t("prog_state_waiting"), icons[app.key]) for app in chosen]
+        buttons = tk.Frame(content, bg=C["surface"])
+        buttons.pack(fill="x", pady=(px(16), 0))
+
+        def stop_after():
+            stop.set()
+            stop_button.set_enabled(False)
+
+        stop_button = GradientButton(buttons, self.t("prog_batch_stop"), stop_after, self.fonts["button"], self.scale,
+                                     self.animator, primary=False, pad=(18, 8))
+        stop_button.pack(side="right")
+        self.present(win)
+        colors = {"running": C["accent"], "removed": C["ok"], "kept": C["warn"], "failed": C["bad"],
+                  "skipped": C["dim"]}
+        finished = [0]
+
+        def mark(index, state):  # on the window thread
+            try:
+                states[index].configure(text=self.t("prog_state_" + state), fg=colors.get(state, C["muted"]))
+                if state != "running":
+                    finished[0] += 1
+                    bar.set(finished[0] / total)
+                    win.heading.configure(text=self.t("store_batch_running", done=finished[0], n=total))
+            except tk.TclError:
+                pass
+
+        def work():
+            results, errors = [], []
+            for index, app in enumerate(chosen):
+                if stop.is_set():
+                    self.post(lambda i=index: mark(i, "skipped"))
+                    results.append((app, "skipped"))
+                    continue
+                self.post(lambda i=index: mark(i, "running"))
+                try:
+                    storeapps.remove(app)
+                    state = "kept" if storeapps.still_installed(app) else "removed"
+                except Exception as exc:  # one app that cannot be removed must not stop the others
+                    log_error(traceback.format_exc())
+                    errors.append(f"{app.name}: {exc}")
+                    state = "failed"
+                self.post(lambda i=index, s=state: mark(i, s))
+                results.append((app, state))
+            return results, errors
+
+        def done(result):
+            self.message = None
+            self.update_footer()
+            if isinstance(result, Exception):
+                win.destroy()
+                self.notify(self.t("store_batch_failed"), C["warn"], ICONS["warning"])
+                self.show_errors([str(result)])
+                self.load_store_apps(force=True)
+                return
+            results, errors = result
+            removed = sum(state == "removed" for app, state in results)
+            self.store_selected -= {app.key for app, state in results if state == "removed"}
+            bar.set(1.0)
+            win.heading.configure(text=self.t("store_batch_finished", removed=removed, n=total))
+            stop_button.destroy()
+            GradientButton(buttons, self.t("prog_batch_close"), win.destroy, self.fonts["button"], self.scale,
+                           self.animator, pad=(18, 8)).pack(side="right")
+            win.protocol("WM_DELETE_WINDOW", win.destroy)
+            if errors:
+                self.show_errors(errors)
+            self.load_store_apps(force=True)
+
+        self.run_action("store_batch_working", work, done)
 
     def format_day(self, day):
         """A date without the time, as format_date writes it."""
@@ -1578,9 +1797,11 @@ class App:
             if not query or query in program.name.lower() or query in program.publisher.lower():
                 card.pack(fill="x", pady=(0, self.px(8)), before=self.program_end)
                 shown.append(program)
-        total = sum(p.size for p in self.programs or [])
-        self.program_count.configure(text=self.t("prog_count", n=len(self.programs or []),
-                                                 size=self.size_text(total)) if len(shown) == len(rows) else
+        items = self.program_list() or []
+        total = sum(p.size for p in items)
+        count = "store_count" if self.program_source == "store" else "prog_count"
+        self.program_count.configure(text=self.t(count, n=len(items), size=self.size_text(total))
+                                     if len(shown) == len(rows) else
                                      self.t("prog_found", n=len(shown), total=len(rows)))
         self.root.after_idle(self.layout)
 
@@ -1686,23 +1907,33 @@ class App:
 
     # --- Several programs at once ---
 
+    def program_list(self):
+        """The programs of the Programs page, or its Microsoft Store apps: the list the page shows."""
+        return self.store_apps if self.program_source == "store" else self.programs
+
+    def program_selection(self):
+        """The keys ticked in the list the page shows."""
+        return self.store_selected if self.program_source == "store" else self.program_selected
+
     def chosen_programs(self):
-        return [program for program in self.programs or [] if program.key in self.program_selected]
+        selection = self.program_selection()
+        return [program for program in self.program_list() or [] if program.key in selection]
 
     def toggle_program(self, program):
         if self.busy:
             return
-        self.program_selected ^= {program.key}
+        selection = self.program_selection()
+        selection ^= {program.key}
         box = self.program_boxes.get(program.key)
         if box:
-            box.set(program.key in self.program_selected, True)
+            box.set(program.key in selection, True)
         self.message = None
         self.update_footer()  # it says how many are ticked and offers to uninstall them
 
     def clear_program_selection(self):
         if self.busy:
             return
-        self.program_selected.clear()
+        self.program_selection().clear()
         for box in self.program_boxes.values():
             box.set(False, box.enabled)
         self.message = None
@@ -1723,6 +1954,9 @@ class App:
     def confirm_batch_uninstall(self):
         chosen = self.chosen_programs()
         if not chosen or self.busy:
+            return
+        if self.program_source == "store":
+            self.confirm_store_batch(chosen)
             return
         px = self.px
         win, content = self.dialog(self.t("prog_batch_title"), ICONS["programs"], CATEGORY_COLORS["programs"],
@@ -2804,7 +3038,7 @@ class App:
             size = sum(program.size for program in chosen)
             text = self.t("prog_selected", n=len(chosen)) + (f"  ·  {self.size_text(size)}" if size else "")
         elif programs:
-            text = self.t("prog_footer")
+            text = self.t("store_footer" if self.program_source == "store" else "prog_footer")
         elif self.selected:
             text = self.t("selected", n=len(self.selected))
         elif self.page == "memory":

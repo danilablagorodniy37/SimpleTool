@@ -20,6 +20,7 @@ import engine
 import i18n
 import limiter
 import main
+import storeapps
 import terms
 import theme
 import tweaks
@@ -65,6 +66,13 @@ class UiSmoke(unittest.TestCase):
             uninstaller.Program(uninstall + r"\OldTool", "Old Tool", size=40 * 2 ** 20,
                                 uninstall=r'"C:\nowhere-at-all\unins000.exe"'),
         ]
+        # Microsoft Store apps: made-up ones, without logos
+        family = "8wekyb3d8bbwe"
+        self.store = [storeapps.StoreApp(name, f"{name}_1.0.0.0_x64__{family}", f"{name}_{family}", title, publisher,
+                                         "1.0.0.0", size, datetime.date(2026, 9, 1))
+                      for name, title, publisher, size in (("Contoso.Notes", "Contoso Notes", "Contoso", 30 * 2 ** 20),
+                                                           ("Fabrikam.Paint", "Paint Studio", "Fabrikam", 8 * 2 ** 20),
+                                                           ("Contoso.Weather", "Weather", "Contoso", 2 * 2 ** 20))]
         self.patches = [
             mock.patch.object(engine, "data_dir", lambda: self.tmp),
             mock.patch.object(engine, "apply", forbidden),
@@ -89,6 +97,8 @@ class UiSmoke(unittest.TestCase):
             mock.patch.object(uninstaller, "run_uninstaller", forbidden),
             mock.patch.object(uninstaller, "remove_leftovers", forbidden),
             mock.patch.object(uninstaller, "to_recycle_bin", forbidden),
+            mock.patch.object(storeapps, "installed_apps", lambda sizes=True: list(self.store)),
+            mock.patch.object(storeapps, "remove", forbidden),
         ]
         for patch in self.patches:
             patch.start()
@@ -768,6 +778,111 @@ class UiSmoke(unittest.TestCase):
             app.show_page("privacy", animate=False)
             self.assertTrue(app.apply_button.winfo_manager())
             self.assertFalse(app.program_remove_button.winfo_manager())
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_microsoft_store_apps(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_programs(admin=False)  # Store apps need no administrator rights
+        try:
+            app.switch_program_source("store")
+            self.wait(root, lambda: not app.store_loading and app.program_rows
+                      and app.program_rows[0][0] in self.store)
+            self.assertEqual(self.shown_programs(app), ["Contoso Notes", "Paint Studio", "Weather"])
+            self.assertEqual(app.program_count.cget("text"),
+                             ui["store_count"].format(n=3, size=app.size_text(40 * 2 ** 20)))
+            self.assertIn(ui["store_note"], self.texts(app.list_frame))
+            self.assertNotIn(ui["prog_admin"], self.texts(app.list_frame))
+            self.assertEqual(app.nav["programs"]["count"].cget("text"), "3", "the count of the desktop programs")
+            self.assertEqual(app.message_label.cget("text"), ui["store_footer"])
+            app.program_search.set("contoso")
+            self.assertEqual(self.shown_programs(app), ["Contoso Notes", "Weather"])
+            app.program_search.set("")
+            app.sort_programs("size")
+            self.assertEqual(self.shown_programs(app), ["Contoso Notes", "Paint Studio", "Weather"])
+            app.sort_programs("name")
+            notes, paint, weather = self.store
+            # One app: a question, then Remove-AppxPackage; the list read again says it is gone
+            removed = []
+
+            def remove(item):
+                removed.append(item.full_name)
+                self.store.remove(item)
+
+            self.assertTrue(self.button(self.program_card(app, "Weather"), ui["prog_uninstall"]).enabled)
+            self.button(self.program_card(app, "Weather"), ui["prog_uninstall"])._click(None)
+            dialog = self.dialogs(root)[0]
+            self.assertEqual(dialog.title(), ui["store_confirm_title"])
+            self.assertIn(ui["store_confirm_text"], self.texts(dialog))
+            with mock.patch.object(storeapps, "remove", remove), \
+                    mock.patch.object(storeapps, "still_installed", lambda item: item in self.store):
+                self.button(dialog, ui["prog_uninstall"])._click(None)
+                self.wait(root, lambda: not app.busy and not app.store_loading and len(app.program_rows) == 2)
+            self.assertEqual(removed, [weather.full_name], "no restore point: it would not bring a Store app back")
+            self.assertIn(ui["store_removed"].format(name="Weather"), self.texts(app.toaster.card))
+            # Several at once, ticked by the box or the name; Windows keeps one of them
+            app.program_boxes[notes.key].event_generate("<Button-1>")
+            self.click_text(self.program_card(app, "Paint Studio"), "Paint Studio")
+            self.assertEqual(app.store_selected, {notes.key, paint.key})
+            self.assertEqual(app.program_selected, set(), "the desktop programs keep their own ticks")
+            self.assertEqual(app.message_label.cget("text"),
+                             ui["prog_selected"].format(n=2) + "  ·  " + app.size_text(38 * 2 ** 20))
+            app.program_remove_button._click(None)
+            dialog = self.dialogs(root)[0]
+            self.assertEqual(dialog.title(), ui["store_batch_title"])
+            self.assertTrue({"Contoso Notes", "Paint Studio"} <= set(self.texts(dialog)))
+            done = ui["store_batch_finished"].format(removed=1, n=2)
+
+            def remove_some(item):
+                removed.append(item.full_name)
+                if item is notes:
+                    self.store.remove(item)
+
+            with mock.patch.object(storeapps, "remove", remove_some), \
+                    mock.patch.object(storeapps, "still_installed", lambda item: item in self.store):
+                self.button(dialog, ui["prog_batch_go"].format(n=2))._click(None)
+                self.wait(root, lambda: self.dialogs(root) and done in self.texts(self.dialogs(root)[0]))
+                progress = self.dialogs(root)[0]
+                self.assertEqual(self.texts(progress).count(ui["prog_state_removed"]), 1)
+                self.assertEqual(self.texts(progress).count(ui["prog_state_kept"]), 1)
+                self.button(progress, ui["prog_batch_close"])._click(None)
+                self.wait(root, lambda: not app.busy and not app.store_loading)
+            self.assertEqual(removed[1:], [notes.full_name, paint.full_name])
+            self.assertEqual(app.store_selected, {paint.key}, "the one Windows kept stays ticked")
+            self.assertEqual(self.shown_programs(app), ["Paint Studio"])
+            # A failure is shown, not raised
+            with mock.patch.object(storeapps, "remove", lambda item: (_ for _ in ()).throw(OSError("0x80073CFA"))):
+                self.button(self.program_card(app, "Paint Studio"), ui["prog_uninstall"])._click(None)
+                self.button(self.dialogs(root)[0], ui["prog_uninstall"])._click(None)
+                self.wait(root, lambda: not app.busy and self.dialogs(root))
+            self.assertIn(ui["store_failed"].format(name="Paint Studio"), self.texts(app.toaster.card))
+            for dialog in self.dialogs(root):
+                dialog.destroy()
+            self.wait(root, lambda: not app.store_loading)
+            # Back to the programs, with their own list; every language and theme on the Store view
+            app.switch_program_source("desktop")
+            self.assertEqual(self.shown_programs(app), ["Good Tool", "Microsoft Edge", "Old Tool"])
+            app.switch_program_source("store")
+            for lang, _ in i18n.LANGUAGES:
+                app.set_language(lang)
+                self.pump(root, 0.2)
+            for name in theme.THEMES:
+                app.set_theme(name)
+                self.pump(root, 0.2)
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
+    def test_store_apps_of_another_account(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_programs(admin=True)
+        try:
+            with mock.patch.object(storeapps, "installed_apps", lambda sizes=True: None):
+                app.switch_program_source("store")
+                self.wait(root, lambda: not app.store_loading and app.store_apps is not None)
+            self.pump(root, 0.2)
+            self.assertIn(ui["store_other_account"], self.texts(app.list_frame))
             self.assertEqual(errors, [])
         finally:
             root.destroy()
