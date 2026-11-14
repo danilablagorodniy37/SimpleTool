@@ -14,6 +14,7 @@ TEXTS = {
         "startup_source_folder_HKLM": "Startup folder, every account",
         "startup_source_app_HKCU": "Microsoft Store app",
         "startup_impact": "at sign-in {seconds} s of processor time, {size} read",
+        "startup_off_since": "off since {date}",
         "startup_high": "High impact",
         "startup_missing": "The file it starts is gone: this entry starts nothing",
         "startup_remove": "Remove entry",

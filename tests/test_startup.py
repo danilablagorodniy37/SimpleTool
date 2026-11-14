@@ -2,6 +2,7 @@
 
 The registry is replaced by a dictionary: nothing on the PC is read or changed.
 """
+import datetime
 import json
 import os
 import shutil
@@ -136,6 +137,17 @@ class StartupTest(unittest.TestCase):
                 mock.patch("diagnostics.version_string", lambda path, field: "GitHub"):
             entry = startup.entries(impact=[])[0]
         self.assertEqual((entry.title, entry.publisher), ("Discord", ""))
+
+    def test_the_day_a_program_was_turned_off(self):
+        self.assertEqual(startup.turned_off_on(bytes.fromhex("03000000c0142a70fb0ddb01")), datetime.date(2024, 9, 23))
+        self.assertIsNone(startup.turned_off_on(bytes.fromhex("030000000000000000000000")), "no time recorded")
+        self.assertIsNone(startup.turned_off_on(startup.APPROVED_ON), "on")
+        self.registry.values = {RUN_USER: {"Tool": r"C:\Tools\tool.exe"},
+                                APPROVED_USER: {"Tool": bytes.fromhex("03000000c0142a70fb0ddb01")}}
+        entry = startup.entries(impact=[])[0]
+        self.assertEqual(entry.off_since, datetime.date(2024, 9, 23))
+        startup.set_enabled(entry, True)
+        self.assertIsNone(entry.off_since)
 
     def test_turning_off_and_on(self):
         self.registry.values = {RUN_USER: {"Tool": r"C:\Tools\tool.exe"}}

@@ -59,6 +59,7 @@ class Entry:
         self.impact = None        # {"cpu" ms, "disk" bytes, "starts"} as Windows measured the last starts
         self.logo = None          # the logo file of a Store app
         self.exists = False       # the program's file is on a local disk (read with the list, not by the window)
+        self.off_since = None     # the day it was turned off, when Windows recorded it
 
     def __repr__(self):
         return f"Entry({self.name!r}, {self.key!r}, enabled={self.enabled})"
@@ -94,6 +95,19 @@ def _subkeys(path):
             return [winreg.EnumKey(key, i) for i in range(winreg.QueryInfoKey(key)[0])]
     except OSError:
         return []
+
+
+def turned_off_on(data):
+    """The day a program was turned off, from StartupApproved data (03 + 3 bytes + FILETIME), or None."""
+    if not isinstance(data, bytes) or len(data) < 12 or not data[0] & 1:
+        return None
+    stamp = struct.unpack_from("<Q", data, 4)[0]
+    if not stamp:
+        return None
+    try:
+        return (datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=stamp // 10)).date()
+    except OverflowError:
+        return None
 
 
 def approved_on(data):
@@ -139,8 +153,10 @@ def _run_entries():
         for name, data in _values(run):
             if not name or not isinstance(data, str) or not data.strip():
                 continue
-            found.append(Entry(f"run:{run}:{name}", name, data, program_file(data), "run", scope,
-                               approved_on(states.get(name.lower())), (approval, name), run))
+            entry = Entry(f"run:{run}:{name}", name, data, program_file(data), "run", scope,
+                          approved_on(states.get(name.lower())), (approval, name), run)
+            entry.off_since = turned_off_on(states.get(name.lower()))
+            found.append(entry)
     return found
 
 
@@ -158,9 +174,11 @@ def _folder_entries():
             if file.lower() == "desktop.ini" or not os.path.isfile(path):
                 continue
             target = uninstaller._shortcut_target(path) if file.lower().endswith(".lnk") else path
-            found.append(Entry(f"folder:{path}", os.path.splitext(file)[0], target or path,
-                               os.path.normpath(target) if target else "", "folder", scope,
-                               approved_on(states.get(file.lower())), (approval, file), path))
+            entry = Entry(f"folder:{path}", os.path.splitext(file)[0], target or path,
+                          os.path.normpath(target) if target else "", "folder", scope,
+                          approved_on(states.get(file.lower())), (approval, file), path)
+            entry.off_since = turned_off_on(states.get(file.lower()))
+            found.append(entry)
     return found
 
 
@@ -198,10 +216,13 @@ def _app_entries():
             if not isinstance(state, int) or not package:
                 continue  # not a startup task, or an app no longer installed
             title, logo = app_info(package)
+            disabled_at = _read(path, "LastDisabledTime")  # seconds since 1970, written when it was turned off
             entry = Entry(f"app:{family}\\{task}", title, package, "", "app", "HKCU",
                           state in (TASK_ENABLED, TASK_ENABLED_BY_POLICY), location=path,
                           policy=state in (TASK_DISABLED_BY_POLICY, TASK_ENABLED_BY_POLICY))
             entry.logo = logo
+            if not entry.enabled and isinstance(disabled_at, int) and disabled_at > 0:
+                entry.off_since = datetime.date.fromtimestamp(disabled_at)
             found.append(entry)
     # Two tasks of one app get the task's name too
     names = [entry.name for entry in found]
@@ -256,6 +277,7 @@ def set_enabled(entry, on):
         data = APPROVED_ON if on else b"\x03\0\0\0" + struct.pack("<Q", _filetime())
         engine.write_value(key, name, data, winreg.REG_BINARY)
     entry.enabled = on
+    entry.off_since = None if on else datetime.date.today()
 
 
 def removed_file():

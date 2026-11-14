@@ -2584,6 +2584,8 @@ class App:
             pill.set(self.t("startup_high"), C["warn"], animate=False)
             pill.pack(side="left", padx=(px(10), 0))
         details = [entry.publisher, self.t(f"startup_source_{entry.source}_{entry.scope}")]
+        if not entry.enabled and entry.off_since:
+            details.append(self.t("startup_off_since", date=self.format_day(entry.off_since)))
         if entry.impact:
             seconds = f"{entry.impact['cpu'] / 1000:.1f}"
             if self.lang != "en":

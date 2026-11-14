@@ -14,6 +14,7 @@ TEXTS = {
         "startup_source_folder_HKLM": "Папка «Автозагрузка» для всех",
         "startup_source_app_HKCU": "Приложение Microsoft Store",
         "startup_impact": "при входе {seconds} с процессора, прочитано {size}",
+        "startup_off_since": "выключена {date}",
         "startup_high": "Сильно влияет",
         "startup_missing": "Файла, который она запускает, больше нет: запись ничего не запускает",
         "startup_remove": "Убрать запись",
