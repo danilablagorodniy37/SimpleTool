@@ -2,6 +2,32 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
+## 0.15
+
+**Startup** (new page)
+- Every program that starts when you sign in, from the places Task Manager reads: the Run keys of the account and of the PC (64-bit and 32-bit programs), the Startup folders, and the startup tasks of Microsoft Store apps. Each shows its icon, publisher, where it starts from and the command it runs.
+- With administrator rights, what each program costs at sign-in as Windows measured it over the last starts, the programs it starts included; a heavy one is marked **High impact**. Show all, only those that are on, or only those that are off.
+- The switch turns a program off the way Task Manager does: its own entry stays, so it can be turned on again at any time. The change takes effect at the next sign-in. Programs that start for every account need administrator rights; tasks set by a policy are shown as such.
+- An entry whose file is gone starts nothing: it is listed first with **Remove entry**. A registry value is saved before it is deleted, a shortcut goes to the Recycle Bin.
+- Troubleshooting's startup findings now open this page.
+
+**Microsoft Store apps** on the Programs page
+- A switch between **Programs** and **Microsoft Store apps**: the apps of this account with their own names and logos, publisher, version, size and date, with search, order and tick boxes.
+- Remove one app, or tick several and remove them together in a window that shows each app's state and can stop after the current one. An app is removed for this account with its data; Microsoft Store can install it again.
+- Microsoft Store itself, App Installer, Windows Security, the frameworks apps need, parts of Windows built as apps and packages without an entry in Start (codecs, the menu extensions of desktop programs) are never offered.
+
+**Taskbar and Start** (new page, 10 tweaks)
+- Start button on the left, hide the Task View button, hide search on the taskbar, turn off Widgets (by Microsoft's policy), labels on taskbar buttons, End task from the taskbar, seconds in the taskbar clock, no tips and app suggestions in Start, no account notifications in Start, no web results in Windows search.
+- **System** gets three more: turn off pointer acceleration, no Sticky Keys prompt on Shift, no tips on the lock screen.
+
+**Overview and window**
+- The overview has a second row of tiles: what Troubleshooting found, how many programs are installed and how many start at sign-in. Each tile opens its page.
+- The sidebar fits all eleven pages: in a short window the items move closer together, then the beta note goes.
+- The window and its dialogs fade in, list cards light up under the pointer, and **Apply** and **Revert** are shown only on pages with tweaks.
+- Fixed: after a quick switch the sidebar marker could stay on the previous page.
+
+**Terms of use** now cover Microsoft Store apps, which are removed without a restore point (it cannot bring them back), and the startup switches. SimpleTool asks to accept them again.
+
 ## 0.14.1
 
 - The buttons for the ticked programs, **Uninstall selected** and **Clear selection**, are now in the bar at the bottom of the window, in sight wherever the list is scrolled; the bar also says how many programs are ticked and how much space they take.

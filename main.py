@@ -162,6 +162,13 @@ def collect_scan(report=lambda step: None):
     report("tasks")
     result["checks"] = {t.id: engine.check(t, result["ctx"]) for t in tweaks.TWEAKS}
     report("registry")
+    # For the overview: how many programs are installed and start at sign-in (registry only, a few milliseconds)
+    try:
+        result["programs"] = len(uninstaller.installed_programs())
+        entries = startup.entries(impact=[])
+        result["startup"] = (sum(entry.enabled for entry in entries), len(entries))
+    except OSError:
+        pass
     return result
 
 
@@ -613,8 +620,10 @@ class App:
             except tk.TclError:
                 pass
         self.footer_inner.pack_configure(padx=(left, width - right))
-        # The footer message wraps instead of running under the buttons, which take about px(300)
-        self.message_label.configure(wraplength=max(self.px(160), self.content_width - self.px(300)))
+        # The footer message wraps instead of running under the buttons, which take about px(300); a page without
+        # them gives the message the whole width
+        buttons = self.apply_button.winfo_manager() or self.program_remove_button.winfo_manager()
+        self.message_label.configure(wraplength=max(self.px(160), self.content_width - self.px(300 if buttons else 40)))
         self.layout_header()
 
     def layout_header(self):
@@ -869,14 +878,32 @@ class App:
                           ("summary_missing", counts["missing"], None, C["dim"], ICONS["dash"]),
                           ("summary_unknown", unknown, None, C["warn"] if unknown else C["dim"], ICONS["unknown"]),
                           ("summary_tweaks", applied, len(tweaks.TWEAKS), C["ok"], ICONS["overview"])])
+        # The PC at a glance: each tile opens its page
+        if self.diag is None:
+            diag = ("glance_diag_none", None, None, C["dim"], ICONS["diagnostics"], "diagnostics")
+        else:
+            found = diagnostics.counts(self.diag)
+            attention = found["problem"] + found["warning"]
+            diag = ("glance_diag", attention, None,
+                    C["bad"] if found["problem"] else C["warn"] if attention else C["ok"], ICONS["diagnostics"],
+                    "diagnostics")
+        programs = len(self.programs) if self.programs is not None else self.scan.get("programs")
+        on, total = ((sum(e.enabled for e in self.startup), len(self.startup)) if self.startup is not None
+                     else self.scan.get("startup", (None, None)))
+        self.build_tiles([diag,
+                          ("glance_programs", programs, None, CATEGORY_COLORS["programs"], ICONS["programs"],
+                           "programs"),
+                          ("glance_startup", on, total or None, CATEGORY_COLORS["startup"], ICONS["startup"],
+                           "startup")], top=px(8))
 
-    def build_tiles(self, tiles):
-        """A row of tiles with numbers that count up: [(text key, number, total or None, color, icon)]. A tile in a
-        live color (not the grey of an empty count) is tinted with it; a tile with a total shows the share as a ring."""
+    def build_tiles(self, tiles, top=0):
+        """A row of tiles with numbers that count up: [(text key, number, total or None, color, icon[, page])]. A tile
+        in a live color (not the grey of an empty count) is tinted with it; a tile with a total shows the share as a
+        ring; a tile with a page opens it. A number not known yet is shown as a dash."""
         px = self.px
         row = tk.Frame(self.list_frame, bg=C["bg"])
-        row.pack(fill="x", pady=(0, px(4)))
-        for i, (key, value, total, color, icon) in enumerate(tiles):
+        row.pack(fill="x", pady=(top, px(4)))
+        for i, (key, value, total, color, icon, *page) in enumerate(tiles):
             # Tiles sit in even columns of equal width, gaps are separate narrow columns between them:
             # padding inside a column would make every tile except the first narrower. The tile with a ring is a
             # third wider: the number and the ring need the room
@@ -890,9 +917,10 @@ class App:
             body = card.body
             top = tk.Frame(body, bg=card.fill)
             top.pack(fill="x", padx=px(12), pady=(px(8), 0))
-            number = tk.Label(top, text="0", font=self.fonts["number"], fg=color, bg=card.fill)
+            number = tk.Label(top, text="0" if value is not None else "—", font=self.fonts["number"], fg=color,
+                              bg=card.fill)
             number.pack(side="left")
-            if total:
+            if total and value is not None:
                 side = Ring(top, px(44), self.scale, self.animator, self.fonts["pill"])
                 side_pack = {"side": "right", "anchor": "n", "pady": (px(2), 0)}
                 side.set(value / total, delay=0.15 + i * 0.07)
@@ -919,7 +947,13 @@ class App:
                 shown = round(value * t)
                 label.configure(text=f"{shown}/{total}" if total else str(shown))
 
-            self.animator.animate(("count", key), 0.9, count_up, delay=0.15 + i * 0.07)
+            if value is not None:
+                self.animator.animate(("count", key), 0.9, count_up, delay=0.15 + i * 0.07)
+            if page:
+                for widget in [card] + list(descendants(card)):
+                    widget.configure(cursor="hand2")
+                    widget.bind("<Button-1>", lambda e, target=page[0]: self.show_page(target))
+                self.hover_border(card)
             self.page_cards.append(card)
 
     def unknown_reasons(self):
@@ -3316,6 +3350,8 @@ class App:
             text = self.t("diag_running" if self.diag_running else "diag_footer")
         elif self.page == "startup":
             text = self.t("startup_footer")
+        elif self.page in ("overview", "snapshots"):
+            text = self.t(self.page + "_footer")
         else:
             text = self.t("hint_select")
         self.message_label.configure(text=text)
@@ -3338,6 +3374,7 @@ class App:
             if shown:
                 shown[0].pack(side="right", before=self.message_label)
                 shown[1].pack(side="right", padx=(0, self.px(10)), before=self.message_label)
+            self.root.after_idle(self.layout)  # the message gets the width the buttons leave
         enabled = not self.busy and bool(self.selected)
         self.apply_button.set_enabled(enabled)
         self.revert_button.set_enabled(enabled)

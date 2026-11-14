@@ -6,6 +6,39 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.15": {
+        "en": [
+            "Startup: a new page with every program that starts when you sign in, what it costs at the start, and a "
+            "switch to turn it off as Task Manager does. Entries that lead nowhere can be removed.",
+            "Programs: Microsoft Store apps too, with their own logos, removed one at a time or several at once.",
+            "Taskbar and Start: a new page with 10 tweaks, from the Start button on the left to no web results in "
+            "search; System has three more.",
+            "The overview shows what Troubleshooting found, your programs and startup at a glance, and the window "
+            "is smoother.",
+        ],
+        "ru": [
+            "«Автозагрузка»: новая страница со всеми программами, которые запускаются при входе, тем, сколько они "
+            "отнимают при запуске, и переключателем, который выключает их, как Диспетчер задач. Записи, которые "
+            "никуда не ведут, можно убрать.",
+            "«Программы»: теперь и приложения Microsoft Store, с их логотипами, — удаляются по одному или "
+            "несколько сразу.",
+            "«Панель задач и Пуск»: новая страница с 10 твиками — от кнопки «Пуск» слева до поиска без результатов "
+            "из интернета; в «Системе» ещё три.",
+            "Обзор показывает найденные проблемы, программы и автозагрузку с первого взгляда, а окно стало "
+            "плавнее.",
+        ],
+        "uk": [
+            "«Автозавантаження»: нова сторінка з усіма програмами, які запускаються під час входу, тим, скільки вони "
+            "забирають під час запуску, і перемикачем, який вимикає їх, як Диспетчер завдань. Записи, що нікуди не "
+            "ведуть, можна прибрати.",
+            "«Програми»: тепер і застосунки Microsoft Store, з їхніми логотипами, — видаляються по одному або "
+            "кілька одразу.",
+            "«Панель завдань і Пуск»: нова сторінка з 10 твіками — від кнопки «Пуск» ліворуч до пошуку без "
+            "результатів з інтернету; у «Системі» ще три.",
+            "Огляд показує знайдені проблеми, програми й автозавантаження з першого погляду, а вікно стало "
+            "плавнішим.",
+        ],
+    },
     "0.14.1": {
         "en": [
             "The buttons for the ticked programs are now at the bottom of the window, in sight wherever the list is "
