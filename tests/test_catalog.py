@@ -2,6 +2,7 @@
 import re
 import unittest
 import winreg
+from unittest import mock
 
 import engine
 import tweaks
@@ -142,15 +143,42 @@ class CatalogSafety(unittest.TestCase):
             if re.search(r"(?i)\b(netsh|takeown|icacls|bcdedit)\b", command):
                 self.assertIn("Start-Process cmd.exe -Verb RunAs", command, tweak.id)
 
-    def test_effects_are_known_and_explorer_is_restarted_for_the_menu_only(self):
+    def test_effects_are_known_and_explorer_is_restarted_for_the_menu_and_taskbar_only(self):
         for tweak in tweaks.TWEAKS:
             self.assertIn(tweak.effect, (None, "explorer", "signout", "restart"), tweak.id)
-        self.assertEqual([t.id for t in tweaks.TWEAKS if t.effect == "explorer"], ["classic_menu"])
+            if tweak.effect == "explorer":
+                self.assertTrue(tweak.id == "classic_menu" or tweak.category == "taskbar", tweak.id)
 
     def test_windows_11_tweaks_are_marked(self):
         for tweak in tweaks.TWEAKS:
-            if tweak.id in ("classic_menu", "spotlight_icon"):
+            if tweak.id in ("classic_menu", "spotlight_icon", "taskbar_left", "start_recommendations"):
                 self.assertIs(tweak.requires, tweaks.windows_11, tweak.id)
+        by_id = {t.id: t for t in tweaks.TWEAKS}
+        for tweak_id in ("clock_seconds", "start_account_notifications"):
+            self.assertIs(by_id[tweak_id].requires, tweaks.windows_11_2022, tweak_id)
+        self.assertIs(by_id["end_task"].requires, tweaks.end_task_available)
+        self.assertIs(by_id["taskbar_labels"].requires, tweaks.taskbar_labels_available)
+
+    def test_versioned_requirements(self):
+        cases = {tweaks.windows_11_2022: {19045: False, 22000: False, 22621: True, 26100: True},
+                 tweaks.taskbar_labels_available: {19045: True, 22000: False, 22621: True, 26100: True},
+                 tweaks.end_task_available: {19045: False, 22621: False, 22631: True, 26100: True}}
+        for check, builds in cases.items():
+            for build, expected in builds.items():
+                with self.subTest(check=check.__name__, build=build), \
+                        mock.patch("sysinfo.release", return_value=("Windows", "x", build, "Professional")):
+                    self.assertIs(check(), expected)
+
+    def test_user_policies_need_administrator_rights(self):
+        """HKCU\\Software\\Policies is read-only for the account itself."""
+        self.assertTrue(Value(r"HKCU\Software\Policies\Microsoft\Windows\Explorer", "X", 1).admin)
+        self.assertFalse(Value(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Search", "X", 1).admin)
+        self.assertTrue({t.id: t for t in tweaks.TWEAKS}["start_web_search"].admin)
+
+    def test_taskbar_tweaks_avoid_protected_values(self):
+        """Windows' own driver (UCPD) refuses programs that write the Widgets switch: the policy is used instead."""
+        for tweak, op in VALUES:
+            self.assertNotEqual(op.name, "TaskbarDa", tweak.id)
 
     def test_restore_point_script_does_not_change_frequency_limit(self):
         self.assertNotIn("SystemRestorePointCreationFrequency", engine.RESTORE_POINT_SCRIPT)

@@ -450,7 +450,8 @@ class Value:
     def __init__(self, path, name, data, kind=winreg.REG_DWORD, default=ABSENT, check=True):
         self.path, self.name, self.data, self.kind = path, name, data, kind
         self.default, self.check = default, check
-        self.admin = not path.startswith("HKCU")
+        # HKCU\Software\Policies is read-only for the account itself: only administrators write its policies
+        self.admin = not path.startswith("HKCU") or path.lower().startswith("hkcu\\software\\policies\\")
         self.id = f"value:{path}|{name}"
 
     def __str__(self):

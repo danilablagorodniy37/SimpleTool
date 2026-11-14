@@ -70,6 +70,7 @@ ICONS = {"overview": "", "privacy": "", "system": "", "explorer": ""
          "add": "", "apps": "", "help": "",
          "diagnostics": "", "speed": "", "drive": "", "bug": ""}
 ICONS["programs"] = ICONS["apps"]
+ICONS["taskbar"] = ""  # Task View
 ICONS["search"] = ""
 # The icon of each group of troubleshooting checks
 GROUP_ICONS = {"performance": "speed", "storage": "drive", "stability": "bug", "security": "shield"}

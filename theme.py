@@ -33,6 +33,7 @@ THEMES = list(PALETTES)
 
 # Color of each section: menu icon, header glow
 CATEGORY_COLORS = {"overview": "#5FB4FF", "diagnostics": "#FF8FA3", "privacy": "#34D8A8", "system": "#7C9CFF",
+                   "taskbar": "#E9CF6E",
                    "explorer": "#86D9BD", "context": "#F0B783", "snapshots": "#4AC6D4", "memory": "#A48BFF",
                    "programs": "#8FD694"}
 

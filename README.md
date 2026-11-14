@@ -1,6 +1,6 @@
 # SimpleTool
 
-A Windows 10 and 11 tweaker for privacy, system features and File Explorer, with a memory limiter
+A Windows 10 and 11 tweaker for privacy, system features, File Explorer and the taskbar, with a memory limiter
 for programs such as Chrome and Discord, a troubleshooting check for lags, crashes and conflicts, and an
 uninstaller that finds what programs leave behind. Tick the tweaks you want, press **Apply**, and press
 **Revert** to put the original values back.
@@ -53,8 +53,9 @@ with the reason. Most checks work without administrator rights.
 | Category | Tweaks | Examples |
 |---|---|---|
 | Privacy | 13 | Windows and NVIDIA telemetry, advertising ID, settings sync, data collection tasks, location |
-| System | 8 | startup delay, AutoPlay, Ctrl+Shift layout switch, classic Photo Viewer, automatic registry backup, detailed sign-in messages |
+| System | 11 | startup delay, AutoPlay, Ctrl+Shift layout switch, classic Photo Viewer, automatic registry backup, detailed sign-in messages, pointer acceleration, Sticky Keys prompts, lock screen tips |
 | File Explorer | 9 | file extensions, This PC on Win+E, long paths, recent files history, menu delay, no Store in Open with, no Spotlight icon |
+| Taskbar and Start | 10 | Start on the left, Task View and search buttons, Widgets, labels on taskbar buttons, End task, seconds in the clock, tips and account notifications in Start, web results in search |
 | Context menu | 11 | classic Windows 11 menu, Copy to and Move to folder, take ownership, block a program in the firewall, file checksums, copy image, This PC tools |
 
 Every tweak shows its current state: **Applied**, **Partly**, **Not applied**, or **Not found**

@@ -6,7 +6,7 @@ import sysinfo
 from engine import OwnedKey, Service, Shortcut, Task, Tweak, Value
 from i18n import TEXTS, menu_label
 
-CATEGORIES = ["privacy", "system", "explorer", "context"]
+CATEGORIES = ["privacy", "system", "explorer", "taskbar", "context"]
 
 HKCU_CLASSES = r"HKCU\Software\Classes"
 HKLM_CLASSES = r"HKLM\SOFTWARE\Classes"
@@ -83,6 +83,23 @@ def photo_viewer_installed():
 
 def windows_11():
     return sysinfo.release()[2] >= 22000
+
+
+def windows_11_2022():
+    """Windows 11 2022 Update (build 22621) and later: the feature updates of that version brought seconds in the
+    clock, account notifications in Start and labels on taskbar buttons."""
+    return sysinfo.release()[2] >= 22621
+
+
+def taskbar_labels_available():
+    """Windows 10 always had labels on taskbar buttons; Windows 11 lost them and got them back in build 22621."""
+    build = sysinfo.release()[2]
+    return build < 22000 or build >= 22621
+
+
+def end_task_available():
+    """End task in the taskbar menu came with Windows 11 2023 Update (build 22631)."""
+    return sysinfo.release()[2] >= 22631
 
 
 def steps_recorder_installed():
@@ -180,6 +197,9 @@ PRIVACY = [
 
 # --- System ---
 
+MOUSE = r"HKCU\Control Panel\Mouse"
+ACCESSIBILITY = r"HKCU\Control Panel\Accessibility"
+CONTENT_DELIVERY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
 PHOTO_VIEWER_TYPES = [".bmp", ".dib", ".gif", ".ico", ".jfif", ".jpe", ".jpeg", ".jpg", ".png", ".tga"]
 PHOTO_VIEWER_OPEN = HKLM_CLASSES + r"\Applications\photoviewer.dll\shell\open"
 
@@ -224,6 +244,23 @@ SYSTEM = [
     Tweak("verbose_status", "system", [
         Value(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", "VerboseStatus", 1),
     ]),
+    # The two thresholds and the acceleration of SPI_SETMOUSE: all three at zero is "Enhance pointer precision" off
+    Tweak("pointer_precision", "system", [
+        Value(MOUSE, "MouseSpeed", "0", REG_SZ, default="1"),
+        Value(MOUSE, "MouseThreshold1", "0", REG_SZ, default="6"),
+        Value(MOUSE, "MouseThreshold2", "0", REG_SZ, default="10"),
+    ], effect="signout"),
+    # Windows' default flags of STICKYKEYS, FILTERKEYS and TOGGLEKEYS without *_HOTKEYACTIVE (4)
+    Tweak("accessibility_hotkeys", "system", [
+        Value(ACCESSIBILITY + r"\StickyKeys", "Flags", "506", REG_SZ, default="510"),
+        Value(ACCESSIBILITY + r"\Keyboard Response", "Flags", "122", REG_SZ, default="126"),
+        Value(ACCESSIBILITY + r"\ToggleKeys", "Flags", "58", REG_SZ, default="62"),
+    ], effect="signout"),
+    # The switch "Get fun facts, tips, tricks, and more on your lock screen" in Settings → Personalization → Lock screen
+    Tweak("lock_screen_tips", "system", [
+        Value(CONTENT_DELIVERY, "RotatingLockScreenOverlayEnabled", 0, default=1),
+        Value(CONTENT_DELIVERY, "SubscribedContent-338387Enabled", 0, default=1),
+    ]),
 ]
 
 # --- File Explorer ---
@@ -251,6 +288,42 @@ EXPLORER_TWEAKS = [
     Tweak("spotlight_icon", "explorer", [
         Value(EXPLORER + r"\HideDesktopIcons\NewStartPanel", "{2cc5ca98-6485-489a-920e-b3e88a6ccce3}", 1),
     ], requires=windows_11),
+]
+
+# --- Taskbar and Start ---
+# The switches of Settings → Personalization → Taskbar and Start. Explorer reads the taskbar ones when it starts, so
+# SimpleTool restarts it; Start reads its own when it opens.
+
+SEARCH = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Search"
+
+TASKBAR = [
+    Tweak("taskbar_left", "taskbar", [Value(ADVANCED, "TaskbarAl", 0)], requires=windows_11, effect="explorer"),
+    Tweak("task_view_button", "taskbar", [Value(ADVANCED, "ShowTaskViewButton", 0)], effect="explorer"),
+    Tweak("taskbar_search", "taskbar", [Value(SEARCH, "SearchboxTaskbarMode", 0)], effect="explorer"),
+    # The policies "Allow widgets" (Windows 11) and "Enable news and interests on the taskbar" (Windows 10). The
+    # Widgets switch in Settings (TaskbarDa) is protected by Windows itself and is not written
+    Tweak("widgets", "taskbar", [
+        Value(r"HKLM\SOFTWARE\Policies\Microsoft\Dsh", "AllowNewsAndInterests", 0),
+        Value(POLICIES + r"\Windows Feeds", "EnableFeeds", 0),
+    ], effect="explorer"),
+    # "Combine taskbar buttons and hide labels": 1 is "When taskbar is full", on the main and on other displays
+    Tweak("taskbar_labels", "taskbar", [
+        Value(ADVANCED, "TaskbarGlomLevel", 1),
+        Value(ADVANCED, "MMTaskbarGlomLevel", 1),
+    ], requires=taskbar_labels_available, effect="explorer"),
+    Tweak("end_task", "taskbar", [Value(ADVANCED + r"\TaskbarDeveloperSettings", "TaskbarEndTask", 1)],
+          requires=end_task_available, effect="explorer"),
+    Tweak("clock_seconds", "taskbar", [Value(ADVANCED, "ShowSecondsInSystemClock", 1)], requires=windows_11_2022,
+          effect="explorer"),
+    Tweak("start_recommendations", "taskbar", [Value(ADVANCED, "Start_IrisRecommendations", 0)], requires=windows_11),
+    Tweak("start_account_notifications", "taskbar", [Value(ADVANCED, "Start_AccountNotifications", 0)],
+          requires=windows_11_2022),
+    # Bing in the search of Start and the taskbar: the switch of Windows 10 and the policy that Windows 11 follows
+    # (its documented part: File Explorer's search box stops suggesting earlier searches)
+    Tweak("start_web_search", "taskbar", [
+        Value(SEARCH, "BingSearchEnabled", 0),
+        Value(r"HKCU\Software\Policies\Microsoft\Windows\Explorer", "DisableSearchBoxSuggestions", 1),
+    ], effect="signout"),
 ]
 
 # --- Context menu ---
@@ -365,4 +438,4 @@ CONTEXT = [
           + submenu(THIS_PC + r"\SimpleTool.7SafeMode", menu_label("safe_mode"), "msconfig.exe", SAFE_MODE)),
 ]
 
-TWEAKS = PRIVACY + SYSTEM + EXPLORER_TWEAKS + CONTEXT
+TWEAKS = PRIVACY + SYSTEM + EXPLORER_TWEAKS + TASKBAR + CONTEXT

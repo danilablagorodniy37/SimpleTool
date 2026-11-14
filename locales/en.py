@@ -433,6 +433,7 @@ TEXTS = {
         "privacy": ("Privacy", "Telemetry, tracking and data sent to Microsoft."),
         "system": ("System", "Startup, input and built-in Windows features."),
         "explorer": ("File Explorer", "How Explorer opens, what it shows and how fast it responds."),
+        "taskbar": ("Taskbar and Start", "What the taskbar shows and what Start recommends."),
         "context": ("Context menu", "Useful right-click items. On Windows 11 they are under “Show more options”."),
         "snapshots": ("System snapshots", "How things were before: SimpleTool saves the state before every change, "
                                           "and you can go back to any snapshot."),
@@ -605,6 +606,32 @@ TEXTS = {
             "the step that stays on the screen tells you what is slow. This is the Windows policy “Display highly "
             "detailed status messages”, which administrators use for exactly that; it changes nothing else. The "
             "messages appear from the next sign-in."),
+        "pointer_precision": (
+            "Turn off pointer acceleration",
+            "The pointer moves the same distance for the same mouse movement, however fast you move it.",
+            "With “Enhance pointer precision” on, Windows speeds the pointer up when you move the mouse fast and "
+            "slows it down when you move it slowly. It helps with a touchpad or a poor mouse, but it makes aiming in "
+            "games and precise work inconsistent, because the same hand movement moves the pointer a different "
+            "distance. This tweak turns it off, the same box as Control Panel → Mouse → Pointer Options, by setting "
+            "the mouse thresholds and acceleration to zero. The pointer speed slider stays as it is. The change "
+            "takes effect after you sign out and back in."),
+        "accessibility_hotkeys": (
+            "No Sticky Keys prompt on Shift",
+            "Pressing Shift five times or holding it no longer opens accessibility prompts, for example in games.",
+            "Windows asks whether to turn on Sticky Keys when Shift is pressed five times, Filter Keys when the "
+            "right Shift is held for eight seconds, and Toggle Keys when Num Lock is held for five seconds. In games "
+            "these prompts pop up in the middle of play and switch to the desktop. This tweak turns off those "
+            "keyboard shortcuts, the same boxes as Settings → Accessibility → Keyboard. It writes Windows' default "
+            "settings of the three features without the shortcuts, so if you use Sticky Keys, Filter Keys or Toggle "
+            "Keys, do not apply it. The change takes effect after you sign out and back in."),
+        "lock_screen_tips": (
+            "No tips on the lock screen",
+            "The lock screen shows your picture without Microsoft's facts, tips and suggestions.",
+            "With a picture or a slideshow on the lock screen, Windows adds texts on top of it: fun facts, tips and "
+            "suggestions for Microsoft products. This tweak turns off “Get fun facts, tips, tricks, and more on your "
+            "lock screen” in Settings → Personalization → Lock screen. With Windows Spotlight as the lock screen "
+            "background, Windows shows information about the picture anyway; the switch works for a picture or a "
+            "slideshow."),
         "store_open_with": (
             "No Microsoft Store in “Open with”",
             "Opening a file of an unknown type does not offer to look for an app in the Microsoft Store.",
@@ -663,6 +690,84 @@ TEXTS = {
             "Windows waits 400 ms before it opens a submenu under the pointer, for example Open with or Send to in "
             "the context menu. This tweak cuts the delay to 20 ms, so menus open immediately. It takes effect after "
             "you sign out or restart."),
+        "taskbar_left": (
+            "Start button on the left",
+            "Moves Start and the taskbar icons to the left edge, as in Windows 10.",
+            "Windows 11 centres the Start button and the app icons on the taskbar. This tweak puts them at the left "
+            "edge, where Start sat in every earlier version of Windows, so it stays in the same corner however many "
+            "apps are open. It is the same choice as Settings → Personalization → Taskbar → Taskbar behaviours → "
+            "Taskbar alignment. SimpleTool restarts File Explorer so the taskbar changes at once."),
+        "task_view_button": (
+            "Hide the Task View button",
+            "Removes the Task View button from the taskbar; Win+Tab still opens Task View.",
+            "The Task View button shows your open windows and virtual desktops. Most people switch windows with the "
+            "taskbar or Alt+Tab, so the button takes space without use. This tweak hides it, the same switch as "
+            "Settings → Personalization → Taskbar → Taskbar items. Task View itself and virtual desktops keep "
+            "working: press Win+Tab."),
+        "taskbar_search": (
+            "Hide search on the taskbar",
+            "Removes the search box or icon from the taskbar; press Win and type to search.",
+            "The search box takes a large part of the taskbar, and on Windows 11 it also shows pictures and trending "
+            "topics from the web. This tweak hides it, as Settings → Personalization → Taskbar → Search → Hide does. "
+            "Search itself keeps working: press the Windows key and start typing, or press Win+S. Windows may now "
+            "and then offer to bring the box back; the choice stays yours."),
+        "widgets": (
+            "Turn off Widgets",
+            "Removes the Widgets board with news and weather from the taskbar and from Win+W.",
+            "Widgets show news, weather, stocks and sports from MSN on a board at the left of the screen, and the "
+            "taskbar button opens it as soon as the mouse passes over it. The board keeps its processes (Widgets and "
+            "WebView2) running in the background and loads content from the internet. This tweak turns Widgets off "
+            "with the Windows policy “Allow widgets”, as administrators do; on Windows 10 it turns off News and "
+            "interests with its own policy. The button and Win+W stop working, and Settings may say that some "
+            "settings are managed by your organisation. Windows protects the Widgets switch in Settings from changes "
+            "by programs, which is why the policy is used. SimpleTool restarts File Explorer."),
+        "taskbar_labels": (
+            "Labels on taskbar buttons",
+            "Every open window gets its own button with its title, combined only when the taskbar is full.",
+            "By default the taskbar shows one icon per app without text, and you have to hover over it to see which "
+            "window is which. This tweak shows the title of every window next to its icon and combines buttons only "
+            "when the taskbar runs out of space, on the main display and on the others. It is the option “When "
+            "taskbar is full” in Settings → Personalization → Taskbar → Taskbar behaviours (Windows 11 2022 Update "
+            "and later; Windows 10 always had it). SimpleTool restarts File Explorer."),
+        "end_task": (
+            "End task from the taskbar",
+            "Adds “End task” to the right-click menu of taskbar buttons: a frozen app closes without Task Manager.",
+            "When an app stops responding, its window often will not close, and finding it in Task Manager takes "
+            "time. Windows 11 2023 Update added an “End task” item to the menu of taskbar buttons that ends the "
+            "app's process at once. It is off by default and lives in Settings → System → For developers (Advanced "
+            "in newer versions). This tweak turns it on. Ending a task closes the app without saving, as Task "
+            "Manager does, so use it only for apps that hang."),
+        "clock_seconds": (
+            "Seconds in the taskbar clock",
+            "The clock in the corner of the taskbar shows seconds.",
+            "The taskbar clock shows hours and minutes; to see seconds you had to open the calendar. Windows 11 2022 "
+            "Update and later can show them in the clock itself: Settings → Personalization → Taskbar → Taskbar "
+            "behaviours, or Time & language in newer versions. Microsoft notes that the clock then updates every "
+            "second and uses a little more power, which shows on a laptop battery only over long periods. SimpleTool "
+            "restarts File Explorer."),
+        "start_recommendations": (
+            "No tips and app suggestions in Start",
+            "Start no longer recommends tips, shortcuts and new apps from Microsoft.",
+            "The Recommended section of Start mixes your recent files with tips, shortcuts and apps that Microsoft "
+            "suggests, including apps from the Microsoft Store. This tweak turns off “Show recommendations for tips, "
+            "shortcuts, new apps, and more” in Settings → Personalization → Start. Your recent files and apps are "
+            "not affected: they have their own switches. Start reads the setting the next time it opens."),
+        "start_account_notifications": (
+            "No account notifications in Start",
+            "Start stops reminding you about your Microsoft account, backup and OneDrive.",
+            "Windows 11 shows notifications next to your name in Start: to finish setting up your Microsoft account, "
+            "to back up your files, to try OneDrive or Microsoft 365. This tweak turns off “Show account-related "
+            "notifications” in Settings → Personalization → Start. Your account and its settings do not change, and "
+            "important security messages still come from Windows Security."),
+        "start_web_search": (
+            "No web results in Windows search",
+            "Search in Start and on the taskbar shows the apps, files and settings of this PC, without Bing.",
+            "When you type in Start or in the taskbar search, Windows also sends what you type to Bing and mixes web "
+            "results and suggestions into the list, which makes it slower and sends your searches to Microsoft. This "
+            "tweak turns off the Bing switch of Windows 10 and, as administrator, sets the policy that Windows 11 "
+            "follows for the search box (DisableSearchBoxSuggestions). Microsoft documents that policy for the "
+            "search box of File Explorer: with it, Explorer also stops suggesting your earlier searches. Search on "
+            "the PC keeps working. The change shows after you sign out and back in."),
         "classic_menu": (
             "Classic right-click menu",
             "Windows 11 shows the full menu at once, with no “Show more options”.",
