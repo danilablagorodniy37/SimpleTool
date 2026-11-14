@@ -24,6 +24,7 @@ import i18n
 import limiter
 import programs
 import services
+import startup
 import terms
 import theme
 import tray
@@ -42,7 +43,7 @@ SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(BASE_DIR, "assets", "app.ico")
-PAGES = ["overview", "diagnostics"] + tweaks.CATEGORIES + ["programs", "memory", "snapshots"]
+PAGES = ["overview", "diagnostics"] + tweaks.CATEGORIES + ["programs", "startup", "memory", "snapshots"]
 TRAY_OPEN, TRAY_LIMITER, TRAY_EXIT = 1, 2, 3  # tray icon menu items
 SELECTABLE = ("applied", "partial", "not_applied", "unknown")
 REVERTIBLE = ("applied", "partial", "unknown")
@@ -70,6 +71,7 @@ ICONS = {"overview": "", "privacy": "", "system": "", "explorer": ""
          "add": "", "apps": "", "help": "",
          "diagnostics": "", "speed": "", "drive": "", "bug": ""}
 ICONS["programs"] = ICONS["apps"]
+ICONS["startup"] = ""  # LightningBolt
 ICONS["search"] = ""
 # The icon of each group of troubleshooting checks
 GROUP_ICONS = {"performance": "speed", "storage": "drive", "stability": "bug", "security": "shield"}
@@ -215,6 +217,11 @@ class App:
         self.program_query = ""
         self.program_search = None  # the variable of the search field
         self.program_sort = "name"
+        self.startup = None       # [startup.Entry] of the Startup page; read in the background when it opens
+        self.startup_loading = False
+        self.startup_filter = "all"
+        self.startup_rows = []    # (entry, card) of the page, to filter without rebuilding it
+        self.startup_icons = {}   # entry key -> PhotoImage of its program's icon
         # Tk objects may only be deleted from the window thread, but the cyclic garbage collector runs in whichever
         # thread is allocating memory, such as the limiter thread. So only poll() collects garbage
         gc.disable()
@@ -637,13 +644,16 @@ class App:
         # Programs: how many are installed, once the list has been read
         self.nav["programs"]["count"].configure(text=str(len(self.programs)) if self.programs else "",
                                                 fg=C["side_dim"])
+        # Startup: how many programs start at sign-in, of all the entries
+        self.nav["startup"]["count"].configure(
+            text=f"{sum(e.enabled for e in self.startup)}/{len(self.startup)}" if self.startup else "", fg=C["side_dim"])
         if not self.scan:
             for page, widgets in self.nav.items():
-                if page not in ("memory", "diagnostics", "programs"):
+                if page not in ("memory", "diagnostics", "programs", "startup"):
                     widgets["count"].configure(text="")
             return
         for page, widgets in self.nav.items():
-            if page in ("memory", "diagnostics", "programs"):
+            if page in ("memory", "diagnostics", "programs", "startup"):
                 continue
             if page == "overview":
                 problems = sum(self.unknown_reasons().values())
@@ -704,6 +714,10 @@ class App:
                 self.link(self.links, self.t("prog_saved"), self.open_saved_leftovers).pack(side="left",
                                                                                             padx=(0, self.px(16)))
             self.link(self.links, self.t("prog_reload"), lambda: self.load_programs(force=True)).pack(side="left")
+        elif page == "startup":
+            self.link(self.links, self.t("startup_settings"), lambda: self.shell_open("ms-settings:startupapps")).pack(
+                side="left", padx=(0, self.px(16)))
+            self.link(self.links, self.t("prog_reload"), lambda: self.load_startup(force=True)).pack(side="left")
         else:
             for key, action in (("select_all", self.select_all), ("clear", self.clear_selection)):
                 self.link(self.links, self.t(key), action).pack(side="left", padx=(self.px(16), 0))
@@ -729,6 +743,8 @@ class App:
             self.build_diagnostics_page()
         elif page == "programs":
             self.build_programs_page()
+        elif page == "startup":
+            self.build_startup_page()
         else:
             self.build_tweak_page(page)
         tk.Frame(self.list_frame, bg=C["bg"], height=self.px(12)).pack()
@@ -1963,6 +1979,212 @@ class App:
 
         self.run_action("prog_cleaning", work, done)
 
+    # --- Startup ---
+
+    def load_startup(self, force=False):
+        """Reads the programs that start with Windows and their icons in the background, then shows them."""
+        if self.startup_loading or (self.startup is not None and not force):
+            return
+        self.startup_loading = True
+        size = self.px(PROGRAM_ICON)
+
+        def work():
+            found, icons = startup.entries(), {}
+            for entry in found:
+                if entry.path and os.path.isfile(entry.path):
+                    try:
+                        data = uninstaller.icon_png(entry.path, 0, size)
+                    except OSError:
+                        data = None
+                    if data:
+                        icons[entry.key] = data
+            return found, icons
+
+        def done(result):
+            self.startup_loading = False
+            if isinstance(result, Exception):
+                self.startup = self.startup or []
+                self.show_errors([str(result)])
+            else:
+                self.startup, icons = result
+                self.startup_icons = {}
+                for key, data in icons.items():
+                    try:
+                        self.startup_icons[key] = tk.PhotoImage(data=data)
+                    except tk.TclError:
+                        pass  # an icon Tk cannot read gets the generic one
+            self.update_nav_counts()
+            if self.page == "startup":
+                self.show_page("startup", animate=False, keep_scroll=True)
+
+        self.run_job(work, done)
+
+    def build_startup_page(self):
+        px = self.px
+        self.startup_rows = []
+        if self.startup is None:
+            note = tk.Label(self.list_frame, text=self.t("startup_loading"), font=self.fonts["body"], fg=C["muted"],
+                            bg=C["bg"], anchor="w")
+            note.pack(fill="x", padx=px(18), pady=px(8))
+            self.load_startup()
+            return
+        # How many start, which to show, and how it works
+        card = Card(self.list_frame, self.scale, radius=14, pad=6)
+        card.pack(fill="x", pady=(0, px(12)))
+        top = tk.Frame(card.body, bg=card.fill)
+        top.pack(fill="x", padx=px(12), pady=(px(12), 0))
+        Segmented(top, [("all", self.t("startup_filter_all")), ("on", self.t("startup_filter_on")),
+                        ("off", self.t("startup_filter_off"))], self.startup_filter, self.fonts["small_bold"],
+                  self.scale, self.animator, command=self.filter_startup).pack(side="right", padx=(px(12), 0))
+        self.startup_count = tk.Label(top, text="", font=self.fonts["h2"], fg=C["text"], bg=card.fill, anchor="w")
+        self.startup_count.pack(side="left", fill="x", expand=True)
+        note = tk.Label(card.body, text=self.t("startup_note"), font=self.fonts["small"], fg=C["muted"],
+                        bg=card.fill, anchor="w", justify="left")
+        note.pack(fill="x", padx=px(12), pady=(px(8), px(12) if self.admin else 0))
+        self.wrap(note, px(62))
+        if not self.admin:
+            warning = tk.Label(card.body, text=self.t("startup_admin"), font=self.fonts["small_bold"], fg=C["warn"],
+                               bg=card.fill, anchor="w", justify="left")
+            warning.pack(fill="x", padx=px(12), pady=(px(8), px(12)))
+            self.wrap(warning, px(62))
+        self.page_cards.append(card)
+        if not self.startup:
+            tk.Label(self.list_frame, text=self.t("startup_empty"), font=self.fonts["body"], fg=C["muted"],
+                     bg=C["bg"], anchor="w").pack(fill="x", padx=px(18), pady=px(8))
+        self.startup_end = tk.Frame(self.list_frame, bg=C["bg"])
+        self.startup_end.pack(fill="x")
+        # Entries that start nothing first, then the ones that start, the heaviest first
+        order = sorted(self.startup, key=lambda e: (not e.missing, not e.enabled,
+                                                     -(e.impact or {}).get("cpu", 0), e.title.lower()))
+        for entry in order:
+            self.startup_rows.append((entry, self.build_startup_card(entry)))
+        self.arrange_startup()
+
+    def startup_heavy(self, entry):
+        """Whether Task Manager would call the program's startup impact high."""
+        impact = entry.impact or {}
+        return impact.get("cpu", 0) >= diagnostics.STARTUP_HIGH_MS or impact.get("disk", 0) >= diagnostics.STARTUP_HIGH_DISK
+
+    def build_startup_card(self, entry):
+        px = self.px
+        card = Card(self.list_frame, self.scale, radius=12, pad=4)
+        body = card.body
+        body.columnconfigure(1, weight=1)
+        icon = self.program_icon(body, card.fill, entry, image=self.startup_icons.get(entry.key))
+        icon.grid(row=0, column=0, rowspan=3, padx=px(14), pady=px(12), sticky="n")
+        head = tk.Frame(body, bg=card.fill)
+        head.grid(row=0, column=1, sticky="ew", pady=(px(10), 0))
+        tk.Label(head, text=entry.title, font=self.fonts["h2"], fg=C["text"], bg=card.fill, anchor="w").pack(
+            side="left")
+        if self.startup_heavy(entry):
+            pill = Pill(head, self.fonts["pill"], self.scale, self.animator)
+            pill.set(self.t("startup_high"), C["warn"], animate=False)
+            pill.pack(side="left", padx=(px(10), 0))
+        details = [entry.publisher, self.t(f"startup_source_{entry.source}_{entry.scope}")]
+        if entry.impact:
+            details.append(self.t("startup_impact", seconds=f"{entry.impact['cpu'] / 1000:.1f}",
+                                  size=self.size_text(entry.impact["disk"])))
+        info = tk.Label(body, text="  ·  ".join(part for part in details if part), font=self.fonts["small"],
+                        fg=C["muted"], bg=card.fill, anchor="w", justify="left")
+        info.grid(row=1, column=1, sticky="ew", pady=(px(2), 0))
+        self.wrap(info, px(330))
+        # What it starts; for an entry whose file is gone, that it starts nothing
+        missing = entry.missing
+        if entry.source == "app":  # its package name says nothing more than its name
+            tk.Frame(body, bg=card.fill, height=px(10)).grid(row=2, column=1)
+        else:
+            command = tk.Label(body, text=self.t("startup_missing") if missing else entry.command,
+                               font=self.fonts["small_bold" if missing else "mono"],
+                               fg=C["warn"] if missing else C["dim"], bg=card.fill, anchor="w", justify="left")
+            command.grid(row=2, column=1, sticky="ew", pady=(px(4), px(10)))
+            self.wrap(command, px(330))
+        actions = tk.Frame(body, bg=card.fill)
+        actions.grid(row=0, column=2, rowspan=3, sticky="e", padx=px(14))
+        if entry.path and os.path.exists(entry.path):
+            self.link(actions, self.t("startup_location"), lambda: self.open_startup_location(entry), font="small",
+                      color=C["dim"]).pack(side="left", padx=(0, px(14)))
+        if missing and entry.source != "app":
+            button = GradientButton(actions, self.t("startup_remove"), lambda: self.remove_startup_entry(entry),
+                                    self.fonts["button"], self.scale, self.animator, primary=False, pad=(14, 6))
+            button.pack(side="left")
+            self.action_buttons.append((button, entry.needs_admin))
+        elif entry.policy:
+            tk.Label(actions, text=self.t("startup_policy"), font=self.fonts["small"], fg=C["dim"],
+                     bg=card.fill).pack(side="left")
+        else:
+            toggle = Toggle(actions, self.scale, self.animator, on=entry.enabled)
+            toggle.command = lambda on: self.toggle_startup(entry, on, toggle, card)
+            toggle.pack(side="left")
+        self.paint_startup_card(entry, card)
+        self.page_cards.append(card)
+        return card
+
+    def paint_startup_card(self, entry, card):
+        card.set_accent(C["warn"] if entry.missing else C["accent"] if entry.enabled else None)
+
+    def filter_startup(self, value):
+        self.startup_filter = value
+        self.arrange_startup()
+
+    def arrange_startup(self):
+        """Shows the entries the filter chooses, without building the cards again."""
+        shown = 0
+        for entry, card in self.startup_rows:
+            card.pack_forget()
+        for entry, card in self.startup_rows:
+            if self.startup_filter == "all" or entry.enabled == (self.startup_filter == "on"):
+                card.pack(fill="x", pady=(0, self.px(8)), before=self.startup_end)
+                shown += 1
+        self.update_startup_count()
+        self.root.after_idle(self.layout)
+
+    def update_startup_count(self):
+        entries = self.startup or []
+        try:
+            self.startup_count.configure(text=self.t("startup_count", on=sum(e.enabled for e in entries),
+                                                     n=len(entries)))
+        except (AttributeError, tk.TclError):
+            pass  # the page is not shown
+
+    def toggle_startup(self, entry, on, toggle, card):
+        if entry.needs_admin and not self.admin:
+            toggle.set(entry.enabled)
+            self.notify(self.t("startup_admin"), C["warn"], ICONS["shield"])
+            return
+        try:
+            startup.set_enabled(entry, on)
+        except OSError as exc:
+            toggle.set(entry.enabled)
+            self.notify(self.t("startup_failed", name=entry.title, error=exc.strerror or exc), C["bad"],
+                        ICONS["warning"])
+            return
+        self.notify(self.t("startup_on" if on else "startup_off", name=entry.title), C["ok"] if on else C["accent"],
+                    ICONS["check"])
+        self.paint_startup_card(entry, card)
+        self.update_startup_count()
+        self.update_nav_counts()
+
+    def remove_startup_entry(self, entry):
+        """Removes an entry whose program is gone: it starts nothing. The Run value is saved, a shortcut goes to the
+        Recycle Bin."""
+        try:
+            startup.remove(entry)
+        except (OSError, ValueError) as exc:
+            self.notify(self.t("startup_failed", name=entry.title, error=getattr(exc, "strerror", None) or exc),
+                        C["bad"], ICONS["warning"])
+            return
+        self.startup = [e for e in self.startup or [] if e.key != entry.key]
+        self.notify(self.t("startup_removed", name=entry.title), C["ok"], ICONS["check"])
+        self.update_nav_counts()
+        self.show_page("startup", animate=False, keep_scroll=True)
+
+    def open_startup_location(self, entry):
+        if not os.path.exists(entry.path):
+            self.notify(self.t("prog_location_missing"), C["warn"], ICONS["warning"])
+            return
+        explorer = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "explorer.exe")
+        self.shell_open(explorer, f'/select,"{entry.path}"')
+
     def status_map(self):
         return {i: check[0] for i, check in self.scan["checks"].items()} if self.scan else {}
 
@@ -2811,6 +3033,8 @@ class App:
             text = self.t("mem_on" if self.limiter.active() else "mem_off")
         elif self.page == "diagnostics":
             text = self.t("diag_running" if self.diag_running else "diag_footer")
+        elif self.page == "startup":
+            text = self.t("startup_footer")
         else:
             text = self.t("hint_select")
         self.message_label.configure(text=text)
@@ -2821,15 +3045,18 @@ class App:
         else:
             self.spinner.stop()
             self.spinner.pack_forget()
-        # The footer buttons act on the ticked tweaks, and on the Programs page on the ticked programs
+        # The footer buttons act on the ticked tweaks, and on the Programs page on the ticked programs; other pages
+        # have nothing to tick and show none
         tweak_pair = (self.apply_button, self.revert_button)
         program_pair = (self.program_remove_button, self.program_clear_button)
-        shown, hidden = (program_pair, tweak_pair) if programs else (tweak_pair, program_pair)
-        if not shown[0].winfo_manager():
-            for button in hidden:
-                button.pack_forget()
-            shown[0].pack(side="right", before=self.message_label)
-            shown[1].pack(side="right", padx=(0, self.px(10)), before=self.message_label)
+        shown = program_pair if programs else tweak_pair if self.page in tweaks.CATEGORIES else ()
+        if not shown or not shown[0].winfo_manager():
+            for button in tweak_pair + program_pair:
+                if button not in shown:
+                    button.pack_forget()
+            if shown:
+                shown[0].pack(side="right", before=self.message_label)
+                shown[1].pack(side="right", padx=(0, self.px(10)), before=self.message_label)
         enabled = not self.busy and bool(self.selected)
         self.apply_button.set_enabled(enabled)
         self.revert_button.set_enabled(enabled)
@@ -2846,7 +3073,7 @@ class App:
         if self.page in ("overview", "snapshots"):
             self.show_page(self.page)
             return
-        if self.page in ("memory", "diagnostics", "programs"):
+        if self.page in ("memory", "diagnostics", "programs", "startup"):
             self.update_nav_counts()
             self.update_footer()
             return

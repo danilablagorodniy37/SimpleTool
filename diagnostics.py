@@ -67,7 +67,7 @@ ACTIONS = {
     "power_mode": ("open", "ms-settings:powersleep", None),
     "display": ("open", "ms-settings:display-advanced", None),
     "graphics_settings": ("open", "ms-settings:display-advancedgraphics", None),
-    "startup": ("open", "ms-settings:startupapps", None),
+    "startup": ("page", "startup", None),  # SimpleTool's Startup page
     "captures": ("open", "ms-settings:gaming-gamedvr", None),
     "storage": ("open", "ms-settings:storagesense", None),
     "temp": ("open", "%TEMP%", None),
@@ -1274,7 +1274,7 @@ def startup_trees(data):
 
 
 def startup_impact():
-    """[{"name", "cpu" (ms), "disk" (bytes), "starts"}] of the programs that start with Windows, on average over the
+    """[{"name", "path", "cpu" (ms), "disk" (bytes), "starts"}] of the programs that start with Windows, on average over the
     last starts Windows measured (up to five), as Task Manager's "Startup impact" counts them: the processor time
     and the data read from the drive, the programs they started included. Windows' own programs are left out. The
     files are per account; the newest are the account at the PC. Needs administrator rights."""
@@ -1303,7 +1303,7 @@ def startup_impact():
     for path, runs in totals.items():
         if os.path.normcase(path).startswith(windows_folder):
             continue
-        found.append({"name": file_description(path) or os.path.splitext(os.path.basename(path))[0],
+        found.append({"name": file_description(path) or os.path.splitext(os.path.basename(path))[0], "path": path,
                       "cpu": sum(r[0] for r in runs) // len(runs) // 1000, "disk": sum(r[1] for r in runs) // len(runs),
                       "starts": len(runs)})
     return sorted(found, key=lambda item: (-item["cpu"], -item["disk"]))
@@ -1472,6 +1472,11 @@ def file_version(path):
 
 def file_description(path):
     """A program's description from its version information ("Proton Mail Bridge"), or None."""
+    return version_string(path, "FileDescription")
+
+
+def version_string(path, field):
+    """A text of a file's version information (FileDescription, CompanyName...), or None."""
     version = ctypes.windll.version
     size = version.GetFileVersionInfoSizeW(path, None)
     if not size:
@@ -1484,7 +1489,7 @@ def file_description(path):
             or length.value < 4 or not pointer.value:
         return None
     language, codepage = struct.unpack("<HH", ctypes.string_at(pointer.value, 4))
-    if not version.VerQueryValueW(buffer, f"\\StringFileInfo\\{language:04x}{codepage:04x}\\FileDescription",
+    if not version.VerQueryValueW(buffer, f"\\StringFileInfo\\{language:04x}{codepage:04x}\\{field}",
                                   ctypes.byref(pointer), ctypes.byref(length)) or not length.value or not pointer.value:
         return None
     return ctypes.wstring_at(pointer.value, length.value).rstrip("\0").strip() or None

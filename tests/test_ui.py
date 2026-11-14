@@ -20,6 +20,7 @@ import engine
 import i18n
 import limiter
 import main
+import startup
 import terms
 import theme
 import tweaks
@@ -65,7 +66,25 @@ class UiSmoke(unittest.TestCase):
             uninstaller.Program(uninstall + r"\OldTool", "Old Tool", size=40 * 2 ** 20,
                                 uninstall=r'"C:\nowhere-at-all\unins000.exe"'),
         ]
+        # Startup: made-up entries; turning them on and off is recorded instead of written
+        self.startup_changes = []
+        run = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
+        approved = rf"HKCU\{startup.APPROVED}\Run"
+        self.startup_entries = [
+            startup.Entry(f"run:{run}:Notes", "Notes", f'"{notepad}" /min', notepad, "run", "HKCU", True,
+                          (approved, "Notes"), run),
+            startup.Entry(f"run:{run}:Gone", "Gone", r'"C:\nowhere-at-all\gone.exe"', r"C:\nowhere-at-all\gone.exe",
+                          "run", "HKCU", True, (approved, "Gone"), run),
+            startup.Entry("run:HKLM:Tray", "Tray", notepad, notepad, "run", "HKLM", False, (r"HKLM\x", "Tray"),
+                          r"HKLM\x"),
+            startup.Entry("app:Pkg\\Task", "Store App", "Pkg_1.0_x64__x", "", "app", "HKCU", True, policy=True),
+        ]
+        self.startup_entries[0].impact = {"cpu": 2500, "disk": 4 * 2 ** 20, "starts": 5}
         self.patches = [
+            mock.patch.object(startup, "entries", lambda impact=None: list(self.startup_entries)),
+            mock.patch.object(startup, "set_enabled", lambda entry, on: self.startup_changes.append((entry.name, on))
+                              or setattr(entry, "enabled", on)),
+            mock.patch.object(startup, "remove", lambda entry: self.startup_changes.append((entry.name, "removed"))),
             mock.patch.object(engine, "data_dir", lambda: self.tmp),
             mock.patch.object(engine, "apply", forbidden),
             mock.patch.object(engine, "revert", forbidden),
@@ -566,6 +585,50 @@ class UiSmoke(unittest.TestCase):
         app.show_page("programs", animate=False)
         self.wait(root, lambda: app.program_rows)
         return root, app, errors
+
+    def test_startup_page(self):
+        ui = i18n.TEXTS["en"]["ui"]
+        root, app, errors = self.open_app(admin=False)
+        try:
+            for dialog in self.dialogs(root):  # the administrator dialog of the limited mode
+                dialog.destroy()
+            app.show_page("startup", animate=False)
+            self.wait(root, lambda: app.startup_rows)
+            cards = {entry.name: card for entry, card in app.startup_rows}
+            names = {card: name for name, card in cards.items()}
+            self.assertEqual([names[w] for w in app.list_frame.pack_slaves() if w in names],
+                             ["Gone", "Notes", "Store App", "Tray"], "dead entries first, then those that start")
+            self.assertEqual(app.nav["startup"]["count"].cget("text"), "3/4")
+            self.assertEqual(app.startup_count.cget("text"), ui["startup_count"].format(on=3, n=4))
+            self.assertIn(ui["startup_high"], [w.itemcget(w.label, "text") for w in self.widgets(cards["Notes"])
+                                               if isinstance(w, main.Pill)])
+            self.assertIn(ui["startup_missing"], self.texts(cards["Gone"]))
+            self.assertIn(ui["startup_policy"], self.texts(cards["Store App"]))
+            self.assertIn(ui["startup_admin"], self.texts(app.list_frame))
+            self.assertFalse(app.apply_button.winfo_manager(), "nothing to apply on this page")
+            # Turning a program off; one for every account needs the rights
+            toggles = {name: next(w for w in self.widgets(cards[name]) if isinstance(w, main.Toggle))
+                       for name in ("Notes", "Tray")}
+            toggles["Notes"]._click(None)
+            self.assertEqual(self.startup_changes, [("Notes", False)])
+            self.assertEqual(app.nav["startup"]["count"].cget("text"), "2/4")
+            toggles["Tray"]._click(None)
+            self.assertEqual(self.startup_changes, [("Notes", False)], "not changed without the rights")
+            self.assertFalse(toggles["Tray"].on)
+            # The filter shows the ones that are off
+            app.filter_startup("off")
+            self.assertEqual({names[w] for w in app.list_frame.pack_slaves() if w in names}, {"Notes", "Tray"})
+            app.filter_startup("all")
+            # A dead entry is removed with one click; the page is built again without it
+            self.button(cards["Gone"], ui["startup_remove"])._click(None)
+            self.assertEqual(self.startup_changes[-1], ("Gone", "removed"))
+            self.assertEqual(sorted(e.name for e, c in app.startup_rows), ["Notes", "Store App", "Tray"])
+            self.pump(root, 0.2)  # the rebuilt page is drawn before its links take clicks
+            self.click_text(app.links, ui["startup_settings"])
+            self.assertEqual(self.started[-1], ("ms-settings:startupapps", None))
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
 
     def test_programs(self):
         ui = i18n.TEXTS["en"]["ui"]

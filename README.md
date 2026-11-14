@@ -1,9 +1,9 @@
 # SimpleTool
 
 A Windows 10 and 11 tweaker for privacy, system features and File Explorer, with a memory limiter
-for programs such as Chrome and Discord, a troubleshooting check for lags, crashes and conflicts, and an
-uninstaller that finds what programs leave behind. Tick the tweaks you want, press **Apply**, and press
-**Revert** to put the original values back.
+for programs such as Chrome and Discord, a troubleshooting check for lags, crashes and conflicts, an
+uninstaller that finds what programs leave behind, and a startup manager. Tick the tweaks you want, press
+**Apply**, and press **Revert** to put the original values back.
 
 > **Beta.** This is a test version and it is not stable yet. Use it at your own risk.
 
@@ -105,6 +105,24 @@ leftovers** and **Hide**.
 
 Programs installed for every account are removed with administrator rights, and those installed for one
 account without them.
+
+## Startup
+
+The **Startup** page lists the programs that start when you sign in, from the same places Task Manager reads: the
+Run keys of the account and of the PC (64-bit and 32-bit programs), the Startup folders of the account and of
+every account, and the startup tasks of Microsoft Store apps. Each has its icon, publisher, where it starts from and
+the command it runs, and, with administrator rights, what it costs at sign-in as Windows measured it over the last
+starts (processor time and data read, the programs it starts included); a heavy one is marked **High impact**.
+Show all, only those that are on, or only those that are off.
+
+The switch turns a program off the way Task Manager and Settings do: its own entry is not touched, Windows keeps the
+choice next to it (`StartupApproved`, or the state of a Store app's task), so the program can be turned on again at
+any time and its own settings still find their entry. The change takes effect at the next sign-in. Programs that
+start for every account are changed with administrator rights; tasks a policy sets are shown as such.
+
+An entry whose file is gone starts nothing: it is listed first with **Remove entry**. A registry value is saved to
+`%LOCALAPPDATA%\SimpleTool\startup-removed.json` before it is deleted, and a shortcut goes to the Recycle Bin.
+Troubleshooting's startup findings open this page.
 
 ## Memory limiter
 
