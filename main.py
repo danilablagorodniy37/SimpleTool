@@ -502,19 +502,37 @@ class App:
             self.show_page(self.search_return)
 
     def search_matches(self, query):
-        """The tweaks whose name, short text or details contain every word of the query, case aside."""
+        """The tweaks whose name, short text or details contain every word of the query, case aside. The English
+        texts count in every language: Windows' own names (Widgets, Bing, Task View) are often known in English."""
         words = query.casefold().split()
         found = []
         for tweak in tweaks.TWEAKS:
-            name, short, details = self.text("tweaks", tweak.id)
-            text = " ".join((name, short, details, tweak.id.replace("_", " "))).casefold()
+            texts = self.text("tweaks", tweak.id) + (i18n.TEXTS["en"]["tweaks"][tweak.id] if self.lang != "en" else ())
+            text = " ".join(texts + (tweak.id.replace("_", " "),)).casefold()
             if all(word in text for word in words):
                 found.append(tweak)
         return found
 
+    def search_pages(self, query):
+        """The pages whose name contains every word of the query: "startup" leads to the Startup page."""
+        words = query.casefold().split()
+        return [page for page in PAGES if all(word in self.text("categories", page)[0].casefold() for word in words)]
+
     def build_search_page(self):
         px = self.px
         found = self.search_matches(self.search_query)
+        pages = self.search_pages(self.search_query)
+        if pages:  # links to the pages the query names, above the tweaks
+            row = tk.Frame(self.list_frame, bg=C["bg"])
+            row.pack(fill="x", padx=px(2), pady=(0, px(12)))
+            tk.Label(row, text=self.t("search_pages"), font=self.fonts["small_bold"], fg=C["muted"], bg=C["bg"]).pack(
+                side="left", padx=(0, px(4)))
+            for page in pages:
+                chip = self.chip(row, self.text("categories", page)[0], lambda p=page: self.leave_search(p), ICONS[page],
+                                 accent=True)
+                chip.pack(side="left", padx=(px(8), 0))
+        if not found and pages:
+            return
         if not found:
             note = tk.Label(self.list_frame, text=self.t("search_none", query=self.search_query), font=self.fonts["body"],
                             fg=C["muted"], bg=C["bg"], anchor="w", justify="left")

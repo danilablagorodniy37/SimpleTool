@@ -227,6 +227,7 @@ TEXTS = {
         "search_hint": "Пошук твіків",
         "search_title": "Пошук",
         "search_desc": "Твіки з усіх сторінок, у яких є «{query}». Esc — повернутися.",
+        "search_pages": "Сторінки:",
         "search_none": "У жодному твіку немає «{query}».",
         "summary_tweaks": "Твіків застосовано",
         "unknown_title": "Частину даних перевірити не вдалося",

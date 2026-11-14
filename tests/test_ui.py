@@ -666,6 +666,11 @@ class UiSmoke(unittest.TestCase):
             app.toggle_select(tweak)
             self.assertIn(tweak.id, app.selected)
             app.clear_selection()
+            # Pages by their names, and the English names of tweaks in every language
+            self.assertEqual(app.search_pages("startup"), ["startup"])
+            app.lang = "ru"
+            self.assertIn("widgets", [t.id for t in app.search_matches("widgets")])
+            app.lang = "en"
             # Nothing found
             app.search_var.set("zzzz-no-such-tweak")
             self.wait(root, lambda: not app.cards)
@@ -674,7 +679,7 @@ class UiSmoke(unittest.TestCase):
             app.search_var.set("")
             self.wait(root, lambda: app.page == "system")
             # A page's heading in the results opens that page
-            app.search_var.set("taskbar")
+            app.search_var.set("clock")  # a word of a tweak, not of the page's name: the heading is the only link
             self.wait(root, lambda: app.page == "search")
             self.click_text(app.list_frame, i18n.TEXTS["en"]["categories"]["taskbar"][0])
             self.wait(root, lambda: app.page == "taskbar")

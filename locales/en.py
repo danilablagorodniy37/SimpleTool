@@ -225,6 +225,7 @@ TEXTS = {
         "search_hint": "Search tweaks",
         "search_title": "Search",
         "search_desc": "Tweaks of every page that mention “{query}”. Press Esc to go back.",
+        "search_pages": "Pages:",
         "search_none": "No tweak mentions “{query}”.",
         "summary_tweaks": "Tweaks applied",
         "unknown_title": "Some things could not be checked",
