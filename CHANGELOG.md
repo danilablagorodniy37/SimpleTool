@@ -36,6 +36,7 @@ The release workflow publishes the section of the tagged version as the notes of
 - The sidebar fits all eleven pages: in a short window the items move closer together, then the beta note goes.
 - Smoother drawing: cards, switches, check boxes, status pills, the segmented controls and progress bars are drawn antialiased, with truly rounded corners instead of jagged ones.
 - The window and its dialogs fade in, pages slide into place, list cards and search fields light up under the pointer or with the focus, and **Apply** and **Revert** are shown only on pages with tweaks.
+- **Memory limiter**: a program kept within its limit carries a blue bar along its card, one over its limit or out of reach an orange one.
 - Keys: **F5** reads the page again, **Ctrl+A** ticks every tweak of the page, **Ctrl+F** searches, **Esc** leaves the search.
 - Fixed: after a quick switch the sidebar marker could stay on the previous page.
 - Fixed: on the Programs page the message at the bottom ran under the buttons.

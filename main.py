@@ -3131,6 +3131,13 @@ class App:
                 widgets["denied"].grid()
             else:
                 widgets["denied"].grid_remove()
+            # The bar along the edge: the program is kept within its limit, or it is over it (or out of reach)
+            accent = None
+            if working and stat and stat["count"]:
+                accent = C["warn"] if ratio > 1 or stat["denied"] else C["accent"]
+            if widgets.get("accent", "") != accent:
+                widgets["accent"] = accent
+                widgets["card"].set_accent(accent)
 
     def memory_tick(self):
         """Shows fresh limiter measurements every second (the limiter checks programs in its own thread)."""
