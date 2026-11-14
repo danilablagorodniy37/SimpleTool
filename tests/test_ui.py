@@ -596,6 +596,22 @@ class UiSmoke(unittest.TestCase):
         self.wait(root, lambda: app.program_rows)
         return root, app, errors
 
+    def test_recommended(self):
+        root, app, errors = self.open_app(admin=True)
+        try:
+            app.show_page("privacy", animate=False)
+            self.pump(root, 0.2)  # the links take clicks once they are drawn
+            self.click_text(app.links, i18n.TEXTS["en"]["ui"]["recommended"])
+            expected = {t.id for t in tweaks.TWEAKS if t.category == "privacy" and t.id in tweaks.RECOMMENDED
+                        and app.selectable(t) and app.card_state(t) != "applied"}
+            self.assertEqual(app.selected, expected)
+            app.clear_selection()
+            app.show_page("context", animate=False)
+            self.assertNotIn(i18n.TEXTS["en"]["ui"]["recommended"], self.texts(app.links), "no recommended menus")
+            self.assertEqual(errors, [])
+        finally:
+            root.destroy()
+
     def test_search(self):
         ui = i18n.TEXTS["en"]["ui"]
         root, app, errors = self.open_app(admin=True)

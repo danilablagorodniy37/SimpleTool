@@ -62,6 +62,9 @@ Every tweak shows its current state: **Applied**, **Partly**, **Not applied**, o
 when the service or task it targets is not on this PC. Applied tweaks carry a teal bar along the left edge
 of their card, and each page starts with how many of its tweaks are applied.
 
+**Recommended** at the top of a page ticks the tweaks marked with a star: each turns off something that only sends
+data, nags, shows ads or is a known risk, and no feature goes with it. Nothing changes until you press **Apply**.
+
 The search field under the logo (**Ctrl+F**) finds tweaks on every page by the words of their name, description or
 details; the results are grouped by page and can be ticked and applied right there. **Esc** goes back.
 

@@ -184,6 +184,16 @@ class CatalogSafety(unittest.TestCase):
         self.assertNotIn("SystemRestorePointCreationFrequency", engine.RESTORE_POINT_SCRIPT)
         self.assertNotIn("Set-", engine.RESTORE_POINT_SCRIPT)
 
+class RecommendedTest(unittest.TestCase):
+    def test_recommended_tweaks_exist_and_stay_harmless(self):
+        ids = {t.id: t for t in tweaks.TWEAKS}
+        self.assertTrue(tweaks.RECOMMENDED <= set(ids), tweaks.RECOMMENDED - set(ids))
+        for tweak_id in tweaks.RECOMMENDED:
+            tweak = ids[tweak_id]
+            self.assertNotEqual(tweak.category, "context", f"{tweak_id}: menus are a matter of taste")
+            self.assertNotEqual(tweak.effect, "restart", f"{tweak_id}: a recommended tweak needs no restart")
+        self.assertNotIn("experiments", tweaks.RECOMMENDED, "it also turns off Known Issue Rollback")
+
 
 if __name__ == "__main__":
     unittest.main()

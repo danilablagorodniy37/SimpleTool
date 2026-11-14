@@ -12,7 +12,7 @@ NOTES = {
             "switch to turn it off as Task Manager does. Entries that lead nowhere can be removed.",
             "Programs: Microsoft Store apps too, with their own logos, removed one at a time or several at once.",
             "Taskbar and Start: a new page with 10 tweaks, from the Start button on the left to no web results in "
-            "search; System has three more.",
+            "search; System has three more. Recommended ticks the safe tweaks of a page.",
             "Search finds any tweak from the sidebar (Ctrl+F), the overview shows what Troubleshooting found, your "
             "programs and startup at a glance, and the window is smoother.",
         ],
@@ -23,7 +23,7 @@ NOTES = {
             "«Программы»: теперь и приложения Microsoft Store, с их логотипами, — удаляются по одному или "
             "несколько сразу.",
             "«Панель задач и Пуск»: новая страница с 10 твиками — от кнопки «Пуск» слева до поиска без результатов "
-            "из интернета; в «Системе» ещё три.",
+            "из интернета; в «Системе» ещё три. «Рекомендуемые» отмечают безопасные твики страницы.",
             "Поиск в боковой панели находит любой твик (Ctrl+F), обзор показывает найденные проблемы, программы и "
             "автозагрузку с первого взгляда, а окно стало плавнее.",
         ],
@@ -34,7 +34,7 @@ NOTES = {
             "«Програми»: тепер і застосунки Microsoft Store, з їхніми логотипами, — видаляються по одному або "
             "кілька одразу.",
             "«Панель завдань і Пуск»: нова сторінка з 10 твіками — від кнопки «Пуск» ліворуч до пошуку без "
-            "результатів з інтернету; у «Системі» ще три.",
+            "результатів з інтернету; у «Системі» ще три. «Рекомендовані» позначають безпечні твіки сторінки.",
             "Пошук у бічній панелі знаходить будь-який твік (Ctrl+F), огляд показує знайдені проблеми, програми й "
             "автозавантаження з першого погляду, а вікно стало плавнішим.",
         ],

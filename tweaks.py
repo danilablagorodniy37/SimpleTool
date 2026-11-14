@@ -439,3 +439,10 @@ CONTEXT = [
 ]
 
 TWEAKS = PRIVACY + SYSTEM + EXPLORER_TWEAKS + TASKBAR + CONTEXT
+
+# Recommended for everyone: each turns off something that only sends data, nags, shows ads or is a known risk, and
+# no feature anyone uses goes with it. The "Recommended" link of a page ticks these; Apply is still up to the user
+RECOMMENDED = {"ads", "telemetry", "feedback", "handwriting", "inventory",
+               "autoplay", "startup_delay", "lock_screen_tips",
+               "file_extensions",
+               "end_task", "start_recommendations", "start_account_notifications"}

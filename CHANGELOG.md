@@ -20,6 +20,9 @@ The release workflow publishes the section of the tagged version as the notes of
 - Start button on the left, hide the Task View button, hide search on the taskbar, turn off Widgets (by Microsoft's policy), labels on taskbar buttons, End task from the taskbar, seconds in the taskbar clock, no tips and app suggestions in Start, no account notifications in Start, no web results in Windows search.
 - **System** gets three more: turn off pointer acceleration, no Sticky Keys prompt on Shift, no tips on the lock screen.
 
+**Recommended tweaks**
+- Tweaks that only turn off what sends data, nags, shows ads or is a known risk, with no feature going with them, are marked **Recommended** with a star. **Recommended** at the top of a page ticks those not applied yet; nothing changes until **Apply**.
+
 **Search**
 - A search field under the logo (**Ctrl+F**) finds tweaks on every page by the words of their name, description or details. The results are grouped by page and can be ticked and applied right there; **Esc** goes back.
 

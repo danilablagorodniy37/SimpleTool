@@ -75,6 +75,7 @@ ICONS["programs"] = ICONS["apps"]
 ICONS["startup"] = ""  # LightningBolt
 ICONS["taskbar"] = ""  # Task View
 ICONS["search"] = ""
+ICONS["star"] = ""  # FavoriteStarFill
 # The icon of each group of troubleshooting checks
 GROUP_ICONS = {"performance": "speed", "storage": "drive", "stability": "bug", "security": "shield"}
 PROGRAM_ICON = 32  # px of a program's own icon in the list, before scaling
@@ -234,6 +235,7 @@ class App:
         self.search_query = ""    # the text of the sidebar's search field: the "search" page lists matching tweaks
         self.search_return = "overview"  # the page to go back to when the search field is cleared
         self.search_job = None
+        self.slide_offset = 0     # px the page content is still below its place while it slides in
         self.program_source = "desktop"  # the Programs page shows "desktop" programs or Microsoft "store" apps
         self.store_apps = None    # [storeapps.StoreApp] of this account; read the first time the Store view opens
         self.store_loading = False
@@ -705,7 +707,7 @@ class App:
             return
         left, right = self.column()
         self.content_width = right - left
-        self.canvas.coords(self.list_window, left, 0)
+        self.canvas.coords(self.list_window, left, self.slide_offset)
         self.canvas.itemconfigure(self.list_window, width=self.content_width)
         self.update_scrollregion()
         for label, offset in self.wraps:
@@ -860,7 +862,10 @@ class App:
                 side="left", padx=(0, self.px(16)))
             self.link(self.links, self.t("prog_reload"), lambda: self.load_startup(force=True)).pack(side="left")
         else:
-            for key, action in (("select_all", self.select_all), ("clear", self.clear_selection)):
+            actions = [("select_all", self.select_all), ("clear", self.clear_selection)]
+            if any(t.category == page and t.id in tweaks.RECOMMENDED for t in tweaks.TWEAKS):
+                actions.insert(0, ("recommended", self.select_recommended))
+            for key, action in actions:
                 self.link(self.links, self.t(key), action).pack(side="left", padx=(self.px(16), 0))
         if animate:
             for item, color in ((self.h_title, C["text"]), (self.h_desc, C["muted"])):
@@ -902,7 +907,15 @@ class App:
             self.reveal()
 
     def reveal(self):
-        """The page cards fade in one after another."""
+        """The page slides up into its place while its cards fade in one after another."""
+        start = self.px(18)
+
+        def slide(t):
+            self.slide_offset = round(start * (1 - t))
+            self.canvas.coords(self.list_window, self.canvas.coords(self.list_window)[0], self.slide_offset)
+
+        slide(0.0)
+        self.animator.animate("slide", 0.36, slide)
         for i, card in enumerate(self.page_cards):
             delay = min(i, 14) * 0.035
             fade_in(self.animator, ("fade", id(card)), descendants(card), delay=delay)
@@ -3244,6 +3257,13 @@ class App:
             widget.bind("<Leave>", lambda e, t=tweak, c=card: None if self.pointer_inside(c) else self.hover_card(t, False))
         self.details_toggle(body, widgets, ("t", tweak.id), lambda holder: self.build_tweak_details(holder, tweak),
                             column=1, indent=0)
+        if tweak.id in tweaks.RECOMMENDED:  # on the "Details" line, next to the status
+            mark = tk.Frame(body, bg=card.fill)
+            mark.grid(row=2, column=1, sticky="e", pady=(px(5), px(8)))
+            for text, font in ((ICONS["star"], "icon_tiny"), (self.t("recommended_mark"), "small")):
+                label = tk.Label(mark, text=text, font=self.fonts[font], fg=C["accent"], bg=card.fill)
+                label.pack(side="left", padx=(0, px(5)))
+                label.bind("<Button-1>", lambda e, t=tweak: self.toggle_select(t))
         self.page_cards.append(card)
         self.cards[tweak.id] = widgets
         self.paint_card(tweak, animate=False)
@@ -3437,6 +3457,21 @@ class App:
         if self.busy:
             return
         self.selected |= {i for i in self.cards if self.selectable(self.tweak_by_id[i])}
+        self.message = None
+        for tweak_id in self.cards:
+            self.paint_card(self.tweak_by_id[tweak_id])
+        self.update_footer()
+
+    def select_recommended(self):
+        """Ticks the page's recommended tweaks that are not applied yet."""
+        if self.busy:
+            return
+        chosen = {i for i in self.cards if i in tweaks.RECOMMENDED and self.selectable(self.tweak_by_id[i])
+                  and self.card_state(self.tweak_by_id[i]) != "applied"}
+        if not chosen:
+            self.notify(self.t("recommended_done"), C["ok"], ICONS["check"])
+            return
+        self.selected |= chosen
         self.message = None
         for tweak_id in self.cards:
             self.paint_card(self.tweak_by_id[tweak_id])
