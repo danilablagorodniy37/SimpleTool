@@ -1,4 +1,11 @@
-"""Animated UI elements: cards, pills, buttons, checkboxes, indicators and notifications."""
+"""Animated UI elements: cards, pills, buttons, checkboxes, indicators and notifications.
+
+Tk's canvas draws rounded shapes jagged, so cards, pills, switches, check boxes, the segmented control and the
+bars are drawn antialiased through GDI+ (raster.py) into small images with soft, partly transparent edges. The
+images are cached: a color that animates is rounded to a few steps first (quantize), so an animation reuses the
+images of the frames before it. Without GDI+ the canvas draws the shapes itself, as it did before.
+"""
+import collections
 import math
 import time
 import tkinter as tk
@@ -74,6 +81,72 @@ class Animator:
             self.running = False
 
 
+SHAPES_KEPT = 1500  # antialiased shape images kept in the cache; the oldest go first
+_shapes = collections.OrderedDict()  # cache keys of the shape images in theme._cache, oldest first
+_gdiplus = [True]  # False after GDI+ failed once: the canvas draws from then on
+
+
+def quantize(color, step=4):
+    """A color with its channels rounded to steps: an animated color then needs only a few cached images, and the
+    difference cannot be seen."""
+    return "#%02X%02X%02X" % tuple(min(255, round(v / step) * step) for v in theme.rgb(color))
+
+
+def _cached(key, make):
+    """theme._cache[key], made by make() when it is not there; None if GDI+ or Tk cannot make it."""
+    value = theme._cache.get(key)
+    if value is not None:
+        return value
+    if not _gdiplus[0]:
+        return None
+    try:
+        value = make()
+    except OSError:
+        _gdiplus[0] = False
+        return None
+    except tk.TclError:
+        return None
+    theme._cache[key] = value
+    _shapes[key] = True
+    while len(_shapes) > SHAPES_KEPT:
+        theme._cache.pop(_shapes.popitem(last=False)[0], None)
+    return value
+
+
+def shape_image(widget, key, width, height, draw):
+    """An antialiased PhotoImage of width x height with a transparent background, drawn by draw(surface) and
+    cached under key (which must name everything the drawing depends on); None without GDI+."""
+    width, height = max(int(width), 1), max(int(height), 1)
+
+    def make():
+        with raster.Surface(width, height, None) as surface:
+            draw(surface)
+            return tk.PhotoImage(master=widget, data=surface.png())
+
+    # Images belong to one Tk interpreter: a window opened later (the tests open many) gets its own
+    return _cached(("aa", id(widget.tk), width, height) + tuple(key), make)
+
+
+def corner_images(widget, radius, fill, border):
+    """The four corners (top left, top right, bottom left, bottom right) of a rounded card with a 1 px border, each
+    radius x radius, antialiased and transparent outside; None without GDI+. The straight edges between them are
+    one pixel of the border color, so canvas lines and rectangles continue them without a seam."""
+    size = 2 * radius + 1
+
+    def make():
+        with raster.Surface(size, size, None) as surface:
+            surface.round_rect(0, 0, size, size, radius, fill, border, 1.0)
+            whole = tk.PhotoImage(master=widget, data=surface.png())
+        parts = []
+        for x, y in ((0, 0), (radius + 1, 0), (0, radius + 1), (radius + 1, radius + 1)):
+            part = tk.PhotoImage(master=widget, width=radius, height=radius)
+            part.tk.call(part, "copy", whole, "-from", x, y, x + radius, y + radius)
+            parts.append(part)
+        return parts
+
+    return _cached(("aa_corners", id(widget.tk), radius, fill, border), make)
+
+
 def round_points(x1, y1, x2, y2, r):
     r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
     return [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
@@ -114,26 +187,95 @@ class Card(tk.Frame):
         self.radius, self.pad = radius * scale, max(2, round(pad * scale))
         self.backdrop = tk.Canvas(self, bg=parent.cget("bg"), highlightthickness=0, bd=0)
         self.backdrop.place(x=0, y=0, relwidth=1, relheight=1)
-        self.shape = self.backdrop.create_polygon(0, 0, 0, 0, smooth=True, fill=self.fill, outline=self.border, width=1)
+        canvas = self.backdrop
+        # Without GDI+: one smoothed polygon. With it: the inside and the straight edges as rectangles and lines,
+        # and the four corners as antialiased images
+        self.shape = canvas.create_polygon(0, 0, 0, 0, smooth=True, fill=self.fill, outline=self.border, width=1)
+        self.fills = [canvas.create_rectangle(0, 0, 0, 0, fill=self.fill, outline="", state="hidden") for _ in "ab"]
+        self.edges = [canvas.create_line(0, 0, 0, 0, fill=self.border, state="hidden") for _ in "tblr"]
+        self.corners = [canvas.create_image(0, 0, anchor="nw", state="hidden") for _ in "1234"]
         # A thin colored bar along the left edge: the status of a tweak, the severity of a finding
         self.bar = max(2, round(3 * scale))
-        self.accent = self.backdrop.create_polygon(0, 0, 0, 0, smooth=True, outline="", state="hidden")
+        self.accent = canvas.create_polygon(0, 0, 0, 0, smooth=True, outline="", state="hidden")
+        self.accent_image = canvas.create_image(0, 0, anchor="nw", state="hidden")
+        self.accent_color = None
+        self.size = None
+        self.smooth_radius = None  # the corner size the antialiased shape was drawn with, None when it is not
         self.body = tk.Frame(self, bg=self.fill)
         self.body.pack(fill="both", expand=True, padx=self.pad, pady=self.pad)
         self.bind("<Configure>", self._layout)
 
     def _layout(self, event):
-        self.backdrop.coords(self.shape, *round_points(1, 1, event.width - 2, event.height - 2, self.radius))
-        top = max(self.radius, self.bar)
-        self.backdrop.coords(self.accent, *round_points(2, top, 2 + self.bar, event.height - top, self.bar / 2))
+        self.size = (event.width, event.height)
+        self._draw_shape()
+        self._draw_accent()
+
+    def _draw_shape(self):
+        if not self.size:
+            return
+        width, height = self.size
+        canvas = self.backdrop
+        x0, y0, x1, y1 = 1, 1, width - 1, height - 1
+        r = min(round(self.radius), (x1 - x0) // 2, (y1 - y0) // 2)
+        border = quantize(self.border)
+        corners = corner_images(canvas, r, self.fill, border) if r >= 2 else None
+        smooth = "normal" if corners else "hidden"
+        self.smooth_radius = r if corners else None
+        canvas.itemconfigure(self.shape, state="hidden" if corners else "normal")
+        for item in self.fills + self.edges + self.corners:
+            canvas.itemconfigure(item, state=smooth)
+        if not corners:
+            canvas.coords(self.shape, *round_points(1, 1, width - 2, height - 2, self.radius))
+            canvas.itemconfigure(self.shape, outline=self.border)
+            return
+        # A canvas rectangle fills up to its right and bottom edge, without them, and so does a line of 1 px
+        canvas.coords(self.fills[0], x0 + r, y0, x1 - r, y1)
+        canvas.coords(self.fills[1], x0, y0 + r, x1, y1 - r)
+        for item, points in zip(self.edges, ((x0 + r, y0, x1 - r, y0), (x0 + r, y1 - 1, x1 - r, y1 - 1),
+                                             (x0, y0 + r, x0, y1 - r), (x1 - 1, y0 + r, x1 - 1, y1 - r))):
+            canvas.coords(item, *points)
+            canvas.itemconfigure(item, fill=border)
+        for item, image, place in zip(self.corners, corners, ((x0, y0), (x1 - r, y0), (x0, y1 - r), (x1 - r, y1 - r))):
+            canvas.coords(item, *place)
+            canvas.itemconfigure(item, image=image)
+
+    def _draw_accent(self):
+        canvas, color = self.backdrop, self.accent_color
+        if not color or not self.size:
+            canvas.itemconfigure(self.accent, state="hidden")
+            canvas.itemconfigure(self.accent_image, state="hidden")
+            return
+        top = round(max(self.radius, self.bar))
+        length = self.size[1] - 2 * top
+        bar = self.bar
+        image = shape_image(canvas, ("bar", quantize(color)), bar, length,
+                            lambda surface: surface.round_rect(0, 0, bar, length, bar / 2, fill=quantize(color))) \
+            if length > bar else None
+        if image:
+            canvas.coords(self.accent_image, 2, top)
+            canvas.itemconfigure(self.accent_image, image=image, state="normal")
+            canvas.itemconfigure(self.accent, state="hidden")
+        else:
+            canvas.coords(self.accent, *round_points(2, top, 2 + bar, self.size[1] - top, bar / 2))
+            canvas.itemconfigure(self.accent, fill=color, state="normal")
+            canvas.itemconfigure(self.accent_image, state="hidden")
 
     def set_border(self, color):
+        """Called on every frame of a border animation: only the colors change, not the layout."""
         self.border = color
-        self.backdrop.itemconfigure(self.shape, outline=color)
+        corners = corner_images(self.backdrop, self.smooth_radius, self.fill, quantize(color))             if self.smooth_radius else None
+        if not corners:
+            self._draw_shape()
+            return
+        for item in self.edges:
+            self.backdrop.itemconfigure(item, fill=quantize(color))
+        for item, image in zip(self.corners, corners):
+            self.backdrop.itemconfigure(item, image=image)
 
     def set_accent(self, color):
         """Shows the bar along the left edge in color, or hides it with None."""
-        self.backdrop.itemconfigure(self.accent, fill=color or "", state="normal" if color else "hidden")
+        self.accent_color = color or None
+        self._draw_accent()
 
 
 class Pill(tk.Canvas):
@@ -144,14 +286,17 @@ class Pill(tk.Canvas):
         super().__init__(parent, bg=self.bg, highlightthickness=0, bd=0, width=1, height=1)
         self.font, self.scale, self.animator = tkfont.Font(font=font), scale, animator
         self.shape = self.create_polygon(0, 0, 0, 0, smooth=True)
+        self.plate = self.create_image(0, 0, anchor="nw", state="hidden")
         self.label = self.create_text(0, 0, font=font)
         self.color = None
+        self.size = (1, 1)
 
     def set(self, text, color, animate=True):
         pad_x, pad_y = round(10 * self.scale), round(3 * self.scale)
         width = self.font.measure(text) + 2 * pad_x
         height = self.font.metrics("linespace") + 2 * pad_y
         self.configure(width=width, height=height)
+        self.size = (width, height)
         self.coords(self.shape, *round_points(0, 0, width - 1, height - 1, height / 2))
         self.coords(self.label, width / 2, height / 2)
         self.itemconfigure(self.label, text=text)
@@ -162,7 +307,16 @@ class Pill(tk.Canvas):
             self._paint(color)
 
     def _paint(self, color):
-        self.itemconfigure(self.shape, fill=mix(color, self.bg, 0.16), outline=mix(color, self.bg, 0.35))
+        fill, outline = quantize(mix(color, self.bg, 0.16)), quantize(mix(color, self.bg, 0.35))
+        width, height = self.size
+        image = shape_image(self, ("pill", fill, outline), width, height,
+                            lambda surface: surface.round_rect(0, 0, width, height, height / 2, fill, outline))
+        if image:
+            self.itemconfigure(self.plate, image=image, state="normal")
+            self.itemconfigure(self.shape, state="hidden")
+        else:
+            self.itemconfigure(self.shape, fill=fill, outline=outline, state="normal")
+            self.itemconfigure(self.plate, state="hidden")
         self.itemconfigure(self.label, fill=color)
 
 
@@ -259,24 +413,43 @@ class CheckBox(tk.Canvas):
         if not self.enabled:
             fill, outline = self.bg, mix(C["border"], self.bg, 0.8)
         else:
+            p = round(p * 24) / 24  # the frames of the animation are cached
             empty = mix(C["bg"], self.bg, 0.7)
             fill = lerp(empty, C["primary"], p)
             outline = lerp(mix(C["muted"], self.bg, 0.45), C["primary"], p)
-        self.create_polygon(*round_points(1, 1, s - 1, s - 1, s * 0.3), smooth=True, fill=fill, outline=outline, width=1.5)
-        if p > 0 and self.enabled:
-            points = [(0.27, 0.52), (0.43, 0.68), (0.74, 0.34)]
-            lengths = [math.dist(points[i], points[i + 1]) for i in range(2)]
-            remaining = p * sum(lengths)
-            path = [points[0]]
-            for (a, b), length in zip(zip(points, points[1:]), lengths):
-                part = min(1.0, remaining / length)
-                path.append((a[0] + (b[0] - a[0]) * part, a[1] + (b[1] - a[1]) * part))
-                remaining -= length
-                if remaining <= 0:
-                    break
+        fill, outline = quantize(fill), quantize(outline)
+        path = self._check_path(p) if p > 0 and self.enabled else []
+        mark, line = C["on_primary"], max(2, s / 9)
+
+        def draw(surface):
+            # Tk drew the 1.5 px outline 2 px wide: the same weight, centred on the same square
+            surface.round_rect(0, 0, s, s, s * 0.3 + 1, fill, outline, 2.0)
             if len(path) > 1:
-                self.create_line(*[c * s for point in path for c in point], fill=C["on_primary"],
-                                 width=max(2, s / 9), capstyle="round", joinstyle="round")
+                surface.polyline([(x * s, y * s) for x, y in path], mark, line)
+
+        image = shape_image(self, ("check", fill, outline, mark, tuple(path)), s, s, draw)
+        if image:
+            self.create_image(0, 0, anchor="nw", image=image)
+            return
+        self.create_polygon(*round_points(1, 1, s - 1, s - 1, s * 0.3), smooth=True, fill=fill, outline=outline, width=1.5)
+        if len(path) > 1:
+            self.create_line(*[c * s for point in path for c in point], fill=mark, width=line, capstyle="round",
+                             joinstyle="round")
+
+    @staticmethod
+    def _check_path(p):
+        """The part of the check mark drawn at progress p, in fractions of the box."""
+        points = [(0.27, 0.52), (0.43, 0.68), (0.74, 0.34)]
+        lengths = [math.dist(points[i], points[i + 1]) for i in range(2)]
+        remaining = p * sum(lengths)
+        path = [points[0]]
+        for (a, b), length in zip(zip(points, points[1:]), lengths):
+            part = min(1.0, remaining / length)
+            path.append((round(a[0] + (b[0] - a[0]) * part, 4), round(a[1] + (b[1] - a[1]) * part, 4)))
+            remaining -= length
+            if remaining <= 0:
+                break
+        return path
 
 
 def smooth_frame(size, draw, background):
@@ -467,18 +640,33 @@ class Toggle(tk.Canvas):
         self.on, self.pos = on, 1.0 if on else 0.0
         self.track = self.create_polygon(0, 0, 0, 0, smooth=True)
         self.knob = self.create_oval(0, 0, 0, 0, outline="")
+        self.image = self.create_image(0, 0, anchor="nw", state="hidden")
         self.bind("<Button-1>", self._click)
         self._draw()
 
     def _draw(self):
         off = mix(C["dim"], self.bg, 0.55)
-        self.itemconfigure(self.track, fill=lerp(off, C["primary"], self.pos))
-        self.coords(self.track, *round_points(1, 1, self.w - 1, self.h - 1, self.h / 2))
-        pad = round(self.h * 0.18)
-        size = self.h - 2 * pad
-        x = pad + self.pos * (self.w - self.h)
+        pos = round(self.pos * 32) / 32  # the frames of the slide are cached
+        color = quantize(lerp(off, C["primary"], pos))
+        w, h = self.w, self.h
+        pad = round(h * 0.18)
+        size = h - 2 * pad
+        x = pad + pos * (w - h)
+
+        def draw(surface):
+            surface.round_rect(1, 1, w - 2, h - 2, (h - 2) / 2, fill=color)
+            surface.fill_circle(x + size / 2, pad + size / 2, size / 2, "#FFFFFF")
+
+        image = shape_image(self, ("toggle", pos, color), w, h, draw)
+        if image:
+            self.itemconfigure(self.image, image=image, state="normal")
+            self.itemconfigure(self.track, state="hidden")
+            self.itemconfigure(self.knob, state="hidden")
+            return
+        self.itemconfigure(self.track, fill=color, state="normal")
+        self.coords(self.track, *round_points(1, 1, w - 1, h - 1, h / 2))
         self.coords(self.knob, x, pad, x + size, pad + size)
-        self.itemconfigure(self.knob, fill="#FFFFFF")
+        self.itemconfigure(self.knob, fill="#FFFFFF", state="normal")
 
     def set(self, on, animate=True):
         self.on = on
@@ -512,9 +700,17 @@ class Segmented(tk.Canvas):
         super().__init__(parent, width=sum(self.widths) + 4, height=self.h + 4, bg=self.bg, highlightthickness=0,
                          cursor="hand2")
         self.animator, self.command = animator, command
-        self.shape = self.create_polygon(*round_points(1, 1, sum(self.widths) + 3, self.h + 3, (self.h + 2) / 2),
-                                         smooth=True, fill=mix(C["raised"], self.bg, 0.8), outline=C["border"])
+        total = sum(self.widths)
+        fill, border = quantize(mix(C["raised"], self.bg, 0.8)), quantize(C["border"])
+        plate = shape_image(self, ("segments", fill, border), total + 4, self.h + 4,
+                            lambda surface: surface.round_rect(1, 1, total + 2, self.h + 2, (self.h + 2) / 2, fill,
+                                                               border))
+        self.shape = self.create_polygon(*round_points(1, 1, total + 3, self.h + 3, (self.h + 2) / 2), smooth=True,
+                                         fill=fill, outline=border, state="hidden" if plate else "normal")
+        if plate:
+            self.create_image(0, 0, anchor="nw", image=plate)
         self.thumb = self.create_polygon(0, 0, 0, 0, smooth=True, fill=C["primary"], outline="")
+        self.thumb_image = self.create_image(0, 0, anchor="nw", state="hidden")
         self.labels = []
         x = 2
         for width, (_, label) in zip(self.widths, options):
@@ -534,7 +730,15 @@ class Segmented(tk.Canvas):
 
     def _draw(self):
         left, width = self._span(self.pos)
-        self.coords(self.thumb, *round_points(left + 1, 3, left + width - 1, self.h + 1, (self.h - 2) / 2))
+        thumb_w, thumb_h, color = round(width - 2), self.h - 2, quantize(C["primary"])
+        image = shape_image(self, ("thumb", color), thumb_w, thumb_h,
+                            lambda surface: surface.round_rect(0, 0, thumb_w, thumb_h, thumb_h / 2, fill=color))
+        if image:
+            self.coords(self.thumb_image, round(left + 1), 3)
+            self.itemconfigure(self.thumb_image, image=image, state="normal")
+            self.itemconfigure(self.thumb, state="hidden")
+        else:
+            self.coords(self.thumb, *round_points(left + 1, 3, left + width - 1, self.h + 1, (self.h - 2) / 2))
         for i, label in enumerate(self.labels):
             self.itemconfigure(label, fill=C["on_primary"] if abs(self.pos - i) < 0.5 else C["muted"])
 
@@ -560,6 +764,13 @@ class Segmented(tk.Canvas):
             self.command(self.options[index][0])
 
 
+def bar_image(widget, width, height, color):
+    """A bar with round ends, antialiased; None without GDI+."""
+    color = quantize(color)
+    return shape_image(widget, ("bar", color), width, height,
+                       lambda surface: surface.round_rect(0, 0, width, height, height / 2, fill=color))
+
+
 class Meter(tk.Canvas):
     """A "used / limit" bar: teal when fine, orange near the limit, red above it."""
 
@@ -569,18 +780,30 @@ class Meter(tk.Canvas):
         super().__init__(parent, height=self.h, bg=self.bg, highlightthickness=0)
         self.animator, self.ratio, self.shown = animator, 0.0, 0.0
         self.track = self.create_polygon(0, 0, 0, 0, smooth=True, fill=mix(C["raised"], self.bg, 0.9))
+        self.track_image = self.create_image(0, 0, anchor="nw", state="hidden")
         self.fill = self.create_polygon(0, 0, 0, 0, smooth=True)
+        self.fill_image = self.create_image(0, 0, anchor="nw", state="hidden")
         self.bind("<Configure>", lambda e: self._draw())
 
     def _draw(self):
         w = self.winfo_width()
         if w <= 1:
             return
-        self.coords(self.track, *round_points(0, 0, w, self.h, self.h / 2))
         ratio = min(self.shown, 1.0)
         color = C["ok"] if self.ratio < 0.85 else C["warn"] if self.ratio <= 1.0 else C["bad"]
+        fill_w = max(self.h, round(w * ratio))
+        track = bar_image(self, w, self.h, mix(C["raised"], self.bg, 0.9))
+        bar = bar_image(self, fill_w, self.h, color)
+        if track and bar:
+            self.itemconfigure(self.track_image, image=track, state="normal")
+            self.itemconfigure(self.fill_image, image=bar, state="normal" if ratio > 0 else "hidden")
+            self.itemconfigure(self.track, state="hidden")
+            self.itemconfigure(self.fill, state="hidden")
+            return
+        self.coords(self.track, *round_points(0, 0, w, self.h, self.h / 2))
+        self.itemconfigure(self.track, state="normal")
         self.itemconfigure(self.fill, fill=color, state="normal" if ratio > 0 else "hidden")
-        self.coords(self.fill, *round_points(0, 0, max(self.h, w * ratio), self.h, self.h / 2))
+        self.coords(self.fill, *round_points(0, 0, fill_w, self.h, self.h / 2))
 
     def set(self, ratio, animate=True):
         start, self.ratio = self.shown, max(0.0, ratio)
@@ -606,6 +829,7 @@ class ProgressBar(tk.Canvas):
         self.animator, self.ratio, self.shown = animator, 0.0, 0.0
         self.track_color = mix(C["raised"], self.bg, 0.9)
         self.track = self.create_polygon(0, 0, 0, 0, smooth=True, fill=self.track_color)
+        self.track_image = self.create_image(0, 0, anchor="nw", state="hidden")
         self.fill = self.create_image(0, 0, anchor="nw", state="hidden")
         self.bind("<Configure>", lambda e: self._draw())
 
@@ -613,7 +837,12 @@ class ProgressBar(tk.Canvas):
         w = self.winfo_width()
         if w <= 1:
             return
-        self.coords(self.track, *round_points(0, 0, w, self.h, self.h / 2))
+        track = bar_image(self, w, self.h, self.track_color)
+        if track:
+            self.itemconfigure(self.track_image, image=track, state="normal")
+            self.itemconfigure(self.track, state="hidden")
+        else:
+            self.coords(self.track, *round_points(0, 0, w, self.h, self.h / 2))
         width = round(w * max(0.0, min(self.shown, 1.0)))
         if width < self.h:
             self.itemconfigure(self.fill, state="hidden")

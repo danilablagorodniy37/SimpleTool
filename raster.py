@@ -1,4 +1,5 @@
-"""Antialiased drawing for what Tk's canvas draws jagged: circles and arcs of the animations.
+"""Antialiased drawing for what Tk's canvas draws jagged: circles and arcs of the animations, rounded cards,
+pills, switches and check boxes.
 
 Tk 8.6 draws lines, ovals and arcs without antialiasing, so a spinner looks like it was drawn in the nineties.
 Windows' own GDI+ (gdiplus.dll, through ctypes, no third-party library) draws them smoothly into a bitmap; the
@@ -21,6 +22,8 @@ SMOOTHING_ANTIALIAS = 4
 PIXEL_OFFSET_HALF = 4
 UNIT_PIXEL = 2
 LINE_CAP_ROUND = 2
+LINE_JOIN_ROUND = 2
+FILL_MODE_ALTERNATE = 0
 LOCK_READ = 1
 
 
@@ -31,6 +34,10 @@ class _StartupInput(ctypes.Structure):
 
 class _Rect(ctypes.Structure):
     _fields_ = [("X", ctypes.c_int), ("Y", ctypes.c_int), ("Width", ctypes.c_int), ("Height", ctypes.c_int)]
+
+
+class _PointF(ctypes.Structure):
+    _fields_ = [("X", REAL), ("Y", REAL)]
 
 
 class _BitmapData(ctypes.Structure):
@@ -66,6 +73,17 @@ def _library():
     lib.GdipDeletePen.argtypes = [ctypes.c_void_p]
     lib.GdipDeleteGraphics.argtypes = [ctypes.c_void_p]
     lib.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+    lib.GdipCreatePath.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    lib.GdipAddPathArc.argtypes = [ctypes.c_void_p, REAL, REAL, REAL, REAL, REAL, REAL]
+    lib.GdipClosePathFigure.argtypes = [ctypes.c_void_p]
+    lib.GdipDeletePath.argtypes = [ctypes.c_void_p]
+    lib.GdipCreateSolidFill.argtypes = [ARGB, ctypes.POINTER(ctypes.c_void_p)]
+    lib.GdipDeleteBrush.argtypes = [ctypes.c_void_p]
+    lib.GdipFillPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    lib.GdipDrawPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    lib.GdipFillEllipse.argtypes = [ctypes.c_void_p, ctypes.c_void_p, REAL, REAL, REAL, REAL]
+    lib.GdipDrawLines.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_PointF), ctypes.c_int]
+    lib.GdipSetPenLineJoin.argtypes = [ctypes.c_void_p, ctypes.c_int]
     if lib.GdiplusStartup(ctypes.byref(_token), ctypes.byref(_StartupInput(1, None, False, False)), None):
         raise OSError("GDI+ did not start")
     _gdiplus = lib
@@ -73,7 +91,9 @@ def _library():
 
 
 def _argb(color, alpha=1.0):
-    """A GDI+ color with red and blue swapped (see the module note)."""
+    """A GDI+ color with red and blue swapped (see the module note); None is fully transparent."""
+    if color is None:
+        return 0
     r, g, b = rgb(color)
     return (round(max(0.0, min(alpha, 1.0)) * 255) << 24) | (b << 16) | (g << 8) | r
 
@@ -96,7 +116,9 @@ def png(width, height, rgba):
 
 
 class Surface:
-    """A bitmap of a solid background color to draw antialiased circles and arcs on; png() gives the result."""
+    """A bitmap of a solid background color to draw antialiased shapes on; png() gives the result. With background
+    None the bitmap starts transparent, and the PNG keeps the soft edges as partial transparency: Tk blends such an
+    image with whatever is under it on a canvas."""
 
     def __init__(self, width, height, background):
         self.lib = _library()
@@ -136,6 +158,58 @@ class Surface:
         try:
             _check(self.lib.GdipDrawArc(self.graphics, pen, cx - radius, cy - radius, 2 * radius, 2 * radius, start,
                                         sweep), "arc")
+        finally:
+            self.lib.GdipDeletePen(pen)
+
+    def _brush(self, color, alpha):
+        brush = ctypes.c_void_p()
+        _check(self.lib.GdipCreateSolidFill(_argb(color, alpha), ctypes.byref(brush)), "brush")
+        return brush
+
+    def round_rect(self, x, y, width, height, radius, fill=None, border=None, border_width=1.0, alpha=1.0):
+        """A rectangle with rounded corners whose outer edge is (x, y, width, height), filled and/or with a border
+        of border_width inside that edge; radius is the radius of the outer edge."""
+        inset = border_width / 2 if border else 0.0
+        x, y, width, height = x + inset, y + inset, width - 2 * inset, height - 2 * inset
+        r = max(0.01, min(radius - inset, width / 2, height / 2))
+        path = ctypes.c_void_p()
+        _check(self.lib.GdipCreatePath(FILL_MODE_ALTERNATE, ctypes.byref(path)), "path")
+        try:
+            d = 2 * r
+            for ax, ay, start in ((x, y, 180), (x + width - d, y, 270), (x + width - d, y + height - d, 0),
+                                  (x, y + height - d, 90)):
+                _check(self.lib.GdipAddPathArc(path, ax, ay, d, d, start, 90), "arc")
+            _check(self.lib.GdipClosePathFigure(path), "close")
+            if fill:
+                brush = self._brush(fill, alpha)
+                try:
+                    _check(self.lib.GdipFillPath(self.graphics, brush, path), "fill")
+                finally:
+                    self.lib.GdipDeleteBrush(brush)
+            if border:
+                pen = self._pen(border, border_width, alpha, False)
+                try:
+                    _check(self.lib.GdipDrawPath(self.graphics, pen, path), "border")
+                finally:
+                    self.lib.GdipDeletePen(pen)
+        finally:
+            self.lib.GdipDeletePath(path)
+
+    def fill_circle(self, cx, cy, radius, color, alpha=1.0):
+        brush = self._brush(color, alpha)
+        try:
+            _check(self.lib.GdipFillEllipse(self.graphics, brush, cx - radius, cy - radius, 2 * radius, 2 * radius),
+                   "fill ellipse")
+        finally:
+            self.lib.GdipDeleteBrush(brush)
+
+    def polyline(self, points, color, width, alpha=1.0):
+        """Connected lines through points [(x, y), ...] with round ends and joins."""
+        pen = self._pen(color, width, alpha, True)
+        try:
+            self.lib.GdipSetPenLineJoin(pen, LINE_JOIN_ROUND)
+            array = (_PointF * len(points))(*[_PointF(px, py) for px, py in points])
+            _check(self.lib.GdipDrawLines(self.graphics, pen, array, len(points)), "lines")
         finally:
             self.lib.GdipDeletePen(pen)
 
