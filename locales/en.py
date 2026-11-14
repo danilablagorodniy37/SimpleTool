@@ -505,7 +505,7 @@ TEXTS = {
         "snapshots": ("System snapshots", "How things were before: SimpleTool saves the state before every change, "
                                           "and you can go back to any snapshot."),
         "programs": ("Programs",
-                     "Installed programs with their own icons. SimpleTool runs a program's own uninstaller and then "
+                     "Installed programs and Microsoft Store apps with their own icons. SimpleTool runs a program's own uninstaller and then "
                      "finds what it left behind: folders, registry keys, shortcuts and startup entries."),
         "memory": ("Memory limiter", "Keeps Chrome, Discord and other programs from taking too much RAM."),
     },
