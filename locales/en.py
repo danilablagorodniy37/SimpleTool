@@ -454,8 +454,8 @@ TEXTS = {
         "diag_scan_text": "SimpleTool checks memory, the processor, drives, drivers, the Windows event logs and "
                           "settings, then watches the PC for half a minute, loads the processor for a minute, reads "
                           "the drive and tests the connection. It only reads and changes nothing. The whole check "
-                          "takes about two and a half minutes; you can keep working, and what happens meanwhile goes "
-                          "into the findings.",
+                          "takes about two minutes; you can keep working, and what happens meanwhile goes into the "
+                          "findings.",
         "diag_step_performance": "Memory, processor and startup",
         "diag_step_storage": "Drives and free space",
         "diag_step_stability": "Crashes, drivers and hardware errors",

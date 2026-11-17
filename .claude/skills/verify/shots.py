@@ -97,6 +97,10 @@ def step(i):
         shoot("scan")
         root.after(200, step, i + 1)
         return
+    if i < len(SPECS) and SPECS[i][0] == "diagscan":  # the Troubleshooting scan screen, while its check runs
+        app.show_page("diagnostics", animate=False)
+        root.after(2500, lambda: (shoot("diagscan"), root.after(200, step, i + 1)))
+        return
     if app.scan is None:
         root.after(300, step, i)  # the first scan is still running: cards say "Checking…"
         return
@@ -127,7 +131,7 @@ def wait_programs(i, scroll, waited):
 
 def wait_diagnostics(i, scroll, waited):
     """The Troubleshooting page runs its check when opened; the picture is taken when it is done."""
-    if getattr(app, "diag_running", False) and waited < 240:  # the live tests take about 2.5 minutes
+    if getattr(app, "diag_running", False) and waited < 240:  # the live tests take about two minutes
         root.after(500, wait_diagnostics, i, scroll, waited + 0.5)
         return
     root.after(800, lambda: (app.canvas.yview_moveto(float(scroll)), root.after(600, finish, i)))

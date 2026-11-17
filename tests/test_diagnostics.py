@@ -1,17 +1,24 @@
 """Troubleshooting: every verdict on made-up facts, the texts of every finding, and a read-only run on this PC."""
+import ctypes
 import datetime
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
+import uuid
 import winreg
+from ctypes import wintypes
 from unittest import mock
 
 import diagnostics
 import engine
 import i18n
+import sysinfo
 from diagnostics import GB, Size, Text
 
 MB = 1024 * 1024
@@ -1250,6 +1257,338 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(diagnostics._most_common([]), "?")
         self.assertEqual(diagnostics.busiest_disk(tick(disks={"0 C:": {"busy": 3.0, "ms": 1.0, "mbs": 0}, "1 D:": {"busy": 40.0, "ms": 9.0, "mbs": 0}})), ("1 D:", 40.0, 9.0))
         self.assertIsNone(diagnostics.busiest_disk(tick(disks={})))
+
+
+class FakeSampler(diagnostics.Sampler):
+    """A sampler over made-up counter readings: the parsing is tested without the counters."""
+
+    def __init__(self, values=None, arrays=None):  # noqa: the real one opens a query
+        self.values, self.arrays, self.missing, self.names, self.cores = values or {}, arrays or {}, [], {}, 8
+
+    def value(self, key):
+        return self.values.get(key)
+
+    def array(self, key):
+        return self.arrays.get(key, {})
+
+
+class LiveReadings(unittest.TestCase):
+    """What the live tests make of the raw counters, windows and chains, on made-up and on real readings."""
+
+    def test_graphics_counters_are_summed_per_adapter(self):
+        luid, other = "0x00000000_0x0000C5D4", "0x00000000_0x0000ED8B"
+        arrays = {"gpu_memory": {f"luid_{luid}_phys_0": 3 * GB, f"luid_{other}_phys_0": 0.0},
+                  "gpu": {f"pid_100_luid_{luid}_phys_0_eng_0_engtype_3D": 30.0,  # two programs on the 3D engine
+                          f"pid_200_luid_{luid}_phys_0_eng_0_engtype_3D": 25.0,
+                          f"pid_100_luid_{luid}_phys_0_eng_4_engtype_Copy": 70.0,  # the busiest engine counts
+                          f"pid_300_luid_{other}_phys_0_eng_0_engtype_3D": 0.0,  # idle engines are skipped
+                          "garbage": 50.0}}
+        found = FakeSampler(arrays=arrays).gpu()
+        self.assertEqual(found[luid], {"load": 70.0, "dedicated_mb": 3 * 1024})
+        self.assertEqual(found[other], {"load": 0.0, "dedicated_mb": 0.0})
+        self.assertEqual(FakeSampler().gpu(), {})
+
+    def test_busiest_programs(self):
+        arrays = {"process_id": {"_Total": 0, "Idle": 0, "chrome": 100, "chrome#1": 101, "SimpleTool": 999, "game": 300},
+                  "process_cpu": {"_Total": 800.0, "Idle": 500.0, "chrome": 80.0, "chrome#1": 40.0, "SimpleTool": 700.0,
+                                  "game": 240.0},
+                  "process_io": {"chrome": 2 * MB, "chrome#1": 50 * MB, "SimpleTool": 900 * MB, "game": 1 * MB}}
+        sampler = FakeSampler(arrays=arrays)
+        top_cpu, top_io = sampler.processes(own_pid=999)
+        self.assertEqual(top_cpu, ("game.exe", 30.0))  # 240% of one core over 8 cores; SimpleTool itself left out
+        self.assertEqual(top_io, ("chrome.exe", 50.0))  # the "#1" copy counts under the program's name
+        self.assertEqual(sampler.names, {100: "chrome.exe", 101: "chrome.exe", 999: "simpletool.exe", 300: "game.exe"})
+        self.assertEqual(FakeSampler().processes(1), (None, None))
+
+    def test_thermal_zones(self):
+        self.assertEqual(FakeSampler(arrays={"temperature_fine": {"\\_TZ.TZ00": 3181.5, "\\_TZ.TZ01": 3010.0},
+                                             "passive": {"\\_TZ.TZ00": 100.0, "\\_TZ.TZ01": 70.0}}).thermal(), (45, 70.0))
+        self.assertEqual(FakeSampler(arrays={"temperature": {"\\_TZ.TZ00": 301.0}}).thermal(), (28, None))
+        self.assertEqual(FakeSampler(arrays={"temperature": {"\\_TZ.TZ00": 0.0}}).thermal(), (None, None))
+        self.assertEqual(FakeSampler().thermal(), (None, None))
+
+    def test_a_tick_without_counters_says_none(self):
+        tick_ = FakeSampler().tick(own_pid=1)
+        for key in ("cpu", "cpu_time", "core_max", "speed", "interrupts", "free_mb", "commit", "pages_out",
+                    "temperature", "passive", "top_cpu", "top_io"):
+            self.assertIsNone(tick_[key], key)
+        self.assertEqual((tick_["disks"], tick_["gpu"]), ({}, {}))
+        self.assertIsInstance(tick_["time"], datetime.datetime)
+
+    def test_a_tick_turns_counters_into_plain_values(self):
+        values = {"cpu_time": 12.0, "cpu": 130.0, "speed": 121.0, "dpc": 0.4, "interrupt": 0.3, "free": 16000.0,
+                  "commit": 70.0, "pages_out": 5.0}
+        arrays = {"cores": {"0,0": 97.0, "0,1": 3.0, "0,_Total": 50.0, "_Total": 50.0},
+                  "disk_idle": {"0 C:": 40.0, "1 D:": 100.0, "_Total": 70.0},
+                  "disk_ms": {"0 C:": 0.012, "1 D:": 0.0}, "disk_bytes": {"0 C:": 20 * MB}}
+        tick_ = FakeSampler(values, arrays).tick(own_pid=1)
+        self.assertEqual((tick_["cpu"], tick_["cpu_time"], tick_["core_max"]), (100.0, 12.0, 97.0))  # utility capped
+        self.assertAlmostEqual(tick_["interrupts"], 0.7)
+        self.assertEqual(tick_["disks"]["0 C:"], {"busy": 60.0, "ms": 12.0, "mbs": 20.0})
+        self.assertEqual(tick_["disks"]["1 D:"], {"busy": 0.0, "ms": 0.0, "mbs": 0.0})
+        self.assertNotIn("_Total", tick_["disks"])
+        self.assertEqual(FakeSampler({"cpu_time": 55.0}).tick(1)["cpu"], 55.0)  # no utility counter: time instead
+
+    def test_the_real_counters_open_and_read(self):
+        sampler = diagnostics.Sampler()
+        try:
+            self.assertEqual(sampler.missing, [])
+            self.assertTrue(sampler.collect())
+            time.sleep(0.3)
+            self.assertTrue(sampler.collect())
+            tick_ = sampler.tick(os.getpid())
+            self.assertTrue(0 <= tick_["cpu"] <= 100)
+            self.assertGreater(tick_["speed"], 10)
+            self.assertGreater(tick_["free_mb"], 100)
+            self.assertTrue(tick_["disks"])
+            self.assertNotIn(os.getpid(), [None])
+            self.assertIn(os.getpid(), sampler.names)
+            self.assertNotEqual((tick_["top_cpu"] or ("", 0))[0], sampler.names[os.getpid()], "SimpleTool itself is left out")
+        finally:
+            sampler.close()
+        stress = diagnostics.Sampler(diagnostics.STRESS_COUNTERS)
+        try:
+            self.assertEqual(set(stress.counters), set(diagnostics.STRESS_COUNTERS) - set(stress.missing))
+        finally:
+            stress.close()
+
+    def test_the_pause_watch_measures_its_own_delay(self):
+        pause = diagnostics._PauseWatch()
+        pause.start()
+        try:
+            time.sleep(0.5)
+            first = pause.pop()
+            self.assertGreaterEqual(first, 0.0)
+            self.assertLess(first, diagnostics.PAUSE_STALL_MS)
+            self.assertLess(pause.pop(), first + 50, "pop() starts a new count")
+        finally:
+            pause.stop()
+            pause.join(timeout=2)
+        self.assertFalse(pause.is_alive())
+
+    def test_a_frozen_window_is_caught_with_its_program(self):
+        """A window that stops handling messages: Windows marks it after five seconds, the watch names the program
+        once (not the ghost copy the desktop manager draws) and reads what it waits for."""
+        code = ("import tkinter, time; r = tkinter.Tk(); r.title('SimpleTool test: frozen window'); r.update(); "
+                "time.sleep(14)")
+        child = subprocess.Popen([sys.executable, "-c", code])
+        try:
+            time.sleep(7)
+            hung = diagnostics.hung_windows()
+            self.assertEqual([title for pid, _, title in hung if pid == child.pid], ["SimpleTool test: frozen window"])
+            watched = diagnostics.watch(2)
+        finally:
+            child.wait(timeout=20)
+        episodes = [e for e in watched["episodes"] if e["pid"] == child.pid]
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0]["name"], os.path.basename(sys.executable).lower())
+        self.assertEqual(episodes[0]["title"], "SimpleTool test: frozen window")
+        self.assertIn(episodes[0]["reading"]["kind"], ("busy", "unknown", "blocked"))  # asleep, not waiting on a lock
+        self.assertNotIn("dwm.exe", [e["name"] for e in watched["episodes"]])
+        self.assertTrue(all(child.pid in t["hung"] for t in watched["ticks"]))
+        finding = diagnostics.check_hung_programs({"watch": watched})
+        self.assertEqual((finding.severity, finding.params["name"]), ("warning", episodes[0]["name"]))
+        render_all([finding])
+        self.assertEqual([pid for pid, _, _ in diagnostics.hung_windows() if pid == child.pid], [])
+
+    def test_the_wait_chain_follows_a_mutex_to_another_program(self):
+        """Another process holds a named mutex and this one's thread waits for it: the chain names that process."""
+        name = f"SimpleToolTest-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        code = (f"import ctypes, time; k = ctypes.windll.kernel32; h = k.CreateMutexW(None, True, {name!r}); "
+                "print('held', flush=True); time.sleep(10)")
+        child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "held")
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenMutexW.restype = wintypes.HANDLE
+            handle = kernel32.OpenMutexW(0x100000, False, name)  # SYNCHRONIZE
+            self.assertTrue(handle)
+            waiter = threading.Thread(target=kernel32.WaitForSingleObject, args=(handle, 8000), daemon=True)
+            waiter.start()
+            time.sleep(0.5)
+            chain = diagnostics.wait_chain(waiter.native_id)
+            self.assertIsNotNone(chain)
+            kinds = [node["kind"] for node in chain["nodes"]]
+            self.assertEqual(kinds[:2], ["thread", "mutex"])
+            self.assertEqual(chain["nodes"][-1], {"kind": "thread", "status": "blocked", "pid": child.pid,
+                                                  "tid": chain["nodes"][-1]["tid"]})
+            reading = diagnostics.chain_reading(chain, os.getpid(), {child.pid: "python.exe"})
+            self.assertEqual(reading, {"kind": "other_program", "pid": child.pid, "name": "python.exe"})
+            # A thread that is working waits for nothing
+            busy = diagnostics.wait_chain(threading.main_thread().native_id)
+            self.assertEqual(diagnostics.chain_reading(busy, os.getpid(), {})["kind"], "busy")
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+            child.stdout.close()
+        waiter.join(timeout=10)
+        kernel32.CloseHandle(handle)
+        self.assertIsNone(diagnostics.wait_chain(0xFFFFFFF0), "no such thread: no chain")
+        self.assertIsInstance(diagnostics.enable_debug_privilege(), bool)
+
+    def test_reads_past_the_cache(self):
+        """A temporary file read as the drive would be without administrator rights: the figures are real."""
+        path = os.path.join(tempfile.gettempdir(), f"simpletool-read-{os.getpid()}.bin")
+        size = 48 * MB
+        with open(path, "wb") as f:
+            f.write(os.urandom(size))
+        kernel32 = diagnostics._disk_api()
+        kernel32.SetFilePointerEx.argtypes = [wintypes.HANDLE, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong),
+                                              wintypes.DWORD]
+        buffer = kernel32.VirtualAlloc(None, diagnostics.READ_CHUNK, 0x3000, 0x04)
+        handle = kernel32.CreateFileW(path, diagnostics.GENERIC_READ, 7, None, 3, diagnostics.FILE_FLAG_NO_BUFFERING,
+                                      None)
+        try:
+            self.assertTrue(handle and handle != wintypes.HANDLE(-1).value)
+            with mock.patch.object(diagnostics, "RANDOM_READS", 20):
+                found = diagnostics.measure_reads(kernel32, [(handle, size)], buffer, "files")
+        finally:
+            kernel32.CloseHandle(handle)
+            kernel32.VirtualFree(buffer, 0, 0x8000)
+            os.remove(path)
+        self.assertEqual(found["source"], "files")
+        self.assertEqual(found["read_mb"], 48)  # whole chunks of 4 MB
+        self.assertGreater(found["sequential"], 1)
+        self.assertGreater(found["random_ms"], 0)
+        self.assertGreaterEqual(found["random_p95"], found["random_ms"] * 0.5)
+
+    def test_large_files_of_windows_are_plain(self):
+        for path, size in diagnostics.large_files():
+            self.assertGreaterEqual(size, diagnostics.LARGE_FILE_MIN)
+            self.assertTrue(path.lower().startswith(os.environ["SystemRoot"].lower()))
+            self.assertFalse(os.stat(path).st_file_attributes & 0xA00, path)
+        self.assertLessEqual(sum(size for _, size in diagnostics.large_files()[:-1]), diagnostics.LARGE_FILES_TOTAL)
+
+    def test_drive_speed_without_rights_falls_back_to_files(self):
+        with mock.patch.object(diagnostics, "large_files", lambda: []):
+            self.assertIsNone(diagnostics.disk_speed(diagnostics.system_disk(), admin=False))
+        with mock.patch.object(diagnostics, "measure_reads", lambda k, s, b, source: {"source": source, "n": len(s)}):
+            with mock.patch.object(diagnostics, "large_files", lambda: [(sys.executable, os.path.getsize(sys.executable))]):
+                self.assertEqual(diagnostics.disk_speed(None, admin=True), {"source": "files", "n": 1})
+            if engine.is_admin():
+                self.assertEqual(diagnostics.disk_speed(diagnostics.system_disk(), admin=True)["source"], "disk")
+
+    def test_pings(self):
+        results = diagnostics.ping_many(["127.0.0.1"], rounds=3, gap=0.0)
+        self.assertEqual(len(results["127.0.0.1"]), 3)
+        self.assertTrue(all(isinstance(ms, int) for ms in results["127.0.0.1"]), results)
+        with mock.patch.object(diagnostics, "PING_TIMEOUT_MS", 200):
+            lost = diagnostics.ping_many(["192.0.2.1"], rounds=2, gap=0.0)  # TEST-NET-1: nobody answers
+        self.assertEqual(lost["192.0.2.1"], [None, None])
+        with mock.patch.object(diagnostics, "PING_TIMEOUT_MS", 300):
+            start = time.perf_counter()
+            short = diagnostics.ping_many(["192.0.2.1"], rounds=50, gap=0.0, budget=0.5)
+        self.assertLess(time.perf_counter() - start, 5, "the budget stops the rounds")
+        self.assertLess(len(short["192.0.2.1"]), 50)
+        router = diagnostics.gateway()
+        self.assertTrue(router is None or re.fullmatch(r"\d+\.\d+\.\d+\.\d+", router), router)
+        found = diagnostics.connection(rounds=1)
+        self.assertEqual(set(found), {"gateway", "targets", "dns_ms", "wifi"})
+        if found["gateway"]:
+            self.assertEqual(found["targets"][found["gateway"]]["sent"], 1)
+            self.assertTrue(found["wifi"] is None or 0 <= found["wifi"] <= 100)
+        self.assertIsInstance(diagnostics.dns_time(), (int, type(None)))
+
+    def test_mapped_shares_are_knocked_on(self):
+        calls = []
+
+        def connect(address, timeout):
+            calls.append((address, timeout))
+            if address[0] == "nas":
+                return mock.MagicMock()  # a context manager that answers
+            raise OSError("no route")
+
+        with mock.patch.object(diagnostics, "_subkeys", lambda hive, path: ["z", "y", "x"]), \
+                mock.patch.object(diagnostics, "_read", lambda path, name: {
+                    r"HKCU\Network\z": r"\\nas\files", r"HKCU\Network\y": r"\\oldpc\share",
+                    r"HKCU\Network\x": "not a share"}.get(path)), \
+                mock.patch.object(diagnostics.socket, "create_connection", connect):
+            found = diagnostics.mapped_shares(timeout=0.2)
+        self.assertEqual(found, [{"drive": "Z:", "remote": r"\\nas\files", "alive": True},
+                                 {"drive": "Y:", "remote": r"\\oldpc\share", "alive": False}])
+        self.assertEqual(calls, [(("nas", 445), 0.2), (("oldpc", 445), 0.2)])
+        self.assertIsInstance(diagnostics.mapped_shares(), list)
+
+    def test_full_load_keeps_the_processor_busy(self):
+        found = diagnostics.stress(3)
+        self.assertEqual((found["seconds"], found["threads"]), (3, os.cpu_count() or 1))
+        loads = [t["load"] for t in found["ticks"][1:] if t["load"] is not None]
+        self.assertTrue(loads)
+        self.assertGreater(max(loads), 40, loads)
+        self.assertTrue(all(t["speed"] is None or t["speed"] > 0 for t in found["ticks"]))
+        self.assertEqual(len(threading.enumerate()), len([t for t in threading.enumerate() if not t.name.startswith("burn")]),
+                         "the burners have finished")
+
+    def test_graphics_adapters_from_directx(self):
+        adapters = diagnostics.gpu_adapters()
+        for luid, adapter in adapters.items():
+            self.assertRegex(luid, r"^0x[0-9A-F]{8}_0x[0-9A-F]{8}$")
+            self.assertEqual(set(adapter), {"name", "vram", "software", "discrete"})
+            self.assertGreaterEqual(adapter["vram"], 0)
+        if adapters:
+            self.assertTrue(any(a["software"] for a in adapters.values()), "the Basic Render Driver is always listed")
+
+
+class LiveGather(unittest.TestCase):
+    """gather() runs the live tests after the quick checks and reports every step, without waiting for them here."""
+
+    def setUp(self):
+        self.calls = []
+
+        def fake(name, result):
+            def run(*args, **kwargs):
+                self.calls.append(name)
+                return result
+            return run
+
+        self.patches = [mock.patch.object(diagnostics, name, fake(name, result)) for name, result in (
+            ("watch", watch_facts()), ("stress", stress_facts()), ("connection", connection_facts()),
+            ("mapped_shares", []), ("disk_speed", {"sequential": 500.0, "random_ms": 0.2, "random_p95": 0.4,
+                                                   "read_mb": 512, "source": "files"}))]
+        for patch in self.patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in self.patches:
+            patch.stop()
+
+    def test_every_step_is_reported_in_order(self):
+        steps = []
+        with mock.patch.multiple(engine, write_value=forbidden, delete_value=forbidden, create_key=forbidden,
+                                 delete_key=forbidden, delete_tree=forbidden, set_start_type=forbidden,
+                                 run=forbidden, powershell=forbidden):
+            facts = diagnostics.gather(steps.append)
+        self.assertEqual(steps, diagnostics.STEPS)
+        self.assertEqual(sorted(self.calls), ["connection", "disk_speed", "mapped_shares", "stress", "watch"])
+        self.assertLess(self.calls.index("watch"), self.calls.index("disk_speed"))
+        self.assertLess(self.calls.index("disk_speed"), self.calls.index("stress"))
+        for key in ("watch", "stress", "disk_speed", "connection", "shares"):
+            self.assertIn(key, facts)
+        findings = diagnostics.evaluate(facts)
+        self.assertEqual({f.check for f in findings if f.group == "live"} - {"dead_shares"},
+                         {c for c, g in diagnostics.CHECKS if g == "live"} - {"dead_shares"})
+        render_all(findings)
+
+    def test_a_virtual_machine_skips_the_load_test(self):
+        with mock.patch.object(sysinfo, "model", lambda: "VMware, Inc. VMware Virtual Platform"):
+            facts = diagnostics.gather()
+        self.assertNotIn("stress", self.calls)
+        self.assertNotIn("stress", facts)
+        self.assertIsNone(diagnostics.check_cpu_throttle(facts))
+
+    def test_a_failing_live_test_leaves_the_others(self):
+        def broken(*args, **kwargs):
+            raise OSError("no counters")
+
+        with mock.patch.object(diagnostics, "watch", broken):
+            steps = []
+            facts = diagnostics.gather(steps.append)
+        self.assertEqual(steps, diagnostics.STEPS)
+        self.assertNotIn("watch", facts)
+        self.assertIn("stress", facts)
+        findings = {f.check: f for f in diagnostics.evaluate(facts)}
+        self.assertEqual(findings["system_pauses"].severity, "unknown")
+        self.assertEqual(findings["cpu_throttle"].severity, "ok")
 
 
 class TweakTraces(unittest.TestCase):

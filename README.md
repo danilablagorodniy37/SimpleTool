@@ -35,8 +35,7 @@ changes and their current state.
 
 The **Troubleshooting** page looks for the usual causes of lags, freezes, crashes and conflicts. It only
 reads: nothing is changed, and nothing about the PC leaves it. The check runs the first time the page is opened;
-**Scan again** repeats it. The quick checks take a few seconds, then the live tests take about two and a half
-minutes: half a minute of watching the whole PC, a minute of full processor load, the drive's read speed and a
+**Scan again** repeats it. The quick checks take a few seconds, then the live tests take about two minutes: half a minute of watching the whole PC, a minute of full processor load, the drive's read speed and a
 connection test that pings the router and two internet addresses. The window stays usable meanwhile, and the
 scan screen shows each part as it finishes. Run the check during a game or right when the PC slows down: what
 happens during the watch goes into the findings. Every finding says what it means and how to fix it, and most

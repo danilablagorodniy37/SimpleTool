@@ -3257,7 +3257,7 @@ def mapped_shares(timeout=SHARE_TIMEOUT):
 
 def gather(report=lambda step: None, api=None, live=True):
     """Reads everything the checks need. report(step) is called as each step of STEPS is done. The live tests
-    (live=False leaves them out) take about two and a half minutes: the watch and the connection test side by
+    (live=False leaves them out) take about two minutes: the watch and the connection test side by
     side, then the drive's speed, then the processor under load, last so that its heat does not colour the
     watch."""
     api = api or limiter.WindowsApi()

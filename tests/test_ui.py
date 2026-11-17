@@ -520,12 +520,30 @@ class UiSmoke(unittest.TestCase):
             self.pump(root, 0.1)
             self.assertTrue(app.diag_running)
             self.assertEqual(app.message_label.cget("text"), ui["diag_running"])
+            self.assertEqual(set(app.diag_rows), set(diagnostics.STEPS), "the scan screen lists the live tests too")
             self.wait(root, lambda: not app.diag_running and app.diag_cards)
             found = {f.check: f.severity for f in app.diag if f.severity != "ok"}
             self.assertEqual(found, {"cpu_load": "warning", "startup_apps": "warning", "crashes": "warning",
                                      "devices": "warning", "pending_restart": "unknown"})
             self.assertEqual(app.nav["diagnostics"]["count"].cget("text"), "4")
             self.assertEqual(set(app.diag_cards), {f.check for f in app.diag})
+            # The live tests have their own group, icon and cards; their buttons open Windows tools too
+            live = {f.check for f in app.diag if f.group == "live"}
+            self.assertEqual(live, {c for c, g in diagnostics.CHECKS if g == "live"} - {"dead_shares"})
+            self.assertIn(main.GROUP_ICONS["live"], main.ICONS)
+            app.toggle_details(("d", "connection"), app.diag_cards["connection"])
+            self.pump(root, 0.5)
+            lines = [w.cget("text") for w in self.widgets(app.diag_cards["connection"]["inner"])
+                     if isinstance(w, tk.Label)]
+            self.assertTrue(any(line.startswith("Router 192.168.1.1: 0% lost, 1 ms on average") for line in lines), lines)
+            self.button(app.diag_cards["connection"]["inner"], ui["act_network_status"])._click(None)
+            self.assertEqual(self.started, [("ms-settings:network-status", None)])
+            self.started.clear()
+            app.toggle_details(("d", "disk_latency"), app.diag_cards["disk_latency"])
+            self.pump(root, 0.5)
+            self.button(app.diag_cards["disk_latency"]["inner"], ui["act_resmon"])._click(None)
+            self.assertEqual(self.started, [("resmon.exe", None)])
+            self.started.clear()
             # Details show the explanation, the lines and the buttons; a button opens its Windows tool
             app.toggle_details(("d", "devices"), app.diag_cards["devices"])
             self.pump(root, 0.5)
