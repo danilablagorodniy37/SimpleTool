@@ -104,8 +104,8 @@ def step(i):
         root.after(200, root.destroy)
         return
     page, expand, scroll = SPECS[i]
-    if expand:
-        app.expanded.add(("t", expand))
+    if expand:  # a tweak card, or a finding of the Troubleshooting page
+        app.expanded.add(("d" if page == "diagnostics" else "t", expand))
     if page in ("programs", "store"):  # "store": the Programs page showing the Microsoft Store apps
         app.program_source = "desktop" if page == "programs" else "store"
     app.show_page("programs" if page == "store" else page, animate=False)
@@ -134,7 +134,8 @@ def wait_diagnostics(i, scroll, waited):
 
 
 def finish(i):
-    shoot(SPECS[i][0])
+    page, expand, scroll = SPECS[i]
+    shoot(page + (f"_{expand}" if expand else "") + (f"_{int(scroll * 100)}" if scroll else ""))
     root.after(200, step, i + 1)
 
 
