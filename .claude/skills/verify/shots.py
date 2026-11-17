@@ -127,7 +127,7 @@ def wait_programs(i, scroll, waited):
 
 def wait_diagnostics(i, scroll, waited):
     """The Troubleshooting page runs its check when opened; the picture is taken when it is done."""
-    if getattr(app, "diag_running", False) and waited < 90:
+    if getattr(app, "diag_running", False) and waited < 240:  # the live tests take about 2.5 minutes
         root.after(500, wait_diagnostics, i, scroll, waited + 0.5)
         return
     root.after(800, lambda: (app.canvas.yview_moveto(float(scroll)), root.after(600, finish, i)))

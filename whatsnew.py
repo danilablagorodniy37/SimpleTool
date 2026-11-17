@@ -6,6 +6,35 @@ CHANGELOG.md has the full list for GitHub; these are the few lines a user wants 
 from updates import parse_version
 
 NOTES = {
+    "0.16": {
+        "en": [
+            "Troubleshooting now ends with live tests, so the check takes about two and a half minutes: half a "
+            "minute of watching the PC (pauses of the whole system, drives answering late, memory running out, the "
+            "processor and the graphics card at their limits, programs that stop responding and what they wait for), "
+            "a minute of full processor load to see whether it is held back by heat or power, the drive's real read "
+            "speed, and the connection to the router and the internet.",
+            "Run the check during a game or right when the PC slows down: what happens meanwhile goes into the "
+            "findings. The window stays usable while it runs.",
+        ],
+        "ru": [
+            "«Поиск проблем» теперь заканчивается живыми тестами, поэтому проверка занимает около двух с половиной "
+            "минут: полминуты наблюдения за компьютером (паузы всей системы, диски, отвечающие с опозданием, "
+            "нехватка памяти, процессор и видеокарта на пределе, программы, которые перестают отвечать, и чего они "
+            "ждут), минута полной нагрузки на процессор, чтобы увидеть, не сдерживают ли его нагрев или питание, "
+            "настоящая скорость чтения диска и связь с роутером и интернетом.",
+            "Запускайте проверку во время игры или сразу, когда компьютер тормозит: всё, что происходит в это "
+            "время, попадёт в находки. Окном можно пользоваться, пока она идёт.",
+        ],
+        "uk": [
+            "«Пошук проблем» тепер закінчується живими тестами, тож перевірка триває близько двох з половиною "
+            "хвилин: півхвилини спостереження за комп’ютером (паузи всієї системи, диски, що відповідають із "
+            "запізненням, нестача пам’яті, процесор і відеокарта на межі, програми, які перестають відповідати, і "
+            "чого вони чекають), хвилина повного навантаження на процесор, щоб побачити, чи не стримують його нагрів "
+            "або живлення, справжня швидкість читання диска та з’єднання з роутером і інтернетом.",
+            "Запускайте перевірку під час гри або одразу, коли комп’ютер гальмує: усе, що відбувається в цей час, "
+            "потрапить у знахідки. Вікном можна користуватися, поки вона триває.",
+        ],
+    },
     "0.15": {
         "en": [
             "Startup: a new page with every program that starts when you sign in, what it costs at the start, and a "

@@ -40,7 +40,7 @@ from theme import C, CATEGORY_COLORS, lerp, mix
 from widgets import (Animator, Card, CheckBox, Flow, GradientButton, Meter, Pill, ProgressBar, Ring, ScanRings,
                      Segmented, Spinner, Stepper, Toast, Toggle, descendants, ease_in_out, fade_in, round_points)
 
-VERSION = "0.15"
+VERSION = "0.16"
 SUPPORT_EMAIL = "service@blagotech.uk"  # bug reports and questions
 UPDATE_CHECK_EVERY = datetime.timedelta(days=1)  # the automatic check at start, unless turned off in Help
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -77,8 +77,9 @@ ICONS["startup"] = ""  # LightningBolt
 ICONS["taskbar"] = ""  # Task View
 ICONS["search"] = ""
 ICONS["star"] = ""  # FavoriteStarFill
+ICONS["live"] = ""  # Stopwatch: the live tests
 # The icon of each group of troubleshooting checks
-GROUP_ICONS = {"performance": "speed", "storage": "drive", "stability": "bug", "security": "shield"}
+GROUP_ICONS = {"performance": "speed", "storage": "drive", "stability": "bug", "security": "shield", "live": "live"}
 PROGRAM_ICON = 32  # px of a program's own icon in the list, before scaling
 
 
@@ -1250,7 +1251,7 @@ class App:
                 self.begin_diagnostics()
             self.diag_rows = self.build_scan_panel(ICONS["diagnostics"], self.t("diag_scan_title"),
                                                    self.t("diag_scan_text"),
-                                                   [(g, self.t("diag_step_" + g)) for g in diagnostics.GROUPS],
+                                                   [(s, self.t("diag_step_" + s)) for s in diagnostics.STEPS],
                                                    self.diag_done)
             return
         px = self.px

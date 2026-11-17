@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import unittest
 import winreg
 from unittest import mock
@@ -129,6 +130,11 @@ def healthy():
             "webview2": "141.0.3537.71", "deprovisioned": [], "gaming": False},
         "wmi": 0,
         "wmi_repository": 0,
+        "watch": watch_facts(),
+        "stress": stress_facts(),
+        "disk_speed": {"sequential": 3200.0, "random_ms": 0.1, "random_p95": 0.2, "read_mb": 2048, "source": "disk"},
+        "connection": connection_facts(),
+        "shares": [],
     }
 
 
@@ -155,7 +161,7 @@ def nvme(**changes):
 
 # Checks that have nothing to say about the healthy desktop above
 SILENT = {"battery", "memory_test", "memory_integrity", "cpu_microcode", "x3d_cores", "gpu_preference",
-          "rgb_software", "throttling", "media_pack", "video_memory", "remote_tools"}
+          "rgb_software", "throttling", "media_pack", "video_memory", "remote_tools", "dead_shares"}
 
 
 def event(provider, event_id, days_ago=1, level=2, args=(), minutes=0):
@@ -945,6 +951,307 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(findings["crashes"], "ok")
 
 
+LUID = "0x00000000_0x0000C5D4"
+
+
+def tick(seconds=0, **changes):
+    """One second of a quiet watch."""
+    found = {"time": NOW + datetime.timedelta(seconds=seconds), "cpu": 8.0, "cpu_time": 10.0, "core_max": 40.0,
+             "speed": 105.0, "interrupts": 0.4, "free_mb": 9000.0, "commit": 55.0, "pages_out": 0.0,
+             "disks": {"0 C:": {"busy": 3.0, "ms": 0.2, "mbs": 1.0}}, "gpu": {LUID: {"load": 5.0, "dedicated_mb": 1500.0}},
+             "temperature": 45, "passive": 100.0, "top_cpu": ("chrome.exe", 3.0), "top_io": ("chrome.exe", 0.4),
+             "pause_ms": 4.0, "hung": []}
+    found.update(changes)
+    return found
+
+
+def watch_facts(ticks=None, episodes=(), adapters=None):
+    ticks = ticks if ticks is not None else [tick(i) for i in range(30)]
+    if adapters is None:
+        adapters = {LUID: {"name": CARD, "vram": 12 * GB, "software": False, "discrete": True}}
+    return {"seconds": len(ticks), "ticks": ticks, "episodes": list(episodes), "adapters": adapters,
+            "ram_mb": 16384.0, "missing": []}
+
+
+def stress_facts(speeds=None, loads=None, passive=None, temperatures=None, n=60):
+    speeds = speeds or [118.0] * n
+    loads = loads or [97.0] * n
+    passive = passive or [100.0] * n
+    temperatures = temperatures or [None] * n
+    return {"seconds": n, "threads": 16,
+            "ticks": [{"load": loads[i], "speed": speeds[i], "temperature": temperatures[i], "passive": passive[i]}
+                      for i in range(n)]}
+
+
+def ping(lost=0.0, avg=12.0, worst=18.0, jitter=2.0):
+    return {"sent": 60, "lost": lost, "avg": avg, "worst": worst, "jitter": jitter}
+
+
+def connection_facts(router=None, one=None, two=None, dns_ms=30, wifi=None):
+    return {"gateway": "192.168.1.1", "dns_ms": dns_ms, "wifi": wifi,
+            "targets": {"192.168.1.1": router or ping(avg=1.0, worst=3.0, jitter=0.5), "1.1.1.1": one or ping(),
+                        "8.8.8.8": two or ping(avg=13.0, worst=16.0, jitter=1.5)}}
+
+
+def episode(name="game.exe", seconds=20, reading=None, **changes):
+    found = {"pid": 4242, "name": name, "title": "Game", "start": NOW, "end": NOW + datetime.timedelta(seconds=seconds),
+             "reading": reading or {"kind": "busy"}, "cpu": 40.0, "disk": ("0 C:", 12.0, 3.0), "free_mb": 8000.0}
+    found.update(changes)
+    return found
+
+
+class LiveTests(unittest.TestCase):
+    """The verdicts of the live tests on made-up readings."""
+
+    def severity(self, check, **changes):
+        return verdict(check, **changes).severity
+
+    def assertRenders(self, finding):
+        self.assertIsNotNone(finding)
+        render_all([finding])
+        return finding
+
+    def test_nothing_known(self):
+        for check in ("system_pauses", "hung_programs", "disk_latency", "memory_live", "cpu_live", "gpu_live",
+                      "cpu_throttle", "disk_speed", "connection", "dead_shares"):
+            self.assertEqual(verdict(check, **{k: None for k in ("watch", "stress", "disk_speed", "connection",
+                                                                    "shares")}).severity, "unknown", check)
+
+    def test_pauses_of_the_whole_system(self):
+        ticks = [tick(i) for i in range(30)]
+        ticks[5]["pause_ms"] = 820.0
+        found = self.assertRenders(verdict("system_pauses", watch=watch_facts(ticks)))
+        self.assertEqual((found.severity, found.line, found.params["n"], found.params["seconds"]), ("problem", "pauses_stall", 1, 0.8))
+        self.assertEqual(found.items[0][0], "item_pause")
+        self.assertEqual(found.items[0][1]["name"], "chrome.exe")
+        ticks[5]["pause_ms"] = 160.0
+        ticks[9]["pause_ms"] = 120.0
+        found = self.assertRenders(verdict("system_pauses", watch=watch_facts(ticks)))
+        self.assertEqual((found.severity, found.line, found.params["n"], found.params["ms"]), ("warning", "pauses_hitch", 2, 160))
+        # Drivers that keep the processor busy with interrupts, without a pause
+        ticks = [tick(i, interrupts=6.0) for i in range(30)]
+        found = self.assertRenders(verdict("system_pauses", watch=watch_facts(ticks)))
+        self.assertEqual((found.severity, found.line), ("warning", "interrupts_watch"))
+        self.assertEqual(found.items[-1][0], "item_interrupts_watch")
+        ticks = [tick(i) for i in range(30)]
+        ticks[3]["interrupts"] = 30.0  # one second of storm counts too
+        self.assertEqual(verdict("system_pauses", watch=watch_facts(ticks)).line, "interrupts_watch")
+        self.assertEqual(self.severity("system_pauses"), "ok")
+
+    def test_processor_during_the_watch(self):
+        self.assertEqual(verdict("cpu_live").line, "cpu_watch_ok")
+        cooled = [tick(i, passive=80.0 if i < 4 else 100.0) for i in range(30)]
+        found = self.assertRenders(verdict("cpu_live", watch=watch_facts(cooled)))
+        self.assertEqual((found.severity, found.line, found.params["seconds"], found.params["limit"]), ("warning", "cpu_watch_cooling", 4, 80))
+        slow = [tick(i, cpu_time=70.0, speed=45.0) for i in range(30)]
+        found = self.assertRenders(verdict("cpu_live", watch=watch_facts(slow)))
+        self.assertEqual((found.severity, found.line, found.params["percent"]), ("warning", "cpu_watch_slow", 45))
+        full = [tick(i, cpu=95.0, top_cpu=("game.exe", 80.0) if i % 3 else ("steam.exe", 10.0)) for i in range(30)]
+        found = self.assertRenders(verdict("cpu_live", watch=watch_facts(full)))
+        self.assertEqual((found.severity, found.line, found.params["seconds"]), ("warning", "cpu_watch_full", 30))
+        self.assertEqual(found.items[0], ("item_mostly", {"name": "game.exe"}))
+        one = [tick(i, core_max=99.0, cpu=12.0, top_cpu=("old game.exe", 5.0)) for i in range(30)]
+        found = self.assertRenders(verdict("cpu_live", watch=watch_facts(one)))
+        self.assertEqual((found.severity, found.line), ("info", "cpu_watch_one_core"))
+        # A drop from turbo under load is a note on an otherwise fine processor
+        turbo = [tick(i, cpu_time=60.0, speed=130.0 if i < 10 else 70.0) for i in range(30)]
+        found = self.assertRenders(verdict("cpu_live", watch=watch_facts(turbo)))
+        self.assertEqual(found.severity, "ok")
+        self.assertIn("item_turbo_drop", [key for key, _ in found.items])
+
+    def test_memory_during_the_watch(self):
+        self.assertEqual(verdict("memory_live").line, "memory_watch_ok")
+        low = [tick(i, free_mb=250.0 if i == 12 else 9000.0, pages_out=5000.0 if i in (12, 13) else 0.0)
+               for i in range(30)]
+        found = self.assertRenders(verdict("memory_live", watch=watch_facts(low)))
+        self.assertEqual((found.severity, found.line), ("problem", "memory_watch_out"))
+        self.assertEqual(found.items, [("item_paging", {"seconds": 2})])
+        self.assertEqual(verdict("memory_live", watch=watch_facts([tick(i, commit=96.0) for i in range(30)])).severity, "problem")
+        tight = [tick(i, free_mb=1000.0) for i in range(30)]  # 6% of 16 GB
+        self.assertEqual(verdict("memory_live", watch=watch_facts(tight)).line, "memory_watch_tight")
+        self.assertEqual(verdict("memory_live", watch=watch_facts([tick(i, commit=91.0) for i in range(30)])).line, "memory_watch_tight")
+
+    def test_drives_during_the_watch(self):
+        self.assertEqual(verdict("disk_latency").line, "disk_watch_ok")
+        late = [tick(i) for i in range(30)]
+        for i in (4, 5, 6):
+            late[i]["disks"]["0 C:"] = {"busy": 100.0, "ms": 350.0, "mbs": 0.5}
+            late[i]["top_io"] = ("msmpeng.exe", 2.0)
+        found = self.assertRenders(verdict("disk_latency", watch=watch_facts(late)))
+        self.assertEqual((found.severity, found.line, found.params["name"], found.params["seconds"]), ("problem", "disk_watch_late", "C: (disk 0)", 3))
+        self.assertEqual([key for key, _ in found.items], ["item_disk_who", "item_disk_idle_slow", "item_first_at"])
+        self.assertEqual(found.items[0][1]["name"], "msmpeng.exe")
+        self.assertEqual(found.items[1][1]["seconds"], 3)
+        once = [tick(i) for i in range(30)]
+        once[7]["disks"]["0 C:"] = {"busy": 50.0, "ms": 1500.0, "mbs": 20.0}  # one answer above a second is enough
+        self.assertEqual(verdict("disk_latency", watch=watch_facts(once)).severity, "problem")
+        full = [tick(i) for i in range(30)]
+        for i in range(8):
+            full[i]["disks"]["0 C:"] = {"busy": 97.0, "ms": 15.0, "mbs": 120.0}
+        found = self.assertRenders(verdict("disk_latency", watch=watch_facts(full)))
+        self.assertEqual((found.severity, found.line, found.params["seconds"]), ("warning", "disk_watch_full", 8))
+        # Two drives: the worse one speaks
+        two = [tick(i) for i in range(30)]
+        for t in two:
+            t["disks"]["1 D:"] = {"busy": 98.0, "ms": 20.0, "mbs": 100.0}
+        two[3]["disks"]["0 C:"] = {"busy": 90.0, "ms": 1200.0, "mbs": 1.0}
+        found = verdict("disk_latency", watch=watch_facts(two))
+        self.assertEqual((found.severity, found.params["name"]), ("problem", "C: (disk 0)"))
+        self.assertEqual(verdict("disk_latency", watch=watch_facts([tick(i, disks={}) for i in range(30)])).severity, "unknown")
+
+    def test_graphics_during_the_watch(self):
+        found = self.assertRenders(verdict("gpu_live"))
+        self.assertEqual((found.severity, found.line, found.params["name"]), ("ok", "gpu_watch_ok", CARD))
+        full = [tick(i, gpu={LUID: {"load": 60.0, "dedicated_mb": 11.9 * 1024}}) for i in range(30)]
+        found = self.assertRenders(verdict("gpu_live", watch=watch_facts(full)))
+        self.assertEqual((found.severity, found.line), ("warning", "vram_full"))
+        self.assertEqual(found.items, [("item_gpu", found.params)])
+        maxed = [tick(i, gpu={LUID: {"load": 99.0, "dedicated_mb": 6000.0}}) for i in range(30)]
+        found = self.assertRenders(verdict("gpu_live", watch=watch_facts(maxed)))
+        self.assertEqual((found.severity, found.line, found.params["seconds"]), ("info", "gpu_watch_limit", 30))
+        # The software adapter never speaks; a PC without graphics counters has nothing to say
+        software = {"0x00000000_0x0000ED5D": {"name": "Microsoft Basic Render Driver", "vram": 0, "software": True,
+                                              "discrete": False}}
+        self.assertIsNone(verdict("gpu_live", watch=watch_facts(adapters=software)))
+        self.assertIsNone(verdict("gpu_live", watch=watch_facts([tick(i, gpu={}) for i in range(30)])))
+
+    def test_programs_that_stopped_responding(self):
+        found = self.assertRenders(verdict("hung_programs"))
+        self.assertEqual((found.severity, found.line), ("ok", "hung_ok"))
+        found = self.assertRenders(verdict("hung_programs", watch=watch_facts(episodes=[episode(seconds=20)])))
+        self.assertEqual((found.severity, found.params["n"], found.params["name"], found.params["seconds"]), ("problem", 1, "game.exe", 25))
+        self.assertEqual([key for key, _ in found.items], ["item_hung", "item_chain_busy", "item_hung_system", "item_hung_disk"])
+        self.assertEqual(found.items[3][1], {"name": "C: (disk 0)", "busy": 12, "ms": 3})
+        found = verdict("hung_programs", watch=watch_facts(episodes=[episode(seconds=3, disk=None)]))
+        self.assertEqual((found.severity, found.params["seconds"]), ("warning", 8))
+        self.assertNotIn("item_hung_disk", [key for key, _ in found.items])
+        # Every reading has its words
+        for kind in ("deadlock", "other_program", "share", "network", "busy", "own_thread", "blocked", "unknown",
+                     "unreadable"):
+            reading = {"kind": kind, "name": "spoolsv.exe", "pid": 1234, "objects": "critical section, mutex"}
+            found = self.assertRenders(verdict("hung_programs", watch=watch_facts(episodes=[episode(reading=reading)])))
+            self.assertIn(("item_chain_" + kind), [key for key, _ in found.items])
+
+    def test_wait_chain_readings(self):
+        names = {100: "game.exe", 200: "spoolsv.exe"}
+        thread = lambda pid, status="blocked": {"kind": "thread", "status": status, "pid": pid, "tid": 1}
+        self.assertEqual(diagnostics.chain_reading(None, 100, names)["kind"], "unreadable")
+        self.assertEqual(diagnostics.chain_reading({"nodes": [thread(100)], "cycle": True}, 100, names)["kind"], "deadlock")
+        chain = {"nodes": [thread(100), {"kind": "alpc", "status": "owned", "name": ""}, thread(200, "running")], "cycle": False}
+        self.assertEqual(diagnostics.chain_reading(chain, 100, names), {"kind": "other_program", "pid": 200, "name": "spoolsv.exe"})
+        chain = {"nodes": [thread(100), {"kind": "share", "status": "blocked", "name": "\\\\nas\\files"}], "cycle": False}
+        self.assertEqual(diagnostics.chain_reading(chain, 100, names)["kind"], "share")
+        chain = {"nodes": [thread(100), {"kind": "socket", "status": "blocked", "name": ""}], "cycle": False}
+        self.assertEqual(diagnostics.chain_reading(chain, 100, names)["kind"], "network")
+        self.assertEqual(diagnostics.chain_reading({"nodes": [thread(100, "running")], "cycle": False}, 100, names)["kind"], "busy")
+        chain = {"nodes": [thread(100), {"kind": "critical_section", "status": "owned", "name": ""}, thread(100, "running")], "cycle": False}
+        self.assertEqual(diagnostics.chain_reading(chain, 100, names)["kind"], "own_thread")
+        chain = {"nodes": [thread(100), {"kind": "critical_section", "status": "owned", "name": ""}, thread(100)], "cycle": False}
+        self.assertEqual(diagnostics.chain_reading(chain, 100, names), {"kind": "blocked", "objects": "critical section"})
+        self.assertEqual(diagnostics.chain_reading({"nodes": [thread(100)], "cycle": False}, 100, names)["kind"], "unknown")
+
+    def test_processor_under_full_load(self):
+        found = self.assertRenders(verdict("cpu_throttle"))
+        self.assertEqual((found.severity, found.line, found.params["start"], found.params["end"]), ("ok", "throttle_ok", 118, 118))
+        self.assertEqual([key for key, _ in found.items], ["item_stress_load", "item_stress_no_temperature"])
+        fading = [120.0] * 10 + [85.0] * 50  # a drop of 29%
+        found = self.assertRenders(verdict("cpu_throttle", stress=stress_facts(fading, temperatures=[50 + i // 3 for i in range(60)])))
+        self.assertEqual((found.severity, found.line, found.params["drop"]), ("warning", "throttle_fades", 29))
+        self.assertIn("item_stress_temperature", [key for key, _ in found.items])
+        settling = [120.0] * 10 + [103.0] * 50  # 14%
+        found = self.assertRenders(verdict("cpu_throttle", stress=stress_facts(settling)))
+        self.assertEqual((found.severity, found.line), ("info", "throttle_settles"))
+        held = [55.0] * 60
+        found = self.assertRenders(verdict("cpu_throttle", stress=stress_facts(held)))
+        self.assertEqual((found.severity, found.line, found.params["end"]), ("warning", "throttle_held_back", 55))
+        cooled = stress_facts(passive=[100.0] * 40 + [60.0] * 20)
+        found = self.assertRenders(verdict("cpu_throttle", stress=cooled))
+        self.assertEqual((found.severity, found.line, found.params["seconds"]), ("warning", "throttle_cooling", 20))
+        light = stress_facts(loads=[40.0] * 60)
+        found = self.assertRenders(verdict("cpu_throttle", stress=light))
+        self.assertEqual((found.severity, found.line), ("info", "throttle_light"))
+        # On battery a laptop is held back by design: the same readings are a note
+        battery = dict(healthy()["power"], battery=True, plugged=False)
+        found = self.assertRenders(verdict("cpu_throttle", stress=stress_facts(held), power=battery))
+        self.assertEqual((found.severity, found.line), ("info", "throttle_held_back"))
+        self.assertIn("item_on_battery", [key for key, _ in found.items])
+        self.assertEqual(verdict("cpu_throttle", stress=stress_facts(n=5)).severity, "unknown")
+        self.assertIsNone(verdict("cpu_throttle", stress=None, model="VMware, Inc. VMware Virtual Platform"))
+
+    def test_drive_speed(self):
+        found = self.assertRenders(verdict("disk_speed"))
+        self.assertEqual((found.severity, found.line, found.params["cls"], found.params["name"]), ("ok", "speed_ok", "class_nvme", "Samsung SSD 980"))
+        self.assertEqual([key for key, _ in found.items], ["item_speed_read", "item_speed_random"])
+        reading = lambda seq, ms, source="files": {"sequential": seq, "random_ms": ms, "random_p95": ms * 2, "read_mb": 340, "source": source}
+        found = self.assertRenders(verdict("disk_speed", disk_speed=reading(45.0, 12.0)))
+        self.assertEqual((found.severity, found.line, found.items[0][0]), ("warning", "speed_very_slow", "item_speed_read_files"))
+        self.assertEqual(verdict("disk_speed", disk_speed=reading(480.0, 9.0)).line, "ssd_slow")  # by latency
+        self.assertEqual(verdict("disk_speed", disk_speed=reading(120.0, 0.3)).line, "ssd_slow")  # by throughput
+        found = self.assertRenders(verdict("disk_speed", disk_speed=reading(420.0, 0.2)))
+        self.assertEqual((found.severity, found.line, found.params["cls"]), ("info", "nvme_below_class", "class_sata"))
+        hdd = [{"id": "0", "name": "WDC WD10EZEX", "media": "HDD", "health": "Healthy", "bus": "SATA"}]
+        found = self.assertRenders(verdict("disk_speed", disks=hdd, disk_speed=reading(140.0, 11.0)))
+        self.assertEqual((found.severity, found.line, found.params["cls"]), ("ok", "speed_ok", "class_hdd"))
+        sata = [{"id": "0", "name": "Crucial MX500", "media": "SSD", "health": "Healthy", "bus": "SATA"}]
+        self.assertEqual(verdict("disk_speed", disks=sata, disk_speed=reading(520.0, 0.2)).line, "speed_ok")
+        self.assertEqual(verdict("disk_speed", disk_speed=None, admin=False).line, "unknown_admin")
+        self.assertEqual(verdict("disk_speed", disk_speed=None).line, "unknown_read")
+
+    def test_connection(self):
+        found = self.assertRenders(verdict("connection"))
+        self.assertEqual((found.severity, found.line, found.params), ("ok", "connection_ok", {"avg": 12, "worst": 16, "loss": 0}))
+        self.assertEqual([key for key, _ in found.items], ["item_ping"] * 3 + ["item_dns_ok"])
+        self.assertEqual(found.items[0][1]["name"], "ping_router")
+        found = self.assertRenders(verdict("connection", connection={"gateway": None, "targets": {}, "dns_ms": None, "wifi": None}))
+        self.assertEqual((found.severity, found.line), ("info", "connection_offline"))
+        shaky = connection_facts(router=ping(lost=5.0, avg=4.0, worst=180.0, jitter=25.0), wifi=72)
+        found = self.assertRenders(verdict("connection", connection=shaky))
+        self.assertEqual((found.severity, found.line, found.params["loss"]), ("warning", "router_unstable", 5))
+        self.assertEqual([key for key, _ in found.items][-2:], ["item_dns_ok", "item_home_wifi"])
+        self.assertIn("item_wifi_signal", [key for key, _ in found.items])
+        self.assertEqual(verdict("connection", connection=connection_facts(router=ping(jitter=16.0))).items[-1][0], "item_home_cable")
+        line = connection_facts(one=ping(lost=4.0, jitter=30.0, worst=400.0), two=ping(lost=3.0, jitter=25.0, worst=350.0))
+        found = self.assertRenders(verdict("connection", connection=line))
+        self.assertEqual((found.severity, found.line, found.params), ("warning", "line_unstable", {"loss": 3, "jitter": 25.0, "worst": 350}))
+        self.assertEqual(found.items[-1][0], "item_line")
+        # One good internet address is enough: the other resolver may just be far away
+        self.assertEqual(verdict("connection", connection=connection_facts(one=ping(lost=50.0, jitter=80.0, worst=900.0))).severity, "ok")
+        found = self.assertRenders(verdict("connection", connection=connection_facts(dns_ms=None)))
+        self.assertEqual((found.severity, found.line), ("warning", "dns_failed"))
+        found = self.assertRenders(verdict("connection", connection=connection_facts(dns_ms=900)))
+        self.assertEqual((found.severity, found.items[-1][0]), ("ok", "item_dns_slow"))
+        found = self.assertRenders(verdict("connection", connection=connection_facts(wifi=35)))
+        self.assertEqual((found.severity, found.line, found.params["percent"]), ("warning", "wifi_weak", 35))
+        silent = connection_facts(router=ping(lost=100.0, avg=0.0, worst=0.0, jitter=0.0))
+        found = self.assertRenders(verdict("connection", connection=silent))
+        self.assertEqual((found.severity, found.line, found.params["avg"]), ("info", "router_silent", 12))
+
+    def test_ping_statistics(self):
+        self.assertIsNone(diagnostics.ping_stats([]))
+        stats = diagnostics.ping_stats([10, None, 14, 12, None])
+        self.assertEqual((stats["sent"], stats["lost"], stats["avg"], stats["worst"]), (5, 40.0, 12.0, 14))
+        self.assertAlmostEqual(stats["jitter"], 3.0)  # |10-14| and |14-12| over two steps
+        self.assertEqual(diagnostics.ping_stats([None, None])["lost"], 100.0)
+        self.assertEqual(diagnostics.ping_stats([7])["jitter"], 0.0)
+
+    def test_mapped_network_drives(self):
+        self.assertIsNone(verdict("dead_shares"))
+        shares = [{"drive": "Z:", "remote": "\\\\nas\\files", "alive": True}, {"drive": "Y:", "remote": "\\\\oldpc\\share", "alive": False}]
+        found = self.assertRenders(verdict("dead_shares", shares=shares))
+        self.assertEqual((found.severity, found.line, found.params), ("warning", "shares_dead", {"n": 1, "total": 2}))
+        self.assertEqual([key for key, _ in found.items], ["item_share_ok", "item_share_dead"])
+        found = self.assertRenders(verdict("dead_shares", shares=shares[:1]))
+        self.assertEqual((found.severity, found.line), ("ok", "shares_ok"))
+
+    def test_helpers(self):
+        self.assertEqual(diagnostics._disk_label("0 C: A:"), "C: A: (disk 0)")
+        self.assertEqual(diagnostics._disk_label("_Total"), "disk _Total")
+        self.assertEqual(diagnostics._most_common(["a", "b", "a", None]), "a")
+        self.assertEqual(diagnostics._most_common([]), "?")
+        self.assertEqual(diagnostics.busiest_disk(tick(disks={"0 C:": {"busy": 3.0, "ms": 1.0, "mbs": 0}, "1 D:": {"busy": 40.0, "ms": 9.0, "mbs": 0}})), ("1 D:", 40.0, 9.0))
+        self.assertIsNone(diagnostics.busiest_disk(tick(disks={})))
+
+
 class TweakTraces(unittest.TestCase):
     """What tweaking tools and malware leave behind: blocked programs, policies, removed parts of Windows."""
 
@@ -1598,14 +1905,45 @@ class ThisPc(unittest.TestCase):
         with mock.patch.multiple(engine, write_value=forbidden, delete_value=forbidden, create_key=forbidden,
                                  delete_key=forbidden, delete_tree=forbidden, set_start_type=forbidden,
                                  run=forbidden, powershell=forbidden):
-            facts = diagnostics.gather(steps.append)
-        self.assertEqual(steps, diagnostics.GROUPS)
+            facts = diagnostics.gather(steps.append, live=False)
+        self.assertEqual(steps, diagnostics.STEPS[:4])
         for key in ("memory", "cpu", "drives", "uptime", "startup", "hosts", "windows", "pool", "boot", "power",
                     "processor", "security", "firmware", "vc_runtime"):
             self.assertIn(key, facts)
         findings = diagnostics.evaluate(facts)
         self.assertGreater(len(findings), 30)
         render_all(findings)
+
+    def test_the_live_tests_run_on_this_pc(self):
+        """The watch, the load, the drive and the connection with the shortest durations: the readings are real."""
+        with mock.patch.multiple(engine, write_value=forbidden, delete_value=forbidden, create_key=forbidden,
+                                 delete_key=forbidden, delete_tree=forbidden, set_start_type=forbidden,
+                                 run=forbidden, powershell=forbidden):
+            watch = diagnostics.watch(2)
+            stress = diagnostics.stress(2, threads=2)
+            speed = diagnostics.disk_speed(diagnostics.system_disk(), engine.is_admin())
+            connection = diagnostics.connection(rounds=2)
+            shares = diagnostics.mapped_shares()
+        self.assertEqual(watch["seconds"], 2)
+        for key in ("cpu", "cpu_time", "speed", "free_mb", "commit", "disks", "gpu", "pause_ms", "hung", "top_cpu"):
+            self.assertIn(key, watch["ticks"][0])
+        self.assertTrue(watch["ticks"][1]["disks"], "every PC has a drive with counters")
+        self.assertGreater(watch["ram_mb"], 1000)
+        self.assertEqual(watch["missing"], [])
+        self.assertEqual(stress["seconds"], 2)
+        self.assertIsNotNone(stress["ticks"][1]["speed"])
+        if speed is not None:
+            self.assertGreater(speed["sequential"], 0)
+            self.assertIn(speed["source"], ("disk", "files"))
+        self.assertIn("gateway", connection)
+        if connection["gateway"]:
+            self.assertEqual(set(connection["targets"]), {connection["gateway"], *diagnostics.INTERNET_HOSTS})
+            self.assertEqual(connection["targets"][connection["gateway"]]["sent"], 2)
+        self.assertIsInstance(shares, list)
+        self.assertIsNotNone(diagnostics.wait_chain(threading.main_thread().native_id))
+        self.assertNotIn(os.getpid(), [pid for pid, _, _ in diagnostics.hung_windows()])
+        facts = dict(healthy(), watch=watch, stress=stress, disk_speed=speed, connection=connection, shares=shares)
+        render_all([f for f in diagnostics.evaluate(facts) if f.group == "live"])
 
 
 class Texts(unittest.TestCase):
@@ -1615,8 +1953,8 @@ class Texts(unittest.TestCase):
                 title, details = texts["diag"][check]
                 self.assertTrue(title, (lang, check))
                 self.assertGreater(len(details), 150, (lang, check))
-            for group in diagnostics.GROUPS:
-                self.assertIn("diag_step_" + group, texts["ui"])
+            for step in diagnostics.STEPS:
+                self.assertIn("diag_step_" + step, texts["ui"])
             for action in diagnostics.ACTIONS:
                 self.assertIn("act_" + action, texts["ui"])
             for severity in diagnostics.SEVERITIES:

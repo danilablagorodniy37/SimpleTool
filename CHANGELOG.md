@@ -2,9 +2,18 @@
 
 The release workflow publishes the section of the tagged version as the notes of the GitHub release.
 
-## 0.15.1
+## 0.16
 
-Not released yet: fixes made after 0.15 was published.
+**Troubleshooting** now ends with live tests, the rules of blagotech's PC diagnostic kit built in. They run as part of every check, which now takes about two and a half minutes instead of a few seconds; the window stays usable meanwhile, and the scan screen shows each part as it finishes.
+- **Half a minute of watching** the whole PC once a second: pauses of the whole system (a thread at the highest priority that notes how late it wakes up: 100 ms is a hitch, 500 ms a freeze) and the share of the processor drivers take in interrupts; every drive's load and the time it takes to answer a request, with the program that read and wrote most when a drive answered late; the lowest free memory, the commit limit and seconds of swapping; the processor at its limit, one core at 100%, its speed under load and Windows slowing it to cool it; each graphics adapter's load and video memory. Run the check during a game or right when the PC slows down: what happens meanwhile goes into the findings.
+- **Programs that stop responding** during the watch are caught the moment Windows marks them and their wait chain is read right then, as Resource Monitor does: busy, waiting for another program (which is named), a network share, the network, blocked inside itself, or a deadlock.
+- **A minute of full processor load**, with its speed read every second: holds its speed, settles from turbo, fades as it warms up (cooling), or is held back from the start (a power limit, a weak charger, a power plan). Windows lowering its cooling limit means it overheats right now. On battery the result is a note, as laptops hold the processor back on purpose. The load is hashing in memory; nothing is written.
+- **Drive speed**: large reads in a row and small reads at random places, past the file cache (from the drive itself as administrator, from large uncompressed files of Windows otherwise): very slow, an SSD that reads like a hard disk, an NVMe drive below its class, or the class it belongs to.
+- **Connection**: the router and two internet addresses pinged side by side for about twenty seconds, with lost pings, average and worst delay and jitter for each, a name lookup, the Wi-Fi signal; the finding says whether a problem is inside the home or on the line. The pings carry nothing about the PC.
+- **Mapped network drives** whose server does not answer, which make File Explorer and Office wait.
+- New group **Live tests** on the Troubleshooting page with its own icon; **Resource Monitor** as a button of the drive and frozen-program findings.
+
+Fixes made after 0.15:
 
 - **Tweak set**: saved without administrator rights, the file now keeps every applied tweak, also those that need the rights; applying a set leaves the ticks of the pages as they were and names the tweaks that need administrator rights. Its buttons are under the text, which a long translation covered.
 - **Programs**: the list of desktop programs finishing its reading no longer rebuilds the Microsoft Store view while you type in it, and an empty list says so in its count.

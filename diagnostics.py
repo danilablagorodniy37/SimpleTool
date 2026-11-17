@@ -1,17 +1,23 @@
 """Troubleshooting: looks for common causes of slowdowns, crashes and conflicts on this PC.
 
 Everything here only reads: memory and processor counters, drives, the registry, the hosts file, the Windows event
-logs and a few system lists through PowerShell. Nothing is changed and nothing leaves the PC.
+logs and a few system lists through PowerShell. The live tests at the end watch the PC for half a minute, load
+the processor for a minute, read the drive and ping the router and two internet addresses; they change
+nothing either, and nothing about the PC leaves it.
 
 gather() collects facts, evaluate() turns them into findings. They are separate so the tests can check every
 verdict on made-up facts. A fact that could not be read is missing, and its check says so instead of guessing.
 """
 import ctypes
 import datetime
+import gc
 import glob
+import hashlib
 import json
 import os
+import random
 import re
+import socket
 import struct
 import subprocess
 import threading
@@ -27,7 +33,9 @@ import programs
 import services
 import sysinfo
 
-GROUPS = ["performance", "storage", "stability", "security"]
+GROUPS = ["performance", "storage", "stability", "security", "live"]
+# The steps of the scan screen: the four groups of quick checks, then the three parts of the live tests
+STEPS = ["performance", "storage", "stability", "security", "watch", "speed", "stress"]
 # (check, group) in the order they are shown
 CHECKS = [
     ("ram_load", "performance"), ("ram_size", "performance"), ("memory_config", "performance"),
@@ -53,6 +61,9 @@ CHECKS = [
     ("windows_support", "security"), ("network", "security"), ("network_exposure", "security"),
     ("proxy", "security"), ("hosts", "security"), ("browser_policies", "security"), ("root_certificates", "security"),
     ("accounts", "security"), ("remote_tools", "security"), ("bitlocker", "security"),
+    ("system_pauses", "live"), ("hung_programs", "live"), ("disk_latency", "live"), ("memory_live", "live"),
+    ("cpu_live", "live"), ("gpu_live", "live"), ("cpu_throttle", "live"), ("disk_speed", "live"),
+    ("connection", "live"), ("dead_shares", "live"),
 ]
 GROUP_OF = dict(CHECKS)
 SEVERITIES = ["problem", "warning", "info", "ok", "unknown"]  # from the most serious
@@ -62,6 +73,7 @@ ACTIONS = {
     "memory": ("page", "memory", None),
     "system_config": ("open", "msconfig.exe", None),
     "taskmgr": ("open", "taskmgr.exe", None),
+    "resmon": ("open", "resmon.exe", None),  # Resource Monitor: the drive's files and the wait chain of a program
     "virtual_memory": ("open", "SystemPropertiesPerformance.exe", None),
     "power": ("open", "powercfg.cpl", None),
     "power_mode": ("open", "ms-settings:powersleep", None),
@@ -2547,8 +2559,707 @@ def finish_powershell(process, timeout=POWERSHELL_TIMEOUT):
     return facts
 
 
-def gather(report=lambda step: None, api=None):
-    """Reads everything the checks need. report(group) is called as each group of checks is ready."""
+# --- Live tests: the PC watched for a while, the processor under load, the drive's speed, the connection ---
+# The rules and thresholds are those of the PC diagnostic kit's scripts (watch, deep, net, health), so the two give
+# the same verdict. Everything here still only reads: the load test keeps the processor busy for a minute and the
+# speed test reads the drive, and neither leaves a trace; the connection test sends pings that carry nothing.
+
+WATCH_SECONDS = 30        # long enough to catch a pause or a drive answering late, short enough to wait through
+STRESS_SECONDS = 60       # a processor held back by heat or a power limit shows it within a minute of full load
+STRESS_BUFFER = 32 * MB   # hashing this much at a time keeps a core busy between two steps of Python
+PING_ROUNDS, PING_GAP, PING_TIMEOUT_MS, PING_BUDGET = 60, 0.25, 1000, 25  # about 20 s; lost pings cannot stretch it
+INTERNET_HOSTS = ("1.1.1.1", "8.8.8.8")  # two public resolvers: an address that answers everywhere
+READ_CHUNK, READ_SECONDS, READ_LIMIT = 4 * MB, 2.0, 2 * GB  # large reads in a row
+RANDOM_READS, RANDOM_READ = 150, 4096  # small reads at random places: the time one takes tells the kind of drive
+LARGE_FILE_MIN, LARGE_FILES_TOTAL = 16 * MB, 512 * MB  # files read without administrator rights
+PAUSE_HITCH_MS, PAUSE_STALL_MS = 100, 500  # the whole system standing still: felt as a hitch; as a freeze
+INTERRUPTS_WATCH, INTERRUPTS_WATCH_PEAK = 5.0, 25.0  # % of the processor in interrupts over the watch; in a second
+DISK_LATE_MS, DISK_VERY_LATE_MS, DISK_LATE_SECONDS = 200, 1000, 3  # a drive answering late
+DISK_FULL, DISK_FULL_SECONDS, DISK_FULL_SHARE = 90, 5, 0.2  # a drive at full load
+DISK_IDLE_MBS = 5  # a drive answering late while moving less than this is slow by itself, not from the work
+MEMORY_OUT_MB, MEMORY_OUT_SHARE, MEMORY_TIGHT_SHARE = 300, 0.03, 0.08  # free memory at the lowest
+COMMIT_OUT, COMMIT_TIGHT = 95, 90  # % of the commit limit
+PAGING_OUT = 1000  # pages written to the page file a second: Windows is swapping
+CPU_FULL, CORE_FULL, CPU_ONE_CORE, CPU_LOADED = 90, 95, 60, 50
+CPU_BUSY_SHARE = 0.3  # of the watch
+CPU_HELD_BACK, CPU_TURBO_DROP = 60, 0.6  # speed under load: % of rated; of the best seen
+HUNG_LONG_SECONDS = 15  # a program not responding this long is stuck, not busy
+HUNG_GRACE = 5  # Windows marks a window after five silent seconds
+VRAM_FULL, VRAM_MIN, GPU_FULL, GPU_FULL_SHARE = 0.95, GB, 95, 0.5
+THROTTLE_HELD_BACK, THROTTLE_DROP, THROTTLE_SETTLE = 60, 25, 12  # % of rated at the end; % drop from the start
+THROTTLE_LIGHT = 70  # % load the test must reach to say anything
+SPEED_VERY_SLOW, SSD_SLOW_SEQ, SSD_SLOW_MS, NVME_CLASS, SATA_CLASS = 60, 150, 2.0, 700, 250  # MB/s, ms
+ROUTER_LOSS, ROUTER_WORST_MS, ROUTER_JITTER_MS = 1, 100, 15
+LINE_LOSS, LINE_WORST_MS, LINE_JITTER_MS = 2, 300, 20
+DNS_SLOW_MS, WIFI_WEAK = 500, 50
+SHARE_TIMEOUT = 1.5  # seconds a file server has to answer
+
+# The performance counters by their English names, which work on every language of Windows
+COUNTERS = {
+    "cpu": r"\Processor Information(_Total)\% Processor Utility",  # the figure Task Manager shows
+    "cpu_time": r"\Processor Information(_Total)\% Processor Time",
+    "cores": r"\Processor Information(*)\% Processor Time",
+    "speed": r"\Processor Information(_Total)\% Processor Performance",  # % of the rated speed; turbo is above 100
+    "dpc": r"\Processor Information(_Total)\% DPC Time",
+    "interrupt": r"\Processor Information(_Total)\% Interrupt Time",
+    "free": r"\Memory\Available MBytes",
+    "commit": r"\Memory\% Committed Bytes In Use",
+    "pages_out": r"\Memory\Pages Output/sec",
+    "disk_idle": r"\PhysicalDisk(*)\% Idle Time",
+    "disk_ms": r"\PhysicalDisk(*)\Avg. Disk sec/Transfer",
+    "disk_bytes": r"\PhysicalDisk(*)\Disk Bytes/sec",
+    "gpu": r"\GPU Engine(*)\Utilization Percentage",
+    "gpu_memory": r"\GPU Adapter Memory(*)\Dedicated Usage",
+    "temperature_fine": r"\Thermal Zone Information(*)\High Precision Temperature",
+    "temperature": r"\Thermal Zone Information(*)\Temperature",
+    "passive": r"\Thermal Zone Information(*)\% Passive Limit",  # below 100: Windows slows the processor to cool it
+    "process_cpu": r"\Process(*)\% Processor Time",
+    "process_id": r"\Process(*)\ID Process",
+    "process_io": r"\Process(*)\IO Data Bytes/sec",
+}
+STRESS_COUNTERS = ("cpu_time", "speed", "temperature_fine", "temperature", "passive")
+PDH_FORMAT = 0x200 | 0x8000  # PDH_FMT_DOUBLE | PDH_FMT_NOCAP100
+PDH_MORE_DATA = 0x800007D2
+DIRECTX_KEY = r"SOFTWARE\Microsoft\DirectX"  # one subkey per adapter, with the LUID the GPU counters use
+WCT_TYPES = {1: "critical_section", 2: "send_message", 3: "mutex", 4: "alpc", 5: "com", 6: "thread_wait",
+             7: "process_wait", 8: "thread", 9: "com_activation", 10: "unknown", 11: "socket", 12: "share"}
+WCT_STATUS = {1: "no_access", 2: "running", 3: "blocked", 4: "pid_only", 5: "pid_only_rpcss", 6: "owned",
+              7: "not_owned", 8: "abandoned", 9: "unknown", 10: "error"}
+WCT_FLAGS = 0xF  # out of process, COM, critical sections and network I/O
+DWMWA_CLOAKED = 14
+
+
+class _CounterValue(ctypes.Structure):  # PDH_FMT_COUNTERVALUE
+    _fields_ = [("status", wintypes.DWORD), ("pad", wintypes.DWORD), ("value", ctypes.c_double)]
+
+
+class _CounterItem(ctypes.Structure):  # PDH_FMT_COUNTERVALUE_ITEM_W
+    _fields_ = [("name", wintypes.LPWSTR), ("value", _CounterValue)]
+
+
+def _pdh():
+    pdh = ctypes.WinDLL("pdh", use_last_error=True)
+    for name in ("PdhOpenQueryW", "PdhAddEnglishCounterW", "PdhCollectQueryData", "PdhGetFormattedCounterValue",
+                 "PdhGetFormattedCounterArrayW", "PdhCloseQuery"):
+        getattr(pdh, name).restype = ctypes.c_uint32  # PDH_STATUS, compared with the unsigned error codes
+    pdh.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)]
+    pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_size_t,
+                                          ctypes.POINTER(ctypes.c_void_p)]
+    pdh.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+    pdh.PdhGetFormattedCounterValue.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+                                                ctypes.POINTER(_CounterValue)]
+    pdh.PdhGetFormattedCounterArrayW.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+                                                 ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    pdh.PdhCloseQuery.argtypes = [ctypes.c_void_p]
+    return pdh
+
+
+def _clamp(value, low=0.0, high=100.0):
+    return None if value is None else max(low, min(high, value))
+
+
+class Sampler:
+    """The Windows performance counters the live tests read. collect() takes a reading; a rate (a load, a speed,
+    bytes a second) needs two readings, so the first tick after the first collect() is the earliest with sense."""
+
+    def __init__(self, keys=None):
+        self.pdh = _pdh()
+        self.query = ctypes.c_void_p()
+        self.counters, self.missing, self.names = {}, [], {}
+        self.cores = os.cpu_count() or 1
+        if self.pdh.PdhOpenQueryW(None, 0, ctypes.byref(self.query)) != 0:
+            raise OSError("the performance counters could not be opened")
+        for key in keys or COUNTERS:
+            handle = ctypes.c_void_p()
+            if self.pdh.PdhAddEnglishCounterW(self.query, COUNTERS[key], 0, ctypes.byref(handle)) == 0:
+                self.counters[key] = handle
+            else:
+                self.missing.append(key)
+
+    def close(self):
+        if self.query:
+            self.pdh.PdhCloseQuery(self.query)
+            self.query = None
+
+    def collect(self):
+        return self.pdh.PdhCollectQueryData(self.query) == 0
+
+    def value(self, key):
+        handle = self.counters.get(key)
+        if not handle:
+            return None
+        kind, found = wintypes.DWORD(), _CounterValue()
+        if self.pdh.PdhGetFormattedCounterValue(handle, PDH_FORMAT, ctypes.byref(kind), ctypes.byref(found)) != 0:
+            return None
+        return found.value if found.status in (0, 1) else None  # PDH_CSTATUS_VALID_DATA, PDH_CSTATUS_NEW_DATA
+
+    def array(self, key):
+        """{instance: value} of a counter with a wildcard instance."""
+        handle = self.counters.get(key)
+        if not handle:
+            return {}
+        size, count = wintypes.DWORD(), wintypes.DWORD()
+        status = self.pdh.PdhGetFormattedCounterArrayW(handle, PDH_FORMAT, ctypes.byref(size), ctypes.byref(count),
+                                                       None)
+        if status != PDH_MORE_DATA or not size.value:
+            return {}
+        buffer = ctypes.create_string_buffer(size.value)
+        if self.pdh.PdhGetFormattedCounterArrayW(handle, PDH_FORMAT, ctypes.byref(size), ctypes.byref(count),
+                                                 buffer) != 0:
+            return {}
+        items = ctypes.cast(buffer, ctypes.POINTER(_CounterItem))
+        return {items[i].name: items[i].value.value for i in range(count.value) if items[i].value.status in (0, 1)}
+
+    def thermal(self):
+        """(the hottest thermal zone in °C or None, the lowest passive cooling limit in % or None). Desktops often
+        report a fixed dummy temperature; the passive limit below 100 means Windows itself slows the processor."""
+        fine, coarse = self.array("temperature_fine"), self.array("temperature")
+        if fine:
+            temperature = max(fine.values()) / 10 - 273.15
+        elif coarse:
+            temperature = max(coarse.values()) - 273.15
+        else:
+            temperature = None
+        limits = self.array("passive")
+        return (round(temperature) if temperature is not None and temperature > -100 else None,
+                min(limits.values()) if limits else None)
+
+    def gpu(self):
+        """{adapter LUID: {"load": % of its busiest engine, "dedicated_mb": its own memory in use}}."""
+        memory = {}
+        for name, value in self.array("gpu_memory").items():  # luid_0x00000000_0x0000C5D4_phys_0
+            parts = name.split("_")
+            if len(parts) >= 3:
+                memory["_".join(parts[1:3])] = value / MB
+        engines = {}
+        for name, value in self.array("gpu").items():  # pid_1228_luid_0x00000000_0x0000C5D4_phys_0_eng_0_engtype_3D
+            parts = name.split("_")
+            if len(parts) >= 9 and value > 0:
+                key = ("_".join(parts[3:5]), parts[8])
+                engines[key] = engines.get(key, 0) + value
+        load = {}
+        for (luid, _), value in engines.items():
+            load[luid] = max(load.get(luid, 0), value)
+        return {luid: {"load": _clamp(load.get(luid, 0)), "dedicated_mb": memory.get(luid, 0)}
+                for luid in set(memory) | set(load)}
+
+    def processes(self, own_pid):
+        """((name, % of the processor), (name, MB/s read and written)) of the busiest programs, SimpleTool itself
+        left out, and {pid: name} of every process."""
+        ids, cpu, io = self.array("process_id"), self.array("process_cpu"), self.array("process_io")
+        names, top_cpu, top_io = {}, None, None
+        for instance, pid in ids.items():
+            if instance in ("_Total", "Idle"):
+                continue
+            pid, name = int(pid), process_title(instance.split("#")[0].lower())
+            names[pid] = name
+            if pid == own_pid:
+                continue
+            share = _clamp((cpu.get(instance) or 0) / self.cores)
+            if top_cpu is None or share > top_cpu[1]:
+                top_cpu = (name, share)
+            rate = (io.get(instance) or 0) / MB
+            if top_io is None or rate > top_io[1]:
+                top_io = (name, rate)
+        self.names = names
+        return top_cpu, top_io
+
+    def tick(self, own_pid):
+        """One reading of the whole PC: plain values, None where this PC has no counter for it."""
+        cpu_time, cpu = self.value("cpu_time"), self.value("cpu")
+        cores = [v for name, v in self.array("cores").items() if "_Total" not in name]
+        dpc, interrupt = self.value("dpc"), self.value("interrupt")
+        idle, ms, rates = self.array("disk_idle"), self.array("disk_ms"), self.array("disk_bytes")
+        temperature, passive = self.thermal()
+        top_cpu, top_io = self.processes(own_pid)
+        return {"time": datetime.datetime.now(), "cpu": _clamp(cpu if cpu is not None else cpu_time),
+                "cpu_time": _clamp(cpu_time), "core_max": _clamp(max(cores)) if cores else None,
+                "speed": self.value("speed"),
+                "interrupts": None if dpc is None and interrupt is None else (dpc or 0) + (interrupt or 0),
+                "free_mb": self.value("free"), "commit": self.value("commit"), "pages_out": self.value("pages_out"),
+                "disks": {name: {"busy": _clamp(100 - value), "ms": (ms.get(name) or 0) * 1000,
+                                 "mbs": (rates.get(name) or 0) / MB} for name, value in idle.items()
+                          if name != "_Total"},
+                "gpu": self.gpu(), "temperature": temperature, "passive": passive,
+                "top_cpu": top_cpu, "top_io": top_io}
+
+
+class _PauseWatch(threading.Thread):
+    """Sleeps 10 ms at a time at the highest priority and notes how late it wakes up. Nothing outranks it, so when it
+    is held up for 100 ms or more the whole system stood still: a driver, the firmware or failing hardware."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.stopping, self.worst, self.lock = False, 0.0, threading.Lock()
+
+    def run(self):
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetThreadPriority(kernel32.GetCurrentThread(), 15)  # THREAD_PRIORITY_TIME_CRITICAL
+        last = time.perf_counter()
+        while not self.stopping:
+            time.sleep(0.01)
+            now = time.perf_counter()
+            late, last = (now - last - 0.01) * 1000, now
+            with self.lock:
+                self.worst = max(self.worst, late)
+
+    def pop(self):
+        """The longest hold-up (ms) since the last call."""
+        with self.lock:
+            worst, self.worst = self.worst, 0.0
+        return worst
+
+    def stop(self):
+        self.stopping = True
+
+
+_EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+
+def hung_windows():
+    """[(pid, thread id, title)] of the visible windows Windows marks as not responding: no message handled for
+    five seconds. Cloaked windows are skipped: a suspended Store app looks hung but is only asleep; so is the
+    ghost window Windows draws in place of a hung one, which belongs to the desktop manager."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.EnumWindows.argtypes = [_EnumWindowsProc, wintypes.LPARAM]
+    user32.IsHungAppWindow.argtypes = user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.InternalGetWindowText.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    try:
+        dwmapi = ctypes.WinDLL("dwmapi")
+    except OSError:
+        dwmapi = None
+    found, seen, own = [], set(), os.getpid()
+
+    def visit(hwnd, _):
+        if not user32.IsHungAppWindow(hwnd) or not user32.IsWindowVisible(hwnd):
+            return True
+        cloaked = ctypes.c_int()
+        if dwmapi and dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), 4) == 0 \
+                and cloaked.value:
+            return True
+        kind = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, kind, 64)
+        if kind.value == "Ghost":  # the "(Not Responding)" copy Windows draws in place of a hung window
+            return True
+        pid = wintypes.DWORD()
+        tid = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in seen or pid.value in (0, own):
+            return True
+        seen.add(pid.value)
+        title = ctypes.create_unicode_buffer(260)
+        user32.InternalGetWindowText(hwnd, title, 260)
+        found.append((pid.value, tid, title.value))
+        return True
+
+    user32.EnumWindows(_EnumWindowsProc(visit), 0)
+    return found
+
+
+class _WaitNode(ctypes.Structure):  # WAITCHAIN_NODE_INFO: the union is read by hand
+    _fields_ = [("kind", wintypes.DWORD), ("status", wintypes.DWORD), ("data", ctypes.c_ubyte * 272)]
+
+
+class _Luid(ctypes.Structure):
+    _fields_ = [("low", wintypes.DWORD), ("high", wintypes.LONG)]
+
+
+class _Privileges(ctypes.Structure):  # TOKEN_PRIVILEGES with one entry
+    _fields_ = [("count", wintypes.DWORD), ("luid", _Luid), ("attributes", wintypes.DWORD)]
+
+
+def enable_debug_privilege():
+    """SeDebugPrivilege for this process, so the wait chains of programs running as administrator can be read too.
+    Only an administrator has it to turn on; nothing happens otherwise."""
+    advapi32, kernel32 = ctypes.WinDLL("advapi32", use_last_error=True), ctypes.windll.kernel32
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x28, ctypes.byref(token)):
+        return False  # TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY
+    try:
+        privileges = _Privileges(1, _Luid(), 2)  # SE_PRIVILEGE_ENABLED
+        if not advapi32.LookupPrivilegeValueW(None, "SeDebugPrivilege", ctypes.byref(privileges.luid)):
+            return False
+        advapi32.AdjustTokenPrivileges(token, False, ctypes.byref(privileges), 0, None, None)
+        return ctypes.get_last_error() == 0
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def wait_chain(thread_id):
+    """What a thread waits for, as Resource Monitor's "Analyze wait chain" shows it: {"nodes": [...], "cycle"}.
+    A node is {"kind": "thread", "status", "pid", "tid"} or {"kind": the object's type, "status", "name"}; cycle
+    means a deadlock. None when the chain cannot be read."""
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.OpenThreadWaitChainSession.restype = ctypes.c_void_p
+    advapi32.OpenThreadWaitChainSession.argtypes = [wintypes.DWORD, ctypes.c_void_p]
+    advapi32.GetThreadWaitChain.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                            ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+                                            ctypes.POINTER(wintypes.BOOL)]
+    advapi32.CloseThreadWaitChainSession.argtypes = [ctypes.c_void_p]
+    session = advapi32.OpenThreadWaitChainSession(0, None)
+    if not session:
+        return None
+    try:
+        nodes, count, cycle = (_WaitNode * 16)(), wintypes.DWORD(16), wintypes.BOOL()
+        if not advapi32.GetThreadWaitChain(session, None, WCT_FLAGS, thread_id, ctypes.byref(count), nodes,
+                                           ctypes.byref(cycle)):
+            return None
+        found = []
+        for node in nodes[:min(count.value, 16)]:
+            status = WCT_STATUS.get(node.status, "unknown")
+            if node.kind == 8:
+                pid, tid = struct.unpack_from("<II", bytes(node.data), 0)
+                found.append({"kind": "thread", "status": status, "pid": pid, "tid": tid})
+            else:
+                name = bytes(node.data[:256]).decode("utf-16-le", errors="replace").split("\0")[0]
+                found.append({"kind": WCT_TYPES.get(node.kind, "unknown"), "status": status, "name": name})
+        return {"nodes": found, "cycle": bool(cycle.value)}
+    finally:
+        advapi32.CloseThreadWaitChainSession(session)
+
+
+def chain_reading(chain, own_pid, names):
+    """One verdict on a wait chain: {"kind": ...}, where kind is deadlock; other_program (with its name and pid);
+    share (a file server that does not answer); network; busy (not waiting at all: calculating, or inside a driver
+    call); own_thread (another thread of the same program, still working); blocked (with the objects it waits on,
+    inside the same program); unknown; or unreadable when there is no chain."""
+    if not chain:
+        return {"kind": "unreadable"}
+    nodes = chain["nodes"]
+    if chain["cycle"]:
+        return {"kind": "deadlock"}
+    others = [n for n in nodes if n["kind"] == "thread" and n["pid"] not in (0, own_pid)]
+    objects = [n["kind"] for n in nodes if n["kind"] != "thread"]
+    last = nodes[-1]["status"] if nodes else ""
+    if others:
+        pid = others[-1]["pid"]
+        return {"kind": "other_program", "pid": pid, "name": names.get(pid) or "?"}
+    if "share" in objects:
+        return {"kind": "share"}
+    if "socket" in objects:
+        return {"kind": "network"}
+    if len(nodes) == 1 and last == "running":
+        return {"kind": "busy"}
+    if last == "running":
+        return {"kind": "own_thread"}
+    if objects:
+        return {"kind": "blocked", "objects": ", ".join(dict.fromkeys(o.replace("_", " ") for o in objects))}
+    return {"kind": "unknown"}
+
+
+def gpu_adapters():
+    """{LUID as the GPU counters name it: {"name", "vram", "software", "discrete"}} of the display adapters, from
+    the list DirectX keeps."""
+    found = {}
+    for sub in _subkeys(winreg.HKEY_LOCAL_MACHINE, DIRECTX_KEY):
+        path = rf"HKLM\{DIRECTX_KEY}\{sub}"
+        name, luid = _read(path, "Description"), _read(path, "AdapterLuid")
+        if not name or not isinstance(luid, int):
+            continue
+        vendor, vram = _read(path, "VendorId"), _read(path, "DedicatedVideoMemory")
+        key = f"0x{(luid >> 32) & 0xFFFFFFFF:08X}_0x{luid & 0xFFFFFFFF:08X}"
+        found[key] = {"name": str(name), "vram": vram if isinstance(vram, int) and vram > 0 else 0,
+                      "software": "basic render" in str(name).lower(),
+                      "discrete": is_discrete(f"{vendor:04X}" if isinstance(vendor, int) else "", str(name))}
+    return found
+
+
+def busiest_disk(tick):
+    """(name, load %, ms per request) of the busiest drive in a tick, or None."""
+    disks = tick.get("disks") or {}
+    if not disks:
+        return None
+    name = max(disks, key=lambda n: disks[n]["busy"])
+    return name, disks[name]["busy"], disks[name]["ms"]
+
+
+def watch(seconds=WATCH_SECONDS):
+    """Reads the whole PC once a second for a while: pauses of the whole system, the processor, its speed and the
+    share drivers take, memory, every drive's load and answer time, the graphics cards, the busiest programs, and
+    the windows that stop responding, with what they wait for, read the moment they are seen stuck."""
+    sampler, pause = Sampler(), _PauseWatch()
+    enable_debug_privilege()
+    status = memory()
+    total_mb = status["total"] / MB if status else 0
+    ticks, episodes, open_episodes = [], [], {}
+    gc.freeze()  # a collection of the window's objects on another thread must not look like a pause of the system
+    pause.start()
+    try:
+        sampler.collect()
+        start = time.monotonic()
+        for i in range(1, seconds + 1):
+            wait = start + i - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            sampler.collect()
+            tick = sampler.tick(os.getpid())
+            tick["pause_ms"] = pause.pop()
+            hung = hung_windows()
+            for pid, tid, title in hung:
+                if pid not in open_episodes:  # new: read its wait chain now, while it is still stuck
+                    chain = wait_chain(tid)
+                    episode = {"pid": pid, "name": sampler.names.get(pid) or "?", "title": title,
+                               "start": tick["time"], "end": None,
+                               "reading": chain_reading(chain, pid, sampler.names), "cpu": tick["cpu"],
+                               "disk": busiest_disk(tick), "free_mb": tick["free_mb"]}
+                    open_episodes[pid] = episode
+                    episodes.append(episode)
+            now = {pid for pid, _, _ in hung}
+            for pid in list(open_episodes):
+                if pid not in now:
+                    open_episodes.pop(pid)["end"] = tick["time"]
+            tick["hung"] = sorted(now)
+            ticks.append(tick)
+        for episode in open_episodes.values():
+            episode["end"] = ticks[-1]["time"]
+    finally:
+        pause.stop()
+        sampler.close()
+        gc.unfreeze()
+    return {"seconds": len(ticks), "ticks": ticks, "episodes": episodes, "adapters": gpu_adapters(),
+            "ram_mb": total_mb, "missing": sampler.missing}
+
+
+def stress(seconds=STRESS_SECONDS, threads=None):
+    """Full processor load for a while, with its speed read every second: a processor held back by heat or a power
+    limit falls below its rated speed, or fades as it warms up. The load is hashing in memory: nothing is written."""
+    threads = threads or os.cpu_count() or 1
+    buffer = os.urandom(STRESS_BUFFER)
+    end = time.monotonic() + seconds
+
+    def burn():
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetThreadPriority(kernel32.GetCurrentThread(), -1)  # below normal: the window and the readings first
+        digest = hashlib.sha256()
+        while time.monotonic() < end:
+            digest.update(buffer)
+
+    sampler, ticks = Sampler(STRESS_COUNTERS), []
+    try:
+        sampler.collect()
+        workers = [threading.Thread(target=burn, daemon=True) for _ in range(threads)]
+        for worker in workers:
+            worker.start()
+        start = time.monotonic()
+        for i in range(1, seconds + 1):
+            wait = start + i - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            sampler.collect()
+            temperature, passive = sampler.thermal()
+            ticks.append({"load": _clamp(sampler.value("cpu_time")), "speed": sampler.value("speed"),
+                          "temperature": temperature, "passive": passive})
+        for worker in workers:
+            worker.join(timeout=5)
+    finally:
+        sampler.close()
+    return {"seconds": len(ticks), "threads": threads, "ticks": ticks}
+
+
+def large_files():
+    """[(path, size)] of the largest files of Windows itself, biggest first, up to LARGE_FILES_TOTAL. Compressed
+    and sparse files are left out: the cache answers for them, so reading them says nothing about the drive."""
+    found = []
+    try:
+        with os.scandir(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")) as entries:
+            for entry in entries:
+                try:
+                    info = entry.stat()
+                    if entry.is_file() and info.st_size >= LARGE_FILE_MIN and not info.st_file_attributes & 0xA00:
+                        found.append((entry.path, info.st_size))  # neither compressed (0x800) nor sparse (0x200)
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    found.sort(key=lambda item: -item[1])
+    chosen, total = [], 0
+    for path, size in found:
+        if total >= LARGE_FILES_TOTAL:
+            break
+        chosen.append((path, size))
+        total += size
+    return chosen
+
+
+def measure_reads(kernel32, sources, buffer, source):
+    """Reads the sources past the cache: large reads in a row for READ_SECONDS, then RANDOM_READS small ones at
+    random places of the largest. {"sequential": MB/s, "random_ms", "random_p95", "read_mb", "source"}."""
+    done = wintypes.DWORD()
+    read, start = 0, time.perf_counter()
+    for handle, size in sources:
+        offset = size // 10 // RANDOM_READ * RANDOM_READ if source == "disk" else 0  # not the start of the drive
+        kernel32.SetFilePointerEx(handle, offset, None, 0)
+        while offset + READ_CHUNK <= size and read < READ_LIMIT and time.perf_counter() - start < READ_SECONDS:
+            if not kernel32.ReadFile(handle, buffer, READ_CHUNK, ctypes.byref(done), None) or not done.value:
+                break
+            read += done.value
+            offset += done.value
+        if read >= READ_LIMIT or time.perf_counter() - start >= READ_SECONDS:
+            break
+    elapsed = time.perf_counter() - start
+    if not read or not elapsed:
+        return None
+    handle, size = sources[0]
+    places = (size - RANDOM_READ) // RANDOM_READ
+    latencies = []
+    for _ in range(RANDOM_READS):
+        kernel32.SetFilePointerEx(handle, random.randrange(places) * RANDOM_READ, None, 0)
+        moment = time.perf_counter()
+        if kernel32.ReadFile(handle, buffer, RANDOM_READ, ctypes.byref(done), None) and done.value:
+            latencies.append((time.perf_counter() - moment) * 1000)
+    latencies.sort()
+    return {"sequential": read / MB / elapsed, "read_mb": read / MB, "source": source,
+            "random_ms": sum(latencies) / len(latencies) if latencies else None,
+            "random_p95": latencies[min(len(latencies) - 1, int(0.95 * len(latencies)))] if latencies else None}
+
+
+def disk_speed(number, admin):
+    """How fast the Windows drive reads, past the file cache: MB/s of large reads in a row and the time one small
+    read takes. As administrator the drive itself is read; otherwise large files of Windows on it. Nothing is
+    written. None when neither can be read."""
+    kernel32 = _disk_api()
+    kernel32.SetFilePointerEx.argtypes = [wintypes.HANDLE, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong),
+                                          wintypes.DWORD]
+    buffer = kernel32.VirtualAlloc(None, READ_CHUNK, 0x3000, 0x04)  # MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE
+    if not buffer:
+        return None
+    try:
+        if admin and number is not None:
+            handle = _open_disk(kernel32, number, GENERIC_READ, FILE_FLAG_NO_BUFFERING)
+            if handle:
+                try:
+                    length, returned = ctypes.c_longlong(), wintypes.DWORD()
+                    if kernel32.DeviceIoControl(handle, 0x7405C, None, 0, ctypes.byref(length), 8,
+                                                ctypes.byref(returned), None) and length.value > 64 * MB:
+                        return measure_reads(kernel32, [(handle, length.value)], buffer, "disk")
+                finally:  # IOCTL_DISK_GET_LENGTH_INFO
+                    kernel32.CloseHandle(handle)
+        handles = []
+        try:
+            for path, size in large_files():
+                handle = kernel32.CreateFileW(path, GENERIC_READ, 7, None, 3, FILE_FLAG_NO_BUFFERING, None)
+                if handle and handle != wintypes.HANDLE(-1).value:
+                    handles.append((handle, size))
+            return measure_reads(kernel32, handles, buffer, "files") if handles else None
+        finally:
+            for handle, _ in handles:
+                kernel32.CloseHandle(handle)
+    finally:
+        kernel32.VirtualFree(buffer, 0, 0x8000)  # MEM_RELEASE
+
+
+def gateway():
+    """The IPv4 address of the router (the next hop towards the internet), or None without a route through one."""
+    iphlpapi = ctypes.WinDLL("iphlpapi")
+    row = (wintypes.DWORD * 14)()  # MIB_IPFORWARDROW
+    destination = struct.unpack("<I", socket.inet_aton(INTERNET_HOSTS[-1]))[0]
+    if iphlpapi.GetBestRoute(wintypes.DWORD(destination), wintypes.DWORD(0), row) != 0 or row[5] != 4:
+        return None  # MIB_IPROUTE_TYPE_INDIRECT: through a router; a direct route has none to ping
+    return socket.inet_ntoa(struct.pack("<I", row[3]))
+
+
+def ping_many(targets, rounds=PING_ROUNDS, gap=PING_GAP, budget=PING_BUDGET):
+    """{target: [round trip in ms, or None for a lost ping]} after pinging the targets in turn, rounds times or
+    until the budget of seconds is spent."""
+    results = {target: [] for target in targets}
+    iphlpapi = ctypes.WinDLL("iphlpapi")
+    iphlpapi.IcmpCreateFile.restype = wintypes.HANDLE
+    iphlpapi.IcmpSendEcho.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.WORD,
+                                      ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+    iphlpapi.IcmpCloseHandle.argtypes = [wintypes.HANDLE]
+    handle = iphlpapi.IcmpCreateFile()
+    if not handle or handle == wintypes.HANDLE(-1).value:
+        return results
+    data = b"SimpleTool" * 3
+    reply = ctypes.create_string_buffer(28 + len(data) + 64)  # ICMP_ECHO_REPLY, the data and room for options
+    deadline = time.monotonic() + budget
+    try:
+        for _ in range(rounds):
+            for target in targets:
+                address = struct.unpack("<I", socket.inet_aton(target))[0]
+                if iphlpapi.IcmpSendEcho(handle, address, data, len(data), None, reply, len(reply), PING_TIMEOUT_MS) \
+                        and struct.unpack_from("<I", reply.raw, 4)[0] == 0:  # Status IP_SUCCESS
+                    results[target].append(struct.unpack_from("<I", reply.raw, 8)[0])  # RoundTripTime
+                else:
+                    results[target].append(None)
+            if time.monotonic() > deadline:
+                break
+            time.sleep(gap)
+    finally:
+        iphlpapi.IcmpCloseHandle(handle)
+    return results
+
+
+def ping_stats(times):
+    """{"sent", "lost" (%), "avg", "worst", "jitter"} in ms of one target's pings; None entries are lost pings."""
+    if not times:
+        return None
+    answered = [t for t in times if t is not None]
+    jitter = sum(abs(a - b) for a, b in zip(answered, answered[1:])) / (len(answered) - 1) if len(answered) > 1 \
+        else 0.0
+    return {"sent": len(times), "lost": 100.0 * (len(times) - len(answered)) / len(times),
+            "avg": sum(answered) / len(answered) if answered else 0.0, "worst": max(answered, default=0),
+            "jitter": jitter}
+
+
+def wifi_signal():
+    """The Wi-Fi signal in %, or None without a wireless connection. netsh is the only quick source of it; its
+    text is in the language of Windows, but the one percentage in it is the signal."""
+    try:
+        result = subprocess.run(["netsh.exe", "wlan", "show", "interfaces"], capture_output=True, timeout=15,
+                                creationflags=engine.CREATE_NO_WINDOW, env=engine.clean_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(rb"(\d{1,3})%", result.stdout or b"")
+    return int(match.group(1)) if match else None
+
+
+def dns_time():
+    """Milliseconds a name lookup takes, or None when it fails."""
+    start = time.perf_counter()
+    try:
+        socket.getaddrinfo("www.microsoft.com", 443)
+    except OSError:
+        return None
+    return round((time.perf_counter() - start) * 1000)
+
+
+def connection(rounds=PING_ROUNDS):
+    """The router and two internet addresses pinged side by side: {"gateway", "targets": {address: ping_stats},
+    "dns_ms", "wifi"}. Without a router (no network) only "gateway": None."""
+    router = gateway()
+    if not router:
+        return {"gateway": None, "targets": {}, "dns_ms": None, "wifi": None}
+    targets = [router] + list(INTERNET_HOSTS)
+    pings = ping_many(targets, rounds)
+    return {"gateway": router, "targets": {target: ping_stats(pings[target]) for target in targets},
+            "dns_ms": dns_time(), "wifi": wifi_signal()}
+
+
+def mapped_shares(timeout=SHARE_TIMEOUT):
+    """[{"drive", "remote", "alive"}] of this account's mapped network drives: alive when the server answers on
+    the file sharing port. File Explorer, Open and Save windows and Office wait on a server that does not."""
+    found = []
+    for letter in _subkeys(winreg.HKEY_CURRENT_USER, "Network"):
+        remote = str(_read(rf"HKCU\Network\{letter}", "RemotePath") or "")
+        match = re.match(r"\\\\([^\\]+)\\", remote)
+        if not match:
+            continue
+        try:
+            with socket.create_connection((match.group(1), 445), timeout=timeout):
+                alive = True
+        except OSError:
+            alive = False
+        found.append({"drive": letter.upper() + ":", "remote": remote, "alive": alive})
+    return found
+
+
+def gather(report=lambda step: None, api=None, live=True):
+    """Reads everything the checks need. report(step) is called as each step of STEPS is done. The live tests
+    (live=False leaves them out) take about two and a half minutes: the watch and the connection test side by
+    side, then the drive's speed, then the processor under load, last so that its heat does not colour the
+    watch."""
     api = api or limiter.WindowsApi()
     facts = {"now": datetime.datetime.now()}
 
@@ -2636,6 +3347,19 @@ def gather(report=lambda step: None, api=None):
     read("proxy", proxy)
     read("hosts", hosts)
     report("security")
+    if live:
+        # Pings and a knock on the file servers disturb neither the processor nor the drives: alongside the watch
+        network = threading.Thread(target=lambda: (read("connection", connection), read("shares", mapped_shares)),
+                                   daemon=True)
+        network.start()
+        read("watch", watch)
+        network.join(timeout=PING_BUDGET + 30)
+        report("watch")
+        read("disk_speed", lambda: disk_speed(facts.get("system_disk"), bool(facts.get("admin"))))
+        report("speed")
+        if not _virtual(facts):  # a virtual machine shares its processor: the test would judge the host
+            read("stress", stress)
+        report("stress")
     return facts
 
 
@@ -4522,6 +5246,349 @@ def check_bitlocker(facts):
         return Finding("bitlocker", "warning", "bitlocker_no_key", actions=["encryption"])
     key_id = keys[0].strip("{}")[:8].upper()
     return Finding("bitlocker", "info", "bitlocker_key", {"id": key_id}, actions=["encryption"])
+
+
+# --- Verdicts of the live tests ---
+
+def _watched(facts):
+    data = facts.get("watch")
+    return data if data and data.get("ticks") else None
+
+
+def _clock(moment):
+    return f"{moment:%H:%M:%S}" if isinstance(moment, datetime.datetime) else str(moment)
+
+
+def _most_common(names):
+    counts = {}
+    for name in names:
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    return max(counts, key=counts.get) if counts else "?"
+
+
+def _disk_label(instance):
+    """"0 C: A:", as the counters name a drive, shown as "C: A: (disk 0)"."""
+    number, _, letters = str(instance).partition(" ")
+    return f"{letters} (disk {number})" if letters else f"disk {number}"
+
+
+def _average(values):
+    return sum(values) / len(values) if values else 0.0
+
+
+def check_system_pauses(facts):
+    data = _watched(facts)
+    if not data:
+        return unknown("system_pauses")
+    ticks = data["ticks"]
+    worst = max((t.get("pause_ms") or 0) for t in ticks)
+    stalls = [t for t in ticks if (t.get("pause_ms") or 0) >= PAUSE_STALL_MS]
+    hitches = [t for t in ticks if PAUSE_HITCH_MS <= (t.get("pause_ms") or 0) < PAUSE_STALL_MS]
+    shares = [t["interrupts"] for t in ticks if t.get("interrupts") is not None]
+    average, peak = round(_average(shares), 1), round(max(shares), 1) if shares else 0.0
+    storm = average >= INTERRUPTS_WATCH or peak >= INTERRUPTS_WATCH_PEAK
+    items = [("item_pause", {"time": _clock(t["time"]), "ms": round(t["pause_ms"]),
+                             "name": (t.get("top_cpu") or ("?",))[0]})
+             for t in sorted(stalls + hitches, key=lambda t: t["time"])[:8]]
+    if storm:
+        items.append(("item_interrupts_watch", {"avg": average, "peak": peak}))
+    if stalls:
+        return Finding("system_pauses", "problem", "pauses_stall", {"n": len(stalls), "seconds": round(worst / 1000, 1)},
+                       items, ["devices"])
+    if hitches:
+        return Finding("system_pauses", "warning", "pauses_hitch", {"n": len(hitches), "ms": round(worst)}, items,
+                       ["devices"])
+    if storm:
+        return Finding("system_pauses", "warning", "interrupts_watch", {"avg": average, "peak": peak}, items, ["devices"])
+    return Finding("system_pauses", "ok", "pauses_ok", {"seconds": len(ticks), "ms": round(worst)}, items)
+
+
+def check_cpu_live(facts):
+    data = _watched(facts)
+    if not data:
+        return unknown("cpu_live")
+    ticks, n = data["ticks"], len(data["ticks"])
+    loads = [t["cpu"] for t in ticks if t.get("cpu") is not None]
+    if not loads:
+        return unknown("cpu_live")
+    full = [t for t in ticks if (t.get("cpu") or 0) >= CPU_FULL or (t.get("cpu_time") or 0) >= CPU_FULL]
+    one_core = [t for t in ticks if (t.get("core_max") or 0) >= CORE_FULL and (t.get("cpu") or 0) < CPU_ONE_CORE]
+    cooled = [t for t in ticks if t.get("passive") is not None and t["passive"] < 100]
+    speeds = [t["speed"] for t in ticks if t.get("speed") is not None]
+    loaded = [t["speed"] for t in ticks if t.get("speed") is not None and (t.get("cpu_time") or 0) >= CPU_LOADED]
+    items = []
+    if speeds:
+        items.append(("item_speed_range", {"low": round(min(speeds)), "high": round(max(speeds))}))
+    if cooled:
+        return Finding("cpu_live", "warning", "cpu_watch_cooling",
+                       {"seconds": len(cooled), "total": n, "limit": round(min(t["passive"] for t in cooled))}, items,
+                       ["taskmgr"])
+    if len(loaded) >= 5:
+        under = _average(loaded)
+        if under < CPU_HELD_BACK:
+            return Finding("cpu_live", "warning", "cpu_watch_slow", {"percent": round(under), "low": round(min(loaded))},
+                           items, ["power"])
+        if max(speeds) >= 100 and min(loaded) < CPU_TURBO_DROP * max(speeds):
+            items.append(("item_turbo_drop", {"high": round(max(speeds)), "low": round(min(loaded))}))
+    if len(full) >= CPU_BUSY_SHARE * n:
+        items.insert(0, ("item_mostly", {"name": _most_common(t["top_cpu"][0] for t in full if t.get("top_cpu"))}))
+        return Finding("cpu_live", "warning", "cpu_watch_full", {"seconds": len(full), "total": n}, items, ["taskmgr"])
+    if len(one_core) >= CPU_BUSY_SHARE * n:
+        items.insert(0, ("item_mostly", {"name": _most_common(t["top_cpu"][0] for t in one_core if t.get("top_cpu"))}))
+        return Finding("cpu_live", "info", "cpu_watch_one_core",
+                       {"seconds": len(one_core), "total": n, "percent": round(_average(loads))}, items, ["taskmgr"])
+    return Finding("cpu_live", "ok", "cpu_watch_ok", {"percent": round(_average(loads)), "peak": round(max(loads)),
+                                                      "total": n}, items, ["taskmgr"])
+
+
+def check_memory_live(facts):
+    data = _watched(facts)
+    if not data:
+        return unknown("memory_live")
+    ticks, total_mb = data["ticks"], data.get("ram_mb") or 0
+    frees = [t["free_mb"] for t in ticks if t.get("free_mb") is not None]
+    commits = [t["commit"] for t in ticks if t.get("commit") is not None]
+    if not frees:
+        return unknown("memory_live")
+    low, commit = min(frees), max(commits) if commits else 0
+    paging = sum(1 for t in ticks if (t.get("pages_out") or 0) >= PAGING_OUT)
+    items = [("item_paging", {"seconds": paging})] if paging else []
+    params = {"free": Size(int(low * MB)), "commit": round(commit)}
+    if low < max(MEMORY_OUT_MB, MEMORY_OUT_SHARE * total_mb) or commit >= COMMIT_OUT:
+        return Finding("memory_live", "problem", "memory_watch_out", params, items, ["memory", "taskmgr"])
+    if low < MEMORY_TIGHT_SHARE * total_mb or commit >= COMMIT_TIGHT:
+        return Finding("memory_live", "warning", "memory_watch_tight", params, items, ["memory", "taskmgr"])
+    return Finding("memory_live", "ok", "memory_watch_ok", params, items, ["memory"])
+
+
+def check_disk_latency(facts):
+    data = _watched(facts)
+    if not data:
+        return unknown("disk_latency")
+    ticks, n = data["ticks"], len(data["ticks"])
+    names = sorted({name for t in ticks for name in (t.get("disks") or {})})
+    if not names:
+        return unknown("disk_latency")
+    worst, slowest = None, 0.0
+    for name in names:
+        mine = [(t, t["disks"][name]) for t in ticks if name in (t.get("disks") or {})]
+        late = [(t, d) for t, d in mine if d["ms"] >= DISK_LATE_MS]
+        full = [(t, d) for t, d in mine if d["busy"] >= DISK_FULL]
+        peak_ms = max(d["ms"] for _, d in mine)
+        slowest = max(slowest, peak_ms)
+        who = _most_common(t["top_io"][0] for t, _ in late + full if t.get("top_io") and t["top_io"][1] > 0.5)
+        items = [("item_disk_who", {"name": who})] if who != "?" else []
+        label = _disk_label(name)
+        if peak_ms >= DISK_VERY_LATE_MS or len(late) >= DISK_LATE_SECONDS:
+            idle = sum(1 for _, d in late if d["mbs"] < DISK_IDLE_MBS)
+            if idle:
+                items.append(("item_disk_idle_slow", {"seconds": idle, "mbs": DISK_IDLE_MBS}))
+            first = late[0][0] if late else max(mine, key=lambda pair: pair[1]["ms"])[0]
+            items.append(("item_first_at", {"time": _clock(first["time"])}))
+            candidate = Finding("disk_latency", "problem", "disk_watch_late",
+                                {"name": label, "ms": round(peak_ms), "seconds": len(late), "limit": DISK_LATE_MS}, items,
+                                ["resmon"])
+        elif len(full) >= max(DISK_FULL_SECONDS, DISK_FULL_SHARE * n):
+            candidate = Finding("disk_latency", "warning", "disk_watch_full", {"name": label, "seconds": len(full),
+                                                                               "total": n}, items, ["resmon"])
+        else:
+            continue
+        if worst is None or SEVERITIES.index(candidate.severity) < SEVERITIES.index(worst.severity):
+            worst = candidate
+    return worst or Finding("disk_latency", "ok", "disk_watch_ok", {"ms": round(slowest)}, actions=["resmon"])
+
+
+def check_gpu_live(facts):
+    data = _watched(facts)
+    if not data:
+        return unknown("gpu_live")
+    ticks, n = data["ticks"], len(data["ticks"])
+    adapters = {luid: a for luid, a in (data.get("adapters") or {}).items() if not a.get("software")}
+    seen = {luid for t in ticks for luid in (t.get("gpu") or {})}
+    luids = [luid for luid in adapters if luid in seen]
+    if not luids:
+        return None  # a virtual machine or a PC without graphics counters: nothing to say
+    items, worst, shown = [], None, None
+    for luid in luids:
+        adapter = adapters[luid]
+        mine = [t["gpu"][luid] for t in ticks if luid in (t.get("gpu") or {})]
+        peak = max((g.get("load") or 0) for g in mine)
+        used = int(max(g.get("dedicated_mb") or 0 for g in mine) * MB)
+        maxed = sum(1 for g in mine if (g.get("load") or 0) >= GPU_FULL)
+        params = {"name": adapter["name"], "percent": round(peak), "used": Size(used), "total": Size(adapter["vram"])}
+        items.append(("item_gpu", params))
+        if shown is None or adapter.get("discrete"):
+            shown = params
+        if adapter["vram"] >= VRAM_MIN and used >= VRAM_FULL * adapter["vram"]:
+            candidate = Finding("gpu_live", "warning", "vram_full", params)
+        elif maxed >= GPU_FULL_SHARE * n:
+            candidate = Finding("gpu_live", "info", "gpu_watch_limit", dict(params, seconds=maxed, total=n))
+        else:
+            continue
+        if worst is None or SEVERITIES.index(candidate.severity) < SEVERITIES.index(worst.severity):
+            worst = candidate
+    if worst:
+        worst.items = items
+        return worst
+    return Finding("gpu_live", "ok", "gpu_watch_ok", shown, items)
+
+
+def check_hung_programs(facts):
+    data = _watched(facts)
+    if not data:
+        return unknown("hung_programs")
+    episodes = data.get("episodes") or []
+    if not episodes:
+        return Finding("hung_programs", "ok", "hung_ok", {"seconds": len(data["ticks"])}, actions=["taskmgr"])
+    items, lengths = [], []
+    for episode in episodes:
+        start, end = episode.get("start"), episode.get("end")
+        seconds = HUNG_GRACE + (round((end - start).total_seconds()) if start and end else 0)
+        lengths.append(seconds)
+        items.append(("item_hung", {"name": episode.get("name") or "?", "time": _clock(start), "seconds": seconds,
+                                    "title": episode.get("title") or ""}))
+        reading = episode.get("reading") or {"kind": "unreadable"}
+        items.append(("item_chain_" + reading.get("kind", "unreadable"),
+                      {"name": reading.get("name") or "?", "pid": reading.get("pid") or 0,
+                       "objects": reading.get("objects") or ""}))
+        items.append(("item_hung_system", {"cpu": round(episode.get("cpu") or 0),
+                                           "free": Size(int((episode.get("free_mb") or 0) * MB))}))
+        if episode.get("disk"):
+            name, busy, ms = episode["disk"]
+            items.append(("item_hung_disk", {"name": _disk_label(name), "busy": round(busy), "ms": round(ms)}))
+    severity = "problem" if max(lengths) >= HUNG_LONG_SECONDS else "warning"
+    return Finding("hung_programs", severity, "hung_programs",
+                   {"n": len(episodes), "name": episodes[0].get("name") or "?", "seconds": lengths[0]}, items,
+                   ["taskmgr", "resmon"])
+
+
+def check_cpu_throttle(facts):
+    data = facts.get("stress")
+    if data is None:
+        return None if _virtual(facts) else unknown("cpu_throttle")
+    ticks = data.get("ticks") or []
+    speeds = [t["speed"] for t in ticks if t.get("speed") is not None]
+    loads = [t["load"] for t in ticks if t.get("load") is not None]
+    if len(speeds) < 10 or not loads:
+        return unknown("cpu_throttle")
+    first, last, low = _average(speeds[2:8]), _average(speeds[-10:]), min(speeds[2:])
+    drop = 100 * (1 - last / first) if first else 0.0
+    load = _average(loads)
+    cooled = [t for t in ticks if t.get("passive") is not None and t["passive"] < 100]
+    temperatures = [t["temperature"] for t in ticks if t.get("temperature") is not None]
+    items = [("item_stress_load", {"percent": round(load), "threads": data.get("threads") or 0})]
+    if temperatures and max(temperatures) - min(temperatures) >= 1:
+        items.append(("item_stress_temperature", {"start": temperatures[0], "end": temperatures[-1]}))
+    else:
+        items.append(("item_stress_no_temperature", {}))
+    power = facts.get("power") or {}
+    battery = bool(power.get("battery")) and not power.get("plugged")
+    if battery:
+        items.append(("item_on_battery", {}))
+    params = {"start": round(first), "end": round(last), "low": round(low), "drop": round(drop)}
+
+    def level(severity):
+        return "info" if battery and severity == "warning" else severity  # on battery it is held back by design
+
+    if cooled:
+        return Finding("cpu_throttle", level("warning"), "throttle_cooling", dict(params, seconds=len(cooled)), items)
+    if load < THROTTLE_LIGHT:
+        return Finding("cpu_throttle", "info", "throttle_light", {"percent": round(load)}, items, ["taskmgr"])
+    if last < THROTTLE_HELD_BACK:
+        return Finding("cpu_throttle", level("warning"), "throttle_held_back", params, items, ["power"])
+    if drop >= THROTTLE_DROP:
+        return Finding("cpu_throttle", level("warning"), "throttle_fades", params, items)
+    if drop >= THROTTLE_SETTLE:
+        return Finding("cpu_throttle", "info", "throttle_settles", params, items)
+    return Finding("cpu_throttle", "ok", "throttle_ok", params, items)
+
+
+def check_disk_speed(facts):
+    data = facts.get("disk_speed")
+    if data is None:
+        return unknown("disk_speed", "unknown_admin" if facts.get("admin") is False else "unknown_read")
+    sequential, ms = data.get("sequential") or 0.0, data.get("random_ms")
+    disk = next((d for d in facts.get("disks") or [] if d.get("id") == str(facts.get("system_disk"))), {})
+    media, bus = (disk.get("media") or "").upper(), (disk.get("bus") or "").upper()
+    kind = Text("class_nvme" if sequential >= NVME_CLASS else "class_sata" if sequential >= SATA_CLASS else
+                "class_hdd" if sequential >= SPEED_VERY_SLOW else "class_slow")
+    params = {"name": disk.get("name") or "?", "seq": round(sequential), "ms": round(ms, 2) if ms is not None else 0,
+              "cls": kind}
+    items = [("item_speed_read" if data.get("source") == "disk" else "item_speed_read_files",
+              {"mb": round(data.get("read_mb") or 0)})]
+    if ms is not None:
+        items.append(("item_speed_random", {"ms": round(ms, 2), "p95": round(data.get("random_p95") or 0, 2)}))
+    if sequential < SPEED_VERY_SLOW:
+        return Finding("disk_speed", "warning", "speed_very_slow", params, items)
+    if media == "SSD" and (sequential < SSD_SLOW_SEQ or (ms is not None and ms >= SSD_SLOW_MS)):
+        return Finding("disk_speed", "warning", "ssd_slow", params, items)
+    if bus == "NVME" and sequential < NVME_CLASS:
+        return Finding("disk_speed", "info", "nvme_below_class", params, items)
+    return Finding("disk_speed", "ok", "speed_ok", params, items)
+
+
+def check_connection(facts):
+    data = facts.get("connection")
+    if data is None:
+        return unknown("connection")
+    router = data.get("gateway")
+    if not router:
+        return Finding("connection", "info", "connection_offline", actions=["network_status"])
+    targets = data.get("targets") or {}
+    home = targets.get(router)
+    internet = [stats for host, stats in targets.items() if host != router and stats]
+    items = []
+    for host, stats in targets.items():
+        if stats:
+            params = {"loss": round(stats["lost"]), "avg": round(stats["avg"]), "worst": round(stats["worst"]),
+                      "jitter": round(stats["jitter"], 1)}
+            items.append(("item_ping", dict(params, name=Text("ping_router") if host == router else host,
+                                            address=host)))
+    wifi, dns = data.get("wifi"), data.get("dns_ms")
+    if wifi is not None:
+        items.append(("item_wifi_signal", {"percent": wifi}))
+    if dns is not None:
+        items.append(("item_dns_slow" if dns >= DNS_SLOW_MS else "item_dns_ok", {"ms": dns}))
+    best = None
+    if internet:
+        best = {key: min(stats[key] for stats in internet) for key in ("lost", "jitter", "worst", "avg")}
+    if home and home["lost"] < 100 and (home["lost"] >= ROUTER_LOSS or home["worst"] >= ROUTER_WORST_MS
+                                        or home["jitter"] >= ROUTER_JITTER_MS):
+        items.append(("item_home_wifi" if wifi is not None else "item_home_cable", {}))
+        return Finding("connection", "warning", "router_unstable",
+                       {"loss": round(home["lost"]), "worst": round(home["worst"]), "jitter": round(home["jitter"], 1)},
+                       items, ["network_status"])
+    if best and (best["lost"] >= LINE_LOSS or best["jitter"] >= LINE_JITTER_MS or best["worst"] >= LINE_WORST_MS):
+        items.append(("item_line", {}))
+        return Finding("connection", "warning", "line_unstable",
+                       {"loss": round(best["lost"]), "jitter": round(best["jitter"], 1), "worst": round(best["worst"])},
+                       items, ["network_status"])
+    if dns is None:
+        return Finding("connection", "warning", "dns_failed", {}, items, ["network_status"])
+    if wifi is not None and wifi < WIFI_WEAK:
+        return Finding("connection", "warning", "wifi_weak", {"percent": wifi}, items, ["network_status"])
+    summary = {"avg": round(best["avg"]) if best else 0, "worst": round(best["worst"]) if best else 0,
+               "loss": round(best["lost"]) if best else 0}
+    if home and home["lost"] >= 100:
+        return Finding("connection", "info", "router_silent", summary, items, ["network_status"])
+    return Finding("connection", "ok", "connection_ok", summary, items, ["network_status"])
+
+
+def check_dead_shares(facts):
+    shares = facts.get("shares")
+    if shares is None:
+        return unknown("dead_shares")
+    if not shares:
+        return None  # no mapped network drives: nothing to wait on
+    dead = [s for s in shares if not s.get("alive")]
+    items = [("item_share_dead" if not s.get("alive") else "item_share_ok", {"drive": s.get("drive") or "?",
+                                                                               "remote": s.get("remote") or "?"})
+             for s in shares]
+    if dead:
+        return Finding("dead_shares", "warning", "shares_dead", {"n": len(dead), "total": len(shares)}, items,
+                       ["network_status"])
+    return Finding("dead_shares", "ok", "shares_ok", {"n": len(shares)}, items)
 
 
 VERDICTS = {check: globals()["check_" + check] for check, _ in CHECKS}

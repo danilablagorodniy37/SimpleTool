@@ -451,12 +451,18 @@ TEXTS = {
         "tray_hidden_text": "The memory limiter keeps working. Open or exit SimpleTool from this icon.",
         "busy_wait": "Wait until the current operation finishes, then exit.",
         "diag_scan_title": "Looking for problems",
-        "diag_scan_text": "SimpleTool checks memory, the processor, drives, drivers, the Windows event logs and settings. "
-                          "It only reads, and it takes a few seconds.",
+        "diag_scan_text": "SimpleTool checks memory, the processor, drives, drivers, the Windows event logs and "
+                          "settings, then watches the PC for half a minute, loads the processor for a minute, reads "
+                          "the drive and tests the connection. It only reads and changes nothing. The whole check "
+                          "takes about two and a half minutes; you can keep working, and what happens meanwhile goes "
+                          "into the findings.",
         "diag_step_performance": "Memory, processor and startup",
         "diag_step_storage": "Drives and free space",
         "diag_step_stability": "Crashes, drivers and hardware errors",
         "diag_step_security": "Protection, updates and network",
+        "diag_step_watch": "Half a minute of watching: pauses, drives, memory, frozen programs, connection",
+        "diag_step_speed": "Drive speed",
+        "diag_step_stress": "A minute of full processor load",
         "diag_tile_problem": "Problems",
         "diag_tile_warning": "Warnings",
         "diag_tile_info": "Worth knowing",
@@ -479,6 +485,7 @@ TEXTS = {
         "diag_open_failed": "Windows could not open it on this PC.",
         "act_memory": "Memory limiter",
         "act_taskmgr": "Task Manager",
+        "act_resmon": "Resource Monitor",
         "act_virtual_memory": "Virtual memory",
         "act_power": "Power plans",
         "act_power_mode": "Power settings",
@@ -1503,6 +1510,100 @@ TEXTS = {
                       "device encryption on by itself after a Microsoft account signs in. Find the key at "
                       "aka.ms/myrecoverykey (its ID is shown here) or save it from Settings → Privacy & security → "
                       "Device encryption; an encrypted drive without protection is not protected until a key is set."),
+        "system_pauses": ("Pauses of the whole system",
+                          "For half a minute SimpleTool keeps a thread at the highest priority that sleeps 10 ms at a "
+                          "time and notes how late it wakes up. Nothing outranks it, so when it is held up for 100 ms "
+                          "or more the whole system stood still, mouse pointer included: that is the stutter and the "
+                          "crackling sound no program is to blame for. The cause is below every program: a driver "
+                          "(network, sound, storage, USB), the firmware or failing hardware. LatencyMon names the "
+                          "driver; update it and the BIOS, and look at the drive and hardware errors in the other "
+                          "findings. The same test adds up the processor time drivers spend on hardware interrupts "
+                          "and deferred procedure calls: above about 5% over the watch a driver is misbehaving. "
+                          "Hold-ups under 50 ms are normal."),
+        "hung_programs": ("Programs that stopped responding",
+                          "During the watch SimpleTool looks every second for a window Windows marks as not "
+                          "responding (no message handled for five seconds) and, the moment it sees one, reads what "
+                          "its window thread is waiting for, as Resource Monitor's “Analyze wait chain” does. The "
+                          "reading tells the kind of freeze: busy (a long job or an endless loop: give it time, then "
+                          "try another file or a new profile), waiting for another program (look at that one first: a "
+                          "printer spooler, an antivirus, a cloud sync client), waiting for a network share or the "
+                          "network, blocked inside itself on a lock, a device or a driver, or a deadlock that only "
+                          "closing ends. Under 15 seconds it is often a program at work, over that it is stuck. To "
+                          "catch a program that freezes, run the check again while it is frozen."),
+        "disk_latency": ("Drives during the watch",
+                         "Every second of the watch SimpleTool reads each drive's load and the time it takes to "
+                         "answer one request. A healthy SSD answers in under 10 ms and a hard disk in under 30 ms; a "
+                         "second above 200 ms is a pause everything that needs the drive waits through, and that is "
+                         "what a freeze of several seconds usually is. Answering late while moving almost no data "
+                         "points at the drive itself: its health, cable, temperature or free space, and the drive "
+                         "errors in the other findings. A drive at full load for a large part of the watch means a "
+                         "program keeps it busy (updates, an antivirus scan, indexing, a sync client): the finding "
+                         "names the program that read and wrote most at those moments, and Resource Monitor shows the "
+                         "files. On a hard disk a full load is the usual cause of the freezes."),
+        "memory_live": ("Memory during the watch",
+                        "The lowest free memory and the highest share of the commit limit during the watch, with the "
+                        "seconds in which Windows moved memory out to the page file. When memory runs out programs "
+                        "wait while Windows swaps to the drive, then freeze or close with out-of-memory errors; games "
+                        "stutter and browser tabs reload. Fewer programs at once, a limit on the hungry ones on the "
+                        "Memory limiter page, or more memory; a program that grows all the time in a quiet scene "
+                        "leaks memory and needs an update or a restart."),
+        "cpu_live": ("Processor during the watch",
+                     "What the processor did over the watch: its load (the figure Task Manager shows), the busiest "
+                     "single core, and its speed as a share of its rated speed every second. At its limit for a large "
+                     "part of the watch, the program that used it most is named: if that is the game, the processor "
+                     "is the bottleneck; if something else, stop it and test again. One core at 100% while the whole "
+                     "processor looks idle is a program that works in one thread: it is as fast as one core allows. A "
+                     "speed well below 100% under load means the processor is held back by heat, a power limit, the "
+                     "battery or a power plan; a drop from turbo as it warms up that comes with the stutter is heat. "
+                     "Windows lowering its cooling limit below 100% means it is overheating right now: dust, a dead "
+                     "fan, dried thermal paste, a laptop on a soft surface."),
+        "gpu_live": ("Graphics during the watch",
+                     "The load of each graphics adapter and how much of its own video memory was in use, every second "
+                     "of the watch. Video memory that is full makes textures spill into ordinary memory and frames "
+                     "stutter: lower the texture quality or the resolution, and close browsers and overlays while "
+                     "playing. A graphics card at its limit for most of the watch is normal in a game and simply sets "
+                     "the frame rate: lower settings or a lower resolution give more FPS. Run the check during the "
+                     "game to see what it does to the card; on an idle desktop the figures stay near zero."),
+        "cpu_throttle": ("Processor under full load",
+                         "A minute of full load on every core, with the processor's speed read every second as a "
+                         "share of its rated speed. A processor with good cooling and power holds its speed; some "
+                         "drop from turbo to a sustained speed is normal, most of all in laptops and small PCs. A "
+                         "drop of a quarter or more within the minute is what stutter after a few minutes of play "
+                         "looks like: the cooler is clogged with dust, a fan has stopped, the thermal paste has "
+                         "dried, or a laptop lies on a soft surface. Well below the rated speed from the start it is "
+                         "held back by a power limit, a weak charger or a power plan: check the power settings and "
+                         "the limits in the BIOS. On battery laptops hold the processor back on purpose, so the test "
+                         "counts only as a note. Temperatures are shown only where Windows reports them: many "
+                         "desktops report a fixed dummy value, and the speed is what counts; HWiNFO shows the real "
+                         "sensors. The load is hashing in memory: nothing is written and nothing is left behind. Fans "
+                         "spinning up is expected."),
+        "disk_speed": ("Drive speed",
+                       "How fast the Windows drive reads, past the file cache: MB/s of large reads in a row and the "
+                       "time one small read at a random place takes. Run as administrator SimpleTool reads the drive "
+                       "itself; otherwise it reads large files of Windows on it. Nothing is written. A hard disk "
+                       "reads at 60–200 MB/s and takes about 10 ms for a small read, a SATA SSD does up to about 550 "
+                       "MB/s and well under 1 ms, an NVMe SSD from about 1,000 MB/s. Under 60 MB/s is a worn hard "
+                       "disk, a USB 2.0 link or a failing drive. An SSD that reads like a hard disk is failing, "
+                       "overheating or nearly full, or hangs on a bad cable or port; an NVMe drive far below its "
+                       "class sits in a slower slot, overheats or is nearly full. The Windows drive finding says "
+                       "whether Windows is on a hard disk at all."),
+        "connection": ("Connection",
+                       "For about twenty seconds SimpleTool pings the router and two internet addresses (1.1.1.1 and "
+                       "8.8.8.8) side by side and reports lost pings, the average and worst delay and the jitter of "
+                       "each, then times one name lookup. Bad figures already to the router mean the problem is "
+                       "inside the home: the Wi-Fi signal or interference (test once with a cable), the cable, the "
+                       "switch or the router itself. A router that answers well while the internet does not means the "
+                       "line or the provider, or someone at home uploading or downloading heavily: test again with "
+                       "other devices off, then call the provider. Good figures everywhere mean the freezes in an "
+                       "online game do not come from the network, at least during this test. Some routers are set not "
+                       "to answer pings: judge by the internet rows then. The pings carry nothing about the PC."),
+        "dead_shares": ("Mapped network drives",
+                        "Network drives mapped to a letter (Z:, for example) whose server does not answer on the file "
+                        "sharing port. File Explorer, Open and Save windows and Office wait on such a drive before "
+                        "they show anything: a freeze of half a minute every time a folder opens, with nothing wrong "
+                        "with the PC. Disconnect the drive (right-click it in This PC) or bring the server back: the "
+                        "NAS or the other PC may be off, asleep or on another address. A drive that answers is listed "
+                        "for information."),
     },
     "diag_lines": {
         "unknown_read": "Could not read this on this PC.",
@@ -1974,6 +2075,108 @@ TEXTS = {
         "item_ca2023_pending": "Windows has not finished replacing the certificates of 2011",
         "item_ca2023_failed": "Replacing the certificates failed (error {code})",
         "item_blocklist_off": "The blocklist of vulnerable drivers is turned off",
+        "pauses_stall": "The whole system stood still {n} times, the longest for {seconds} s",
+        "pauses_hitch": "Short pauses of the whole system: {n}, the longest {ms} ms",
+        "interrupts_watch": "Interrupts took {avg}% of the processor over the watch, {peak}% at the peak",
+        "pauses_ok": "No pause of the whole system in {seconds} s (the longest hold-up {ms} ms)",
+        "item_pause": "{time}: {ms} ms; busiest program {name}",
+        "item_interrupts_watch": "Interrupts and deferred procedure calls: {avg}% of the processor on average, "
+                                 "{peak}% at the peak",
+        "cpu_watch_cooling": "Windows slowed the processor down to cool it for {seconds} of {total} s (down to "
+                             "{limit}% of its speed)",
+        "cpu_watch_slow": "Under load the processor ran at {percent}% of its rated speed (lowest {low}%)",
+        "cpu_watch_full": "The processor was at its limit for {seconds} of {total} s",
+        "cpu_watch_one_core": "One core was at 100% for {seconds} of {total} s while the processor as a whole was at "
+                              "{percent}%",
+        "cpu_watch_ok": "The processor had room to spare: {percent}% on average over {total} s, {peak}% at the peak",
+        "item_mostly": "Mostly {name}",
+        "item_speed_range": "Speed {low}–{high}% of rated",
+        "item_turbo_drop": "Under load the speed fell from {high}% to {low}% of rated: some drop from turbo is "
+                           "normal, a drop that comes with the stutter is heat",
+        "memory_watch_out": "Memory ran out: {free} free at the lowest, {commit}% of the limit committed",
+        "memory_watch_tight": "Memory got tight: {free} free at the lowest, {commit}% of the limit committed",
+        "memory_watch_ok": "Memory never ran short: {free} free at the lowest, {commit}% of the limit committed",
+        "item_paging": "Windows moved memory out to the page file during {seconds} s",
+        "disk_watch_late": "{name} answered late: up to {ms} ms, {seconds} s above {limit} ms",
+        "disk_watch_full": "{name} was at full load for {seconds} of {total} s",
+        "disk_watch_ok": "No drive answered late or stayed at full load (slowest answer {ms} ms)",
+        "item_disk_who": "Program reading and writing most at those moments: {name}",
+        "item_disk_idle_slow": "In {seconds} of those seconds it moved under {mbs} MB/s: slow with almost no work "
+                               "means the drive itself",
+        "item_first_at": "First at {time}",
+        "vram_full": "Video memory of {name} was full: {used} of {total}",
+        "gpu_watch_limit": "{name} was at its limit for {seconds} of {total} s",
+        "gpu_watch_ok": "{name}: {percent}% at the peak, video memory up to {used} of {total}",
+        "item_gpu": "{name}: {percent}% at the peak, video memory up to {used} of {total}",
+        "hung_programs": "Programs that stopped responding: {n}; {name} for about {seconds} s",
+        "hung_ok": "No program stopped responding in {seconds} s",
+        "item_hung": "{name} stopped responding at {time} for about {seconds} s: “{title}”",
+        "item_chain_deadlock": "Deadlock: its threads wait for each other and will never continue. Only closing it "
+                               "helps; report it to its maker",
+        "item_chain_other_program": "It waits for another program: {name} (PID {pid}). Look at that one first: if it "
+                                    "is stuck, this one stays stuck with it",
+        "item_chain_share": "It waits for a network share: a mapped drive or a file on another computer that does not "
+                            "answer",
+        "item_chain_network": "It waits for an answer from the network",
+        "item_chain_busy": "Its window thread is not waiting: it is busy itself, calculating or inside a system or "
+                           "driver call",
+        "item_chain_own_thread": "It waits for another thread of the same program, and that thread is still working",
+        "item_chain_blocked": "It is blocked on {objects} inside the same program and nothing moves: an internal "
+                              "lock, a device or a driver that does not answer",
+        "item_chain_unknown": "It is blocked, and Windows does not say on what",
+        "item_chain_unreadable": "What it waits for could not be read (run SimpleTool as administrator)",
+        "item_hung_system": "The system at that moment: processor {cpu}%, {free} of memory free",
+        "item_hung_disk": "Busiest drive at that moment: {name} at {busy}%, {ms} ms per request",
+        "throttle_cooling": "Windows slowed the processor down to cool it for {seconds} s of the test: it overheats",
+        "throttle_light": "The test could not load the processor fully ({percent}% on average): something else was "
+                          "using it",
+        "throttle_held_back": "Under full load the processor ran at {end}% of its rated speed ({start}% at the start, "
+                              "lowest {low}%)",
+        "throttle_fades": "The processor fades as it warms up: {start}% of rated at the start, {end}% after a minute, "
+                          "a drop of {drop}%",
+        "throttle_settles": "Some drop from turbo to a sustained speed: {start}% of rated at the start, {end}% after "
+                            "a minute",
+        "throttle_ok": "The processor holds its speed under load: {start}% of rated at the start, {end}% at the end",
+        "item_stress_load": "Load during the test: {percent}% on average, {threads} threads",
+        "item_stress_temperature": "Thermal zone: {start} °C at the start, {end} °C at the end",
+        "item_stress_no_temperature": "This PC reports no temperature to Windows, or a fixed dummy value: the speed "
+                                      "is what counts. HWiNFO shows the real sensors",
+        "item_on_battery": "On battery: laptops hold the processor back on purpose. Plug the charger in for a fair "
+                           "result",
+        "speed_very_slow": "{name} reads at {seq} MB/s: very slow",
+        "ssd_slow": "{name} is an SSD but reads like a hard disk: {seq} MB/s, {ms} ms per small read",
+        "nvme_below_class": "{name} reads at {seq} MB/s: below what an NVMe drive does",
+        "speed_ok": "{name}: {seq} MB/s, {ms} ms per small read ({cls})",
+        "class_nvme": "NVMe SSD speed",
+        "class_sata": "SATA SSD speed",
+        "class_hdd": "hard disk speed",
+        "class_slow": "very slow",
+        "item_speed_read": "Read {mb} MB in a row from the drive itself, past the cache",
+        "item_speed_read_files": "Read {mb} MB of Windows' own files in a row, past the cache",
+        "item_speed_random": "Small reads at random places: {ms} ms on average, {p95} ms for the slowest 5%",
+        "connection_offline": "Not connected to a network: nothing to test",
+        "router_unstable": "The link to the router is unstable: {loss}% of pings lost, worst {worst} ms, jitter "
+                           "{jitter} ms",
+        "line_unstable": "The internet line is unstable while the router answers well: {loss}% lost, jitter {jitter} "
+                         "ms, worst {worst} ms",
+        "dns_failed": "Name lookup (DNS) failed: web pages and game logins hang at “connecting”",
+        "wifi_weak": "The Wi-Fi signal is weak: {percent}%",
+        "router_silent": "The router does not answer pings (some are set that way); the internet answers in {avg} ms",
+        "connection_ok": "The connection is stable: {avg} ms to the internet, worst {worst} ms, {loss}% lost",
+        "item_ping": "{name}: {loss}% lost, {avg} ms on average, worst {worst} ms, jitter {jitter} ms",
+        "ping_router": "Router {address}",
+        "item_wifi_signal": "Wi-Fi signal: {percent}%",
+        "item_dns_slow": "Name lookup took {ms} ms: a slow first connection to every site. Try the DNS servers "
+                         "1.1.1.1 and 8.8.8.8",
+        "item_dns_ok": "Name lookup: {ms} ms",
+        "item_home_wifi": "The problem is inside the home: the Wi-Fi signal or interference. Test once with a cable",
+        "item_home_cable": "The problem is inside the home: the cable, the switch or the router itself",
+        "item_line": "The line or the provider, or someone at home is uploading or downloading heavily. Test again "
+                     "with other devices off, then call the provider",
+        "shares_dead": "Mapped network drives that do not answer: {n} of {total}",
+        "shares_ok": "Every mapped network drive answers ({n})",
+        "item_share_dead": "{drive} → {remote}: the server does not answer",
+        "item_share_ok": "{drive} → {remote}",
     },
     "reasons": {
         "access_denied": ("Not enough rights to read some settings.",
