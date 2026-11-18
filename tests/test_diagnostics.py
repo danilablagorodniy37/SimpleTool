@@ -1545,6 +1545,8 @@ class LiveGather(unittest.TestCase):
             ("watch", watch_facts()), ("stress", stress_facts()), ("connection", connection_facts()),
             ("mapped_shares", []), ("disk_speed", {"sequential": 500.0, "random_ms": 0.2, "random_p95": 0.4,
                                                    "read_mb": 512, "source": "files"}))]
+        # A physical PC: on a virtual machine (GitHub's runners are one) the load test is skipped by design
+        self.patches.append(mock.patch.object(sysinfo, "model", lambda: "Micro-Star International Co., Ltd. MS-7D76"))
         for patch in self.patches:
             patch.start()
 
